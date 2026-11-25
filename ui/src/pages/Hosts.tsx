@@ -1,75 +1,97 @@
 import { useState } from "react";
-import { Cloud, FileText, RefreshCw, Search } from "lucide-react";
+import { Monitor, RefreshCw, Server, ServerCog } from "lucide-react";
 import { hosts } from "../data";
-import { Button, Card, cx, PageHeader, StatusDot, Tag } from "../components/ui";
+import { Avatar, Badge, Button, Card, Delta, IconBubble, PageHeader, Pagination, SearchField, SortButton, TableHeading, type BadgeTone } from "../components/ui";
+
+const statusTone: Record<string, BadgeTone> = { online: "green", offline: "red", degraded: "amber" };
 
 export function HostsPage() {
   const [q, setQ] = useState("");
-  const list = hosts.filter((h) => `${h.name} ${h.address} ${h.tags.join(" ")} ${h.os}`.toLowerCase().includes(q.toLowerCase()));
+  const list = hosts.filter((h) => `${h.name} ${h.address} ${h.tags.join(" ")} ${h.os} ${h.status}`.toLowerCase().includes(q.toLowerCase()));
+  const online = hosts.filter((h) => h.status === "online").length;
+
   return (
-    <>
+    <div className="space-y-8">
       <PageHeader
         title="Hosts"
         subtitle="Machines your runbooks can target, collected from your inventory sources."
         actions={
           <Button>
-            <RefreshCw className="size-3.5" /> Sync inventory
+            <RefreshCw className="size-4" /> Sync inventory
           </Button>
         }
       />
-      <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-        {[
-          { icon: Cloud, name: "AWS us-east-1", detail: "EC2 instances tagged opskills=true", count: 12, synced: "2 min ago" },
-          { icon: FileText, name: "Static inventory", detail: "inventory/prod.yaml in Git", count: 12, synced: "1 h ago" },
-        ].map((s) => (
-          <Card key={s.name} className="flex items-center gap-3 p-4">
-            <span className="flex size-10 items-center justify-center rounded-xl bg-surface-2 text-ink-2">
-              <s.icon className="size-5" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="font-medium">{s.name}</div>
-              <div className="truncate text-xs text-muted">{s.detail}</div>
+
+      <Card className="grid grid-cols-1 gap-4 px-4 py-6 md:grid-cols-3 md:divide-x md:divide-line md:px-6 md:py-8">
+        <div className="flex items-center gap-5 px-2 py-2 sm:px-6">
+          <IconBubble icon={Server} tone="mint" size="size-[72px] sm:size-20" />
+          <div>
+            <div className="text-sm text-muted">Total hosts</div>
+            <div className="mt-0.5 text-[30px] leading-tight font-semibold tabular-nums">{hosts.length}</div>
+            <Delta value="+16%" good period="this month" />
+          </div>
+        </div>
+        <div className="flex items-center gap-5 px-2 py-2 sm:px-6">
+          <IconBubble icon={ServerCog} tone="mint" size="size-[72px] sm:size-20" />
+          <div>
+            <div className="text-sm text-muted">Online</div>
+            <div className="mt-0.5 text-[30px] leading-tight font-semibold tabular-nums">{online}</div>
+            <Delta value="-1%" good={false} period="this month" />
+          </div>
+        </div>
+        <div className="flex items-center gap-5 px-2 py-2 sm:px-6">
+          <IconBubble icon={Monitor} tone="mint" size="size-[72px] sm:size-20" />
+          <div>
+            <div className="text-sm text-muted">Running a step now</div>
+            <div className="mt-0.5 text-[30px] leading-tight font-semibold tabular-nums">4</div>
+            <div className="mt-1 flex -space-x-2">
+              {["web-01", "web-02", "web-03", "web-04"].map((h) => (
+                <span key={h} className="rounded-full ring-2 ring-surface">
+                  <Avatar name={h.replace("-", " ")} size="size-7" />
+                </span>
+              ))}
             </div>
-            <div className="text-right text-xs text-muted">
-              <div className="text-sm font-semibold text-ink tabular-nums">{s.count} hosts</div>
-              synced {s.synced}
-            </div>
-          </Card>
-        ))}
-      </div>
-      <label className="mb-3 flex h-9 w-full items-center gap-2 rounded-lg border border-line bg-surface px-3 sm:w-96">
-        <Search className="size-4 text-muted" />
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by name, tag or address  (e.g. tags:web)" className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted" />
-      </label>
+          </div>
+        </div>
+      </Card>
+
       <Card className="overflow-hidden">
-        <div className="hidden grid-cols-[minmax(0,1.2fr)_120px_130px_minmax(0,1fr)_140px_110px] gap-4 border-b border-line bg-surface-2 px-4 py-2 text-xs font-medium text-muted lg:grid">
-          <span>Host</span>
+        <TableHeading title="All hosts" subtitle="From 2 inventory sources">
+          <SearchField value={q} onChange={setQ} />
+          <SortButton value="Name" />
+        </TableHeading>
+        <div className="hidden grid-cols-[minmax(0,1.3fr)_130px_130px_minmax(0,1fr)_150px_120px] gap-6 border-b border-line px-10 pb-4 text-sm font-medium text-muted lg:grid">
+          <span>Host name</span>
           <span>Address</span>
           <span>OS</span>
           <span>Tags</span>
           <span>Source</span>
-          <span className="text-right">Last seen</span>
+          <span className="text-center">Status</span>
         </div>
-        <ul className="divide-y divide-line">
-          {list.map((h) => (
-            <li key={h.name} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 py-2.5 text-sm lg:grid-cols-[minmax(0,1.2fr)_120px_130px_minmax(0,1fr)_140px_110px]">
-              <span className="flex min-w-0 items-center gap-2.5">
-                <StatusDot status={h.status} />
-                <span className="truncate font-mono text-[13px]">{h.name}</span>
+        <ul className="px-6 sm:px-10">
+          {list.slice(0, 10).map((h) => (
+            <li
+              key={h.name}
+              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 border-b border-line py-5 text-sm last:border-0 lg:grid-cols-[minmax(0,1.3fr)_130px_130px_minmax(0,1fr)_150px_120px]"
+            >
+              <span className="min-w-0">
+                <span className="block truncate font-medium">{h.name}</span>
+                <span className="text-xs text-muted lg:hidden">{h.address}</span>
               </span>
-              <span className="font-mono text-xs text-muted lg:text-[13px]">{h.address}</span>
-              <span className="hidden text-muted lg:block">{h.os}</span>
-              <span className="hidden flex-wrap gap-1 lg:flex">
-                {h.tags.map((t) => (
-                  <Tag key={t}>{t}</Tag>
-                ))}
+              <span className="hidden font-mono text-[13px] lg:block">{h.address}</span>
+              <span className="hidden lg:block">{h.os}</span>
+              <span className="hidden truncate lg:block">{h.tags.join(", ")}</span>
+              <span className="hidden truncate lg:block">{h.source}</span>
+              <span className="text-center">
+                <Badge tone={statusTone[h.status]} className="capitalize">
+                  {h.status}
+                </Badge>
               </span>
-              <span className="hidden truncate text-muted lg:block">{h.source}</span>
-              <span className={cx("hidden text-right lg:block", h.status === "offline" ? "text-rose-600" : "text-muted")}>{h.lastSeen}</span>
             </li>
           ))}
         </ul>
+        <Pagination from={1} to={Math.min(10, list.length)} total={String(list.length)} pages={3} />
       </Card>
-    </>
+    </div>
   );
 }

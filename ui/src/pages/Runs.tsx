@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { CalendarClock, Code2, MousePointerClick, Webhook } from "lucide-react";
-import { runbookById, runs, type Run, type Status } from "../data";
-import { Avatar, Card, cx, PageHeader, StatusPill } from "../components/ui";
+import { Activity, CalendarClock, CheckCircle2, Code2, Hand, MousePointerClick, Webhook } from "lucide-react";
+import { runbookById, runs, type Run } from "../data";
+import { Avatar, Card, cx, Delta, IconBubble, Pagination, SearchField, SortButton, StatusPill, TableHeading } from "../components/ui";
 
 const triggerIcon: Record<Run["trigger"], typeof Webhook> = {
   manual: MousePointerClick,
@@ -10,82 +10,78 @@ const triggerIcon: Record<Run["trigger"], typeof Webhook> = {
   api: Code2,
 };
 
-const filters: (Status | "all")[] = ["all", "running", "waiting", "failed", "succeeded", "queued"];
-
 export function RunsPage() {
-  const [f, setF] = useState<Status | "all">("all");
-  const list = runs.filter((r) => f === "all" || r.status === f);
+  const [q, setQ] = useState("");
+  const list = runs.filter((r) => `${runbookById(r.runbookId)!.name} ${r.startedBy} ${r.trigger} ${r.status}`.toLowerCase().includes(q.toLowerCase()));
+
   return (
-    <>
-      <PageHeader title="Runs" subtitle="Every execution, with who started it, why, and what happened on each host." />
-      <div className="mb-4 flex flex-wrap gap-1.5">
-        {filters.map((s) => (
-          <button
-            key={s}
-            onClick={() => setF(s)}
-            className={cx(
-              "h-7 rounded-full border px-3 text-xs font-medium capitalize",
-              f === s ? "border-transparent bg-ink text-canvas" : "border-line bg-surface text-ink-2 hover:bg-surface-2",
-            )}
-          >
-            {s === "waiting" ? "needs approval" : s} <span className="ml-1 opacity-60">{s === "all" ? runs.length : runs.filter((r) => r.status === s).length}</span>
-          </button>
+    <div className="space-y-8">
+      <Card className="grid grid-cols-1 gap-4 px-4 py-6 md:grid-cols-3 md:divide-x md:divide-line md:px-6 md:py-8">
+        {[
+          { icon: Activity, label: "Runs today", value: "148", delta: "+16%", good: true, period: "vs yesterday" },
+          { icon: CheckCircle2, label: "Succeeded", value: "146", delta: "+1%", good: true, period: "this week" },
+          { icon: Hand, label: "Needs approval", value: "1", delta: "-50%", good: true, period: "this week" },
+        ].map((k) => (
+          <div key={k.label} className="flex items-center gap-5 px-2 py-2 sm:px-6">
+            <IconBubble icon={k.icon} tone="mint" size="size-[72px] sm:size-20" />
+            <div>
+              <div className="text-sm text-muted">{k.label}</div>
+              <div className="mt-0.5 text-[30px] leading-tight font-semibold tabular-nums">{k.value}</div>
+              <Delta value={k.delta} good={k.good} period={k.period} />
+            </div>
+          </div>
         ))}
-      </div>
+      </Card>
+
       <Card className="overflow-hidden">
-        <div className="hidden grid-cols-[130px_minmax(0,1fr)_160px_150px_120px_100px] gap-4 border-b border-line bg-surface-2 px-4 py-2 text-xs font-medium text-muted lg:grid">
-          <span>Status</span>
+        <TableHeading title="All runs" subtitle="Every execution, with who started it and why">
+          <SearchField value={q} onChange={setQ} />
+          <SortButton value="Newest" />
+        </TableHeading>
+
+        <div className="hidden grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_120px_110px_110px_120px] gap-6 border-b border-line px-10 pb-4 text-sm font-medium text-muted lg:grid">
           <span>Runbook</span>
           <span>Started by</span>
+          <span>Trigger</span>
           <span>Hosts</span>
-          <span>Started</span>
-          <span className="text-right">Duration</span>
+          <span>Duration</span>
+          <span className="text-center">Status</span>
         </div>
-        <ul className="divide-y divide-line">
+        <ul className="px-6 sm:px-10">
           {list.map((r) => {
             const rb = runbookById(r.runbookId)!;
             const TIcon = triggerIcon[r.trigger];
             return (
-              <li key={r.id}>
+              <li key={r.id} className="border-b border-line last:border-0">
                 <a
                   href={`#/runs/${r.id}`}
-                  className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-1 px-4 py-3 hover:bg-surface-2 lg:grid-cols-[130px_minmax(0,1fr)_160px_150px_120px_100px]"
+                  className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 gap-y-1 py-5 text-sm lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_120px_110px_110px_120px]"
                 >
-                  <span>
-                    <StatusPill status={r.status} />
-                  </span>
                   <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium">{rb.name}</span>
-                    <span className="flex items-center gap-1 text-xs text-muted">
-                      <TIcon className="size-3" /> {r.trigger} · <span className="font-mono">#{r.id.slice(2)}</span>
-                    </span>
+                    <span className="block truncate font-medium hover:text-accent">{rb.name}</span>
+                    <span className="font-mono text-xs text-muted">#{r.id.slice(2)}</span>
                   </span>
-                  <span className="hidden items-center gap-1.5 text-sm lg:flex">
-                    <Avatar name={r.startedBy} size="size-5" />
+                  <span className="hidden min-w-0 items-center gap-2 lg:flex">
+                    <Avatar name={r.startedBy} size="size-7" />
                     <span className="truncate">{r.startedBy}</span>
                   </span>
-                  <span className="hidden items-center gap-2 lg:flex">
-                    <span className="h-1.5 w-20 overflow-hidden rounded-full bg-surface-3">
-                      <span
-                        className={cx(
-                          "block h-full rounded-full",
-                          r.hosts.failed ? "bg-rose-500" : r.status === "running" ? "progress-live bg-sky-500" : r.status === "waiting" ? "bg-amber-500" : "bg-emerald-500",
-                        )}
-                        style={{ width: `${(r.hosts.done / r.hosts.total) * 100}%` }}
-                      />
-                    </span>
-                    <span className="text-xs text-muted tabular-nums">
-                      {r.hosts.done}/{r.hosts.total}
-                    </span>
+                  <span className="hidden items-center gap-1.5 capitalize lg:flex">
+                    <TIcon className="size-4 text-muted" /> {r.trigger}
                   </span>
-                  <span className="hidden text-sm text-muted lg:block">{r.started}</span>
-                  <span className="hidden text-right text-sm text-muted tabular-nums lg:block">{r.duration}</span>
+                  <span className="hidden tabular-nums lg:block">
+                    <span className={cx(r.hosts.failed > 0 && "text-rose-600")}>{r.hosts.done}</span>/{r.hosts.total}
+                  </span>
+                  <span className="hidden tabular-nums lg:block">{r.duration || "Not started"}</span>
+                  <span className="text-center">
+                    <StatusPill status={r.status} />
+                  </span>
                 </a>
               </li>
             );
           })}
         </ul>
+        <Pagination from={1} to={list.length} total="2,741" last={343} />
       </Card>
-    </>
+    </div>
   );
 }

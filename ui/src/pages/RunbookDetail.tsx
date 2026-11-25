@@ -77,13 +77,13 @@ export function RunbookDetail({ id }: { id: string }) {
                     {i < rb.steps.length - 1 && <span className="absolute top-10 bottom-[-12px] left-[19px] w-px bg-line" />}
                     <span
                       className={cx(
-                        "relative z-10 flex size-10 shrink-0 items-center justify-center rounded-xl border",
-                        s.kind === "approval" ? "border-amber-500/40 bg-amber-500/10 text-amber-600" : "border-line bg-surface text-ink-2",
+                        "relative z-10 flex size-10 shrink-0 items-center justify-center rounded-full",
+                        s.kind === "approval" ? "bg-amber-500/15 text-amber-600" : "bg-accent-soft text-accent",
                       )}
                     >
                       <Icon className="size-4" />
                     </span>
-                    <Card className="flex-1 p-4">
+                    <Card className="flex-1 p-5 sm:p-6">
                       <div className="flex items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-medium text-muted tabular-nums">{String(i + 1).padStart(2, "0")}</span>
@@ -153,7 +153,7 @@ ${rb.steps.map((s) => `  - name: ${s.name}\n    ${s.kind}: ${JSON.stringify(s.de
         <aside className="space-y-4">
           <Card>
             <CardHeader title="Inputs" />
-            <ul className="space-y-2 px-4 pb-4">
+            <ul className="space-y-2 px-6 pb-6 sm:px-8">
               {rb.inputs.length === 0 && <li className="text-sm text-muted">No inputs</li>}
               {rb.inputs.map((i) => (
                 <li key={i.name} className="flex items-center justify-between gap-2 text-sm">
@@ -165,7 +165,7 @@ ${rb.steps.map((s) => `  - name: ${s.name}\n    ${s.kind}: ${JSON.stringify(s.de
           </Card>
           <Card>
             <CardHeader title="Targets and rollout" />
-            <dl className="space-y-3 px-4 pb-4 text-sm">
+            <dl className="space-y-3 px-6 pb-6 sm:px-8 text-sm">
               <div>
                 <dt className="text-xs text-muted">Host filter</dt>
                 <dd className="mt-1">
@@ -180,7 +180,7 @@ ${rb.steps.map((s) => `  - name: ${s.name}\n    ${s.kind}: ${JSON.stringify(s.de
           </Card>
           <Card>
             <CardHeader title="Triggers" />
-            <ul className="space-y-2 px-4 pb-4 text-sm">
+            <ul className="space-y-2 px-6 pb-6 sm:px-8 text-sm">
               <li className="flex items-center gap-2">
                 <MousePointerClick className="size-4 text-muted" /> Manual, by anyone with Run access
               </li>
@@ -194,7 +194,7 @@ ${rb.steps.map((s) => `  - name: ${s.name}\n    ${s.kind}: ${JSON.stringify(s.de
               </li>
             </ul>
           </Card>
-          <Card className="p-4 text-sm">
+          <Card className="px-6 py-5 text-sm sm:px-8">
             <div className="flex items-center gap-2">
               <Avatar name={rb.owner} size="size-6" />
               <div>

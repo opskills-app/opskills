@@ -3,37 +3,41 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 :root {
-  --canvas: #f7f7f8;
+  --canvas: #fafbff;
   --surface: #ffffff;
-  --surface-2: #f2f2f4;
-  --surface-3: #e9e9ec;
-  --line: #e4e4e8;
-  --line-strong: #d4d4da;
-  --ink: #17171c;
-  --ink-2: #3f3f46;
-  --muted: #71717a;
-  --accent: #0e9f6e;
+  --surface-2: #f6f7fd;
+  --surface-3: #eceaff;
+  --line: #eeeef4;
+  --line-strong: #dcdbe8;
+  --ink: #111015;
+  --ink-2: #3d3c4a;
+  --muted: #9197b3;
+  --accent: #5932ea;
   --accent-ink: #ffffff;
-  --accent-soft: #e6f6ef;
-  --term: #0d0f12;
-  --term-ink: #d7dae0;
+  --accent-soft: #f0ebff;
+  --bar: #f2efff;
+  --term: #15132b;
+  --term-ink: #dcdaf0;
+  --shadow: 0 10px 60px rgb(226 236 249 / 0.55);
 }
 
 .dark {
-  --canvas: #0a0a0c;
-  --surface: #111114;
-  --surface-2: #17171b;
-  --surface-3: #202026;
-  --line: #24242a;
-  --line-strong: #32323a;
-  --ink: #f4f4f6;
-  --ink-2: #c9c9d1;
-  --muted: #8b8b96;
-  --accent: #34d399;
-  --accent-ink: #04130d;
-  --accent-soft: #0f2a20;
-  --term: #08090b;
-  --term-ink: #d7dae0;
+  --canvas: #0d0c1a;
+  --surface: #17152b;
+  --surface-2: #1f1d38;
+  --surface-3: #2a2650;
+  --line: #2a2844;
+  --line-strong: #3a3760;
+  --ink: #f4f3fb;
+  --ink-2: #cbc8e2;
+  --muted: #8c89ad;
+  --accent: #7c5cff;
+  --accent-ink: #ffffff;
+  --accent-soft: #2a2160;
+  --bar: #27234a;
+  --term: #0b0a17;
+  --term-ink: #dcdaf0;
+  --shadow: 0 10px 50px rgb(0 0 0 / 0.35);
 }
 
 @theme inline {
@@ -49,9 +53,11 @@
   --color-accent: var(--accent);
   --color-accent-ink: var(--accent-ink);
   --color-accent-soft: var(--accent-soft);
+  --color-bar: var(--bar);
   --color-term: var(--term);
   --color-term-ink: var(--term-ink);
-  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --shadow-soft: var(--shadow);
+  --font-sans: "Poppins", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", monospace;
 }
 
@@ -65,12 +71,11 @@ body {
   background: var(--canvas);
   color: var(--ink);
   font-family: var(--font-sans);
-  font-feature-settings: "cv11", "ss01", "ss03";
   -webkit-font-smoothing: antialiased;
 }
 
 ::selection {
-  background: color-mix(in oklab, var(--accent) 30%, transparent);
+  background: color-mix(in oklab, var(--accent) 25%, transparent);
 }
 
 @keyframes pulse-ring {
@@ -89,11 +94,11 @@ body {
 .progress-live {
   background-image: linear-gradient(
     -45deg,
-    rgb(255 255 255 / 0.18) 25%,
+    rgb(255 255 255 / 0.22) 25%,
     transparent 25%,
     transparent 50%,
-    rgb(255 255 255 / 0.18) 50%,
-    rgb(255 255 255 / 0.18) 75%,
+    rgb(255 255 255 / 0.22) 50%,
+    rgb(255 255 255 / 0.22) 75%,
     transparent 75%
   );
   background-size: 24px 24px;

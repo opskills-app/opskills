@@ -116,7 +116,7 @@ export function RunDetail({ id }: { id: string }) {
       <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
         <Card>
           <CardHeader title="Hosts" hint="Click a host to filter the log" />
-          <div className="grid grid-cols-6 gap-1.5 px-4 pb-4">
+          <div className="grid grid-cols-6 gap-1.5 px-6 pb-6 sm:px-8">
             {fleet.map((h) => (
               <button
                 key={h.name}
@@ -132,7 +132,7 @@ export function RunDetail({ id }: { id: string }) {
               />
             ))}
           </div>
-          <div className="flex gap-4 border-t border-line px-4 py-3 text-xs text-muted">
+          <div className="flex gap-4 border-t border-line px-6 py-4 text-xs sm:px-8 text-muted">
             <span className="flex items-center gap-1.5">
               <span className="size-2.5 rounded-sm bg-emerald-500" /> Done
             </span>

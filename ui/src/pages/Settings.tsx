@@ -16,7 +16,7 @@ export function SettingsPage() {
           <CardHeader title="Members" action={<Button size="sm">Invite</Button>} />
           <ul className="divide-y divide-line">
             {members.map((m) => (
-              <li key={m.name} className="flex items-center gap-3 px-4 py-2.5">
+              <li key={m.name} className="flex items-center gap-3 px-6 py-3 sm:px-8">
                 <Avatar name={m.name} size="size-7" />
                 <span className="flex-1 text-sm font-medium">{m.name}</span>
                 <select defaultValue={m.role} className="h-7 rounded-md border border-line bg-surface px-2 text-xs">
@@ -33,7 +33,7 @@ export function SettingsPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-y border-line bg-surface-2 text-left text-xs text-muted">
-                <th className="px-4 py-2 font-medium">Permission</th>
+                <th className="px-6 py-3 font-medium sm:px-8">Permission</th>
                 <th className="px-2 py-2 text-center font-medium">Admin</th>
                 <th className="px-2 py-2 text-center font-medium">Operator</th>
                 <th className="px-2 py-2 text-center font-medium">Viewer</th>
@@ -48,7 +48,7 @@ export function SettingsPage() {
                 ["Manage vault and members", 1, 0, 0],
               ].map(([label, ...cells]) => (
                 <tr key={label as string}>
-                  <td className="px-4 py-2">{label}</td>
+                  <td className="px-6 py-3 sm:px-8">{label}</td>
                   {cells.map((c, i) => (
                     <td key={i} className="px-2 py-2 text-center">
                       {c ? <span className="text-accent">●</span> : <span className="text-line-strong">○</span>}
