@@ -14,7 +14,7 @@ How OpSkills is installed, configured and run.
 | Artifact | Contents | Built with |
 |---|---|---|
 | `opskills_<version>_<arch>.deb` | Binary, systemd unit, default config, man page | `cargo-deb` |
-| `ghcr.io/opskills-app/opskills:<version>` | Binary on a distroless or scratch base, multi-arch (amd64, arm64) | Multi-stage Dockerfile |
+| `opskills/opskills:<version>` on Docker Hub (organization `opskills`) | Binary on a distroless static base, multi-arch (amd64, arm64) | Multi-stage Dockerfile |
 | `opskills-<version>-<target>.tar.gz` | Binary only, for other platforms | GitHub Actions release |
 
 ## Filesystem layout (Debian package)

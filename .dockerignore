@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+**/target
+**/.wrangler
+.git
+web/
+notes/
+*.md
+!README.md

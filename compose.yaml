@@ -1,0 +1,19 @@
+# Run OpSkills with Docker Compose:
+#   docker compose up -d
+#   docker compose logs opskills | grep 'Admin password'
+# Then open http://localhost:8080
+services:
+  opskills:
+    image: opskills/opskills:0.1.0
+    container_name: opskills
+    restart: unless-stopped
+    ports:
+      # Reachable from this machine only. The v0.1.0 preview has no sign-in yet.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - opskills-data:/var/lib/opskills
+    environment:
+      OPSKILLS_LOGS__FORMAT: pretty
+
+volumes:
+  opskills-data:

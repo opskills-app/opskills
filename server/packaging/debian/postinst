@@ -1,0 +1,31 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! getent passwd opskills >/dev/null; then
+        adduser --system --group --home /var/lib/opskills --no-create-home --quiet opskills
+    fi
+    install -d -m 0750 -o opskills -g opskills /var/lib/opskills
+    chgrp opskills /etc/opskills /etc/opskills/opskills.toml
+    chmod 0750 /etc/opskills
+    chmod 0640 /etc/opskills/opskills.toml
+
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl enable opskills.service >/dev/null 2>&1 || true
+        if [ -n "$2" ]; then
+            systemctl try-restart opskills.service >/dev/null 2>&1 || true
+        fi
+    fi
+
+    if [ -z "$2" ]; then
+        echo "OpSkills is installed. Start it with:"
+        echo "  sudo systemctl start opskills"
+        echo "Then find the one-time admin password with:"
+        echo "  sudo journalctl -u opskills | grep 'Admin password'"
+        echo "Then open http://localhost:8080 on this machine."
+        echo "Guide: https://github.com/opskills-app/opskills/blob/main/docs/install.md"
+    fi
+fi
+
+exit 0

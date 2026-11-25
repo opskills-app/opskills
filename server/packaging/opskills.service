@@ -1,0 +1,40 @@
+[Unit]
+Description=OpSkills runbook automation server
+Documentation=https://github.com/opskills-app/opskills
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opskills
+Group=opskills
+ExecStart=/usr/bin/opskills serve --config /etc/opskills/opskills.toml
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+
+# Sandboxing
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/opskills
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

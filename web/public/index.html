@@ -217,7 +217,41 @@
     .code pre { margin: 0; padding: 22px; overflow-x: auto; font: 13px/1.75 "JetBrains Mono", ui-monospace, monospace; }
     .k { color: #b39dff; } .s { color: #7ee2b8; } .c { color: rgb(255 255 255 / 0.38); } .n { color: #f9a8d4; }
 
+    .code .bar { justify-content: space-between; }
+    .copy {
+      border: 0; cursor: pointer; border-radius: 8px; padding: 4px 10px;
+      background: rgb(255 255 255 / 0.1); color: rgb(255 255 255 / 0.8); font: 600 12px "Poppins", sans-serif;
+    }
+    .copy:hover { background: rgb(255 255 255 / 0.18); }
+    .copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .install-note { margin: 20px 0 0; font-size: 14px; color: var(--muted); }
+    .install-note a { color: var(--accent); font-weight: 500; }
+    .install-note code { font: 13px "JetBrains Mono", ui-monospace, monospace; color: var(--ink-2); }
+    a.pill:hover { color: var(--ink); }
+    .preview-note { display: flex; align-items: center; gap: 16px; margin-top: 32px; padding: 18px 22px; }
+    .preview-note p { margin: 0; font-size: 14px; color: var(--ink-2); }
+    .preview-note .bubble { flex: none; }
+    .tabs { display: inline-flex; gap: 4px; margin-top: 28px; padding: 4px; border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
+    .tab {
+      border: 0; cursor: pointer; height: 40px; padding: 0 18px; border-radius: 10px;
+      font: 600 14px "Poppins", sans-serif; color: var(--muted); background: transparent;
+    }
+    .tab[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); }
+    .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .panel { margin-top: 16px; padding: 28px 22px; }
+    @media (min-width: 640px) { .panel { padding: 34px 36px; } }
+    .install-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }
+    .install-steps li { display: flex; gap: 18px; min-width: 0; }
+    .install-steps li > div { min-width: 0; flex: 1; }
+    .install-steps h3 { margin: 6px 0 4px; font-size: 17px; }
+    .install-steps p { margin: 0 0 12px; font-size: 14px; color: var(--muted); }
+    .install-steps code, .preview-note code { font: 13px "JetBrains Mono", ui-monospace, monospace; color: var(--ink-2); background: var(--surface-2); padding: 1px 6px; border-radius: 6px; }
+    .install-steps .code { border-radius: 16px; box-shadow: none; }
+    .install-steps .code pre { padding: 16px 18px; font-size: 12.5px; }
+    .install-steps .code .bar { padding: 10px 16px; }
+    .panel .install-note { margin-top: 24px; }
     .split { display: grid; gap: 20px; margin-top: 40px; }
+    .split > .code { min-width: 0; }
     @media (min-width: 860px) { .split { grid-template-columns: repeat(2, 1fr); } }
     .list { margin: 0; padding: 28px 30px; list-style: none; display: grid; gap: 16px; }
     .list li { display: flex; gap: 14px; font-size: 14px; }
@@ -280,6 +314,7 @@
         <a href="#features">Features</a>
         <a href="#how">How it works</a>
         <a href="#self-hosted">Self-hosted</a>
+        <a href="#install">Install</a>
         <a href="https://github.com/opskills-app/opskills">GitHub</a>
       </nav>
       <div class="spacer"></div>
@@ -290,17 +325,17 @@
         <svg class="theme-light" aria-hidden="true"><use href="#i-moon"/></svg>
         <svg class="theme-dark" aria-hidden="true"><use href="#i-sun"/></svg>
       </button>
-      <a class="btn btn-primary nav-cta" href="#how">See how it works</a>
+      <a class="btn btn-primary nav-cta" href="#install">Install</a>
     </div>
   </header>
 
   <main id="top">
     <div class="wrap hero">
-      <span class="pill"><span class="dot"></span>Open source and in active development</span>
+      <a class="pill" href="#install"><span class="dot"></span>v0.1.0 preview is out: Docker and Debian</a>
       <h1>Runbooks your whole team <span>can run.</span></h1>
       <p class="lede">OpSkills turns the procedures you repeat into safe, self-service runbooks. Run them by hand, on a schedule or from a webhook, with live output, approvals and a full audit trail.</p>
       <div class="cta-row">
-        <a class="btn btn-primary" href="#how">See how it works <svg aria-hidden="true"><use href="#i-arrow"/></svg></a>
+        <a class="btn btn-primary" href="#install">Install the preview <svg aria-hidden="true"><use href="#i-arrow"/></svg></a>
         <a class="btn btn-soft" href="https://github.com/opskills-app/opskills"><svg aria-hidden="true"><use href="#i-github"/></svg>View on GitHub</a>
       </div>
       <div class="facts">
@@ -411,7 +446,7 @@
             <h3 class="list-title">Install in minutes</h3>
             <ul class="list">
               <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>Debian package</b><span>With a sandboxed systemd service.</span></div></li>
-              <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>Container image</b><span>Under 30 MB, for amd64 and arm64.</span></div></li>
+              <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>Container image</b><span>About 3 MB to download, for amd64 and arm64.</span></div></li>
               <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>One config file</b><span>TOML, with environment variable overrides.</span></div></li>
             </ul>
           </div>
@@ -425,12 +460,109 @@
           </div>
         </div>
 
+        <div class="section-head" id="install" style="margin-top: 88px; scroll-margin-top: 90px">
+          <div class="eyebrow">Install</div>
+          <h2>Run the v0.1.0 preview in minutes</h2>
+          <p>Pick Docker for any computer, or the Debian package for a Linux server. Both support amd64 and arm64.</p>
+        </div>
+
+        <div class="preview-note card">
+          <span class="bubble amber" style="width:44px;height:44px"><svg style="width:20px;height:20px" aria-hidden="true"><use href="#i-shield"/></svg></span>
+          <p><b>Preview:</b> the server installs, secures itself on first start and serves the app with sample data. There's no sign-in screen yet, so these steps keep OpSkills reachable from your own machine only.</p>
+        </div>
+
+        <div class="tabs" role="tablist" aria-label="Install method">
+          <button class="tab" role="tab" id="tab-docker" aria-controls="panel-docker" aria-selected="true">Docker</button>
+          <button class="tab" role="tab" id="tab-deb" aria-controls="panel-deb" aria-selected="false" tabindex="-1">Debian or Ubuntu</button>
+        </div>
+
+        <div class="card panel" role="tabpanel" id="panel-docker" aria-labelledby="tab-docker">
+          <ol class="install-steps">
+            <li>
+              <span class="num">1</span>
+              <div>
+                <h3>Start OpSkills</h3>
+                <p>Needs Docker Desktop on macOS or Windows, or Docker Engine on Linux. Data is kept in the <code>opskills-data</code> volume.</p>
+                <div class="code"><div class="bar"><span>Terminal</span><button class="copy" type="button" data-copy="d1">Copy</button></div>
+<pre id="d1">docker run -d --name opskills \
+  -p 127.0.0.1:8080:8080 \
+  -v opskills-data:/var/lib/opskills \
+  --restart unless-stopped \
+  opskills/opskills:0.1.0</pre></div>
+              </div>
+            </li>
+            <li>
+              <span class="num">2</span>
+              <div>
+                <h3>Save the admin password</h3>
+                <p>It's printed once, on the first start. Keep it in your password manager.</p>
+                <div class="code"><div class="bar"><span>Terminal</span><button class="copy" type="button" data-copy="d2">Copy</button></div>
+<pre id="d2">docker logs opskills 2&gt;&amp;1 | grep 'Admin password'</pre></div>
+              </div>
+            </li>
+            <li>
+              <span class="num">3</span>
+              <div>
+                <h3>Open the app</h3>
+                <p>Go to <b>http://localhost:8080</b>. After about 15 seconds, <code>docker ps</code> shows the container as <code>healthy</code>.</p>
+              </div>
+            </li>
+          </ol>
+          <p class="install-note">Prefer Compose? Download <a href="https://github.com/opskills-app/opskills/blob/main/compose.yaml">compose.yaml</a> and run <code>docker compose up -d</code>.</p>
+        </div>
+
+        <div class="card panel" role="tabpanel" id="panel-deb" aria-labelledby="tab-deb" hidden>
+          <ol class="install-steps">
+            <li>
+              <span class="num">1</span>
+              <div>
+                <h3>Download and verify</h3>
+                <p>For Debian 12+ or Ubuntu 22.04+. Run <code>dpkg --print-architecture</code> and use <code>arm64</code> instead of <code>amd64</code> if that's what it prints.</p>
+                <div class="code"><div class="bar"><span>Terminal</span><button class="copy" type="button" data-copy="b1">Copy</button></div>
+<pre id="b1">curl -LO https://github.com/opskills-app/opskills/releases/download/v0.1.0/opskills_0.1.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.1.0/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS</pre></div>
+              </div>
+            </li>
+            <li>
+              <span class="num">2</span>
+              <div>
+                <h3>Install and start the service</h3>
+                <p>Installs a sandboxed systemd service that runs as its own <code>opskills</code> user.</p>
+                <div class="code"><div class="bar"><span>Terminal</span><button class="copy" type="button" data-copy="b2">Copy</button></div>
+<pre id="b2">sudo apt install ./opskills_0.1.0_amd64.deb
+sudo systemctl start opskills</pre></div>
+              </div>
+            </li>
+            <li>
+              <span class="num">3</span>
+              <div>
+                <h3>Save the admin password</h3>
+                <p>It's printed once, on the first start.</p>
+                <div class="code"><div class="bar"><span>Terminal</span><button class="copy" type="button" data-copy="b3">Copy</button></div>
+<pre id="b3">sudo journalctl -u opskills | grep 'Admin password'</pre></div>
+              </div>
+            </li>
+            <li>
+              <span class="num">4</span>
+              <div>
+                <h3>Open the app</h3>
+                <p>On the server, go to <b>http://localhost:8080</b>. From your laptop, open an SSH tunnel first, then visit the same address.</p>
+                <div class="code"><div class="bar"><span>Your laptop</span><button class="copy" type="button" data-copy="b4">Copy</button></div>
+<pre id="b4">ssh -L 8080:localhost:8080 you@your-server</pre></div>
+              </div>
+            </li>
+          </ol>
+        </div>
+
+        <p class="install-note">Upgrades, backups, configuration and troubleshooting are in the <a href="https://github.com/opskills-app/opskills/blob/main/docs/install.md">full install guide</a>. All downloads and checksums are on <a href="https://github.com/opskills-app/opskills/releases/latest">GitHub Releases</a>.</p>
+
         <div class="final">
           <h2>Runbooks your whole team can run</h2>
-          <p>OpSkills is in active development. The first release will ship as a Debian package and a container image.</p>
+          <p>The v0.1.0 preview is out as a container image and Debian packages. Running real runbooks is the next milestone.</p>
           <div class="cta-row">
-            <a class="btn btn-white" href="https://github.com/opskills-app/opskills"><svg aria-hidden="true"><use href="#i-github"/></svg>View on GitHub</a>
-            <a class="btn btn-ghost-white" href="#features">Explore features</a>
+            <a class="btn btn-white" href="#install">Install the preview</a>
+            <a class="btn btn-ghost-white" href="https://github.com/opskills-app/opskills"><svg aria-hidden="true"><use href="#i-github"/></svg>View on GitHub</a>
           </div>
         </div>
       </div>
@@ -445,6 +577,35 @@
   </footer>
 
   <script>
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+    function selectTab(tab) {
+      tabs.forEach(function (t) {
+        var on = t === tab;
+        t.setAttribute("aria-selected", on ? "true" : "false");
+        t.tabIndex = on ? 0 : -1;
+        document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+      });
+    }
+    tabs.forEach(function (tab, i) {
+      tab.addEventListener("click", function () { selectTab(tab); });
+      tab.addEventListener("keydown", function (e) {
+        if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+        var next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+        selectTab(next);
+        next.focus();
+      });
+    });
+    document.querySelectorAll("[data-copy]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var text = document.getElementById(btn.getAttribute("data-copy")).textContent;
+        navigator.clipboard.writeText(text).then(function () {
+          btn.textContent = "Copied";
+          setTimeout(function () { btn.textContent = "Copy"; }, 1600);
+        }, function () {
+          btn.textContent = "Select and copy";
+        });
+      });
+    });
     document.getElementById("theme").addEventListener("click", function () {
       var root = document.documentElement;
       var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";

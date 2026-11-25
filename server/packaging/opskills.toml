@@ -1,0 +1,20 @@
+# OpSkills configuration.
+# Every key can be overridden with an environment variable:
+# OPSKILLS_<SECTION>__<KEY>, for example OPSKILLS_SERVER__LISTEN=0.0.0.0:9000
+
+[server]
+# Address and port to listen on. The preview has no sign-in yet, so it listens
+# on this machine only. Use 0.0.0.0:8080 to accept connections from other hosts.
+listen = "127.0.0.1:8080"
+# Public URL users reach the server at (optional).
+# public_url = "https://ops.example.com"
+
+[data]
+# Server identity, encryption key and (later) the database live here.
+dir = "/var/lib/opskills"
+
+[logs]
+# "json" for log collectors, or "pretty" for reading in a terminal.
+format = "json"
+# Level or filter, for example "info" or "opskills=debug,info".
+level = "info"

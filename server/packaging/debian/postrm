@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "purge" ]; then
+    rm -rf /var/lib/opskills /etc/opskills
+    if getent passwd opskills >/dev/null; then
+        deluser --system --quiet opskills >/dev/null 2>&1 || true
+    fi
+    if getent group opskills >/dev/null; then
+        delgroup --system --quiet opskills >/dev/null 2>&1 || true
+    fi
+fi
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+exit 0
