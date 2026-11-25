@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, BookOpen, Play, Search, Server } from "lucide-react";
-import { hosts, runbooks } from "../data";
+import { ArrowRight, BookOpen, Play, Plus, Search } from "lucide-react";
+import { api, type Runbook } from "../api";
 import { go } from "../router";
 import { cx, Kbd } from "./ui";
 
@@ -16,7 +16,16 @@ interface Item {
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
+  const [runbooks, setRunbooks] = useState<Runbook[]>([]);
   const input = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setQ("");
+    setActive(0);
+    requestAnimationFrame(() => input.current?.focus());
+    api.runbooks().then(setRunbooks, () => setRunbooks([]));
+  }, [open]);
 
   const items = useMemo<Item[]>(() => {
     const nav: Item[] = [
@@ -27,27 +36,28 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       ["vault", "Vault"],
       ["settings", "Settings"],
     ].map(([id, label]) => ({ id: `nav-${id}`, label: `Go to ${label}`, hint: "Navigate", group: "Navigation", icon: ArrowRight, run: () => go(id) }));
+    const create: Item = { id: "new", label: "New runbook", hint: "Create", group: "Actions", icon: Plus, run: () => go("runbooks/new") };
     const rb: Item[] = runbooks.flatMap((r) => [
-      { id: `open-${r.id}`, label: r.name, hint: r.tags.join(", "), group: "Runbooks", icon: BookOpen, run: () => go(`runbooks/${r.id}`) },
-      { id: `run-${r.id}`, label: `Run "${r.name}"`, hint: "Start a run", group: "Actions", icon: Play, run: () => go("runs/r-2741") },
+      { id: `open-${r.id}`, label: r.name, hint: r.tags.join(", ") || `${r.steps.length} steps`, group: "Runbooks", icon: BookOpen, run: () => go(`runbooks/${r.id}`) },
+      {
+        id: `run-${r.id}`,
+        label: `Run "${r.name}"`,
+        hint: "Start a run",
+        group: "Actions",
+        icon: Play,
+        run: () => {
+          api.startRun(r.id).then((run) => go(`runs/${run.id}`));
+        },
+      },
     ]);
-    const hs: Item[] = hosts.slice(0, 8).map((h) => ({ id: `host-${h.name}`, label: h.name, hint: h.address, group: "Hosts", icon: Server, run: () => go("hosts") }));
-    return [...nav, ...rb, ...hs];
-  }, []);
+    return [...nav, create, ...rb];
+  }, [runbooks]);
 
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
-    if (!t) return items.filter((i) => i.group !== "Hosts").slice(0, 12);
+    if (!t) return items.slice(0, 14);
     return items.filter((i) => `${i.label} ${i.hint}`.toLowerCase().includes(t)).slice(0, 14);
   }, [q, items]);
-
-  useEffect(() => {
-    if (open) {
-      setQ("");
-      setActive(0);
-      requestAnimationFrame(() => input.current?.focus());
-    }
-  }, [open]);
 
   useEffect(() => setActive(0), [q]);
 
@@ -62,12 +72,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   let lastGroup = "";
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-[12vh] backdrop-blur-[2px]" onMouseDown={onClose}>
-      <div
-        role="dialog"
-        aria-label="Command palette"
-        className="w-full max-w-xl overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
+      <div role="dialog" aria-label="Command palette" className="w-full max-w-xl overflow-hidden rounded-2xl bg-surface shadow-2xl" onMouseDown={(e) => e.stopPropagation()}>
         <div className="flex items-center gap-3 border-b border-line px-4">
           <Search className="size-4 text-muted" />
           <input
@@ -87,7 +92,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                 onClose();
               }
             }}
-            placeholder="Search runbooks, hosts, or type a command"
+            placeholder="Search runbooks or type a command"
             className="h-12 flex-1 bg-transparent text-sm outline-none placeholder:text-muted"
           />
           <Kbd>Esc</Kbd>

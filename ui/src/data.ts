@@ -1,6 +1,6 @@
 // Sample data for the prototype. Replaced by the /api/v1 client later.
 
-export type Status = "succeeded" | "failed" | "running" | "queued" | "cancelled" | "waiting";
+export type Status = "succeeded" | "failed" | "running" | "queued" | "cancelled" | "waiting" | "pending" | "skipped";
 
 export interface Workspace {
   id: string;

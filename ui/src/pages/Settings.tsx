@@ -1,4 +1,4 @@
-import { Card, CardHeader, PageHeader, Avatar, Button } from "../components/ui";
+import { Card, CardHeader, PageHeader, Avatar, Button, SampleBanner } from "../components/ui";
 
 const members = [
   { name: "Maya Chen", role: "Admin" },
@@ -11,6 +11,7 @@ export function SettingsPage() {
   return (
     <>
       <PageHeader title="Settings" subtitle="Workspace members, access and integrations." />
+      <SampleBanner>Members and roles arrive in a later release. This version has one built-in admin user.</SampleBanner>
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader title="Members" action={<Button size="sm">Invite</Button>} />

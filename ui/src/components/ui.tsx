@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactNode } from "react";
+import { useEffect, type ComponentProps, type ReactNode } from "react";
 import { ArrowDown, ArrowUp, Ban, Check, ChevronDown, ChevronLeft, ChevronRight, CircleDashed, Clock3, Hand, Loader2, Search, X } from "lucide-react";
 import type { Status } from "../data";
 
@@ -31,6 +31,8 @@ const statusMeta: Record<Status, { label: string; tone: BadgeTone; dot: string; 
   queued: { label: "Queued", tone: "gray", dot: "bg-zinc-400", Icon: Clock3 },
   waiting: { label: "Approval", tone: "amber", dot: "bg-amber-500", Icon: Hand },
   cancelled: { label: "Cancelled", tone: "gray", dot: "bg-zinc-500", Icon: Ban },
+  pending: { label: "Pending", tone: "gray", dot: "bg-zinc-300", Icon: Clock3 },
+  skipped: { label: "Skipped", tone: "gray", dot: "bg-zinc-300", Icon: Ban },
 };
 
 export function StatusPill({ status, className }: { status: Status; className?: string }) {
@@ -285,6 +287,78 @@ export function Tile({ seed, icon: Icon, className }: { seed: string; icon: type
       <Icon className="relative size-6" strokeWidth={1.75} />
     </span>
   );
+}
+
+/** Interactive pager for client-side lists. */
+export function Pager({ page, pages, total, from, to, onPage }: { page: number; pages: number; total: number; from: number; to: number; onPage: (p: number) => void }) {
+  const btn = "flex size-7 items-center justify-center rounded-[5px] border text-xs font-medium disabled:opacity-40";
+  const shown = Array.from({ length: pages }, (_, i) => i).filter((i) => pages <= 7 || i === 0 || i === pages - 1 || Math.abs(i - page) <= 1);
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-6 sm:px-8">
+      <span className="text-sm text-muted">{total === 0 ? "No entries" : `Showing ${from} to ${to} of ${total} entries`}</span>
+      {pages > 1 && (
+        <nav className="flex items-center gap-2" aria-label="Pagination">
+          <button className={cx(btn, "border-line bg-surface-2 text-ink-2")} disabled={page === 0} onClick={() => onPage(page - 1)} aria-label="Previous page">
+            <ChevronLeft className="size-3.5" />
+          </button>
+          {shown.map((i, k) => (
+            <span key={i} className="flex items-center gap-2">
+              {k > 0 && i - shown[k - 1] > 1 && <span className="text-xs text-muted">...</span>}
+              <button aria-current={i === page ? "page" : undefined} onClick={() => onPage(i)} className={cx(btn, i === page ? "border-accent bg-accent text-accent-ink" : "border-line bg-surface-2 text-ink-2")}>
+                {i + 1}
+              </button>
+            </span>
+          ))}
+          <button className={cx(btn, "border-line bg-surface-2 text-ink-2")} disabled={page >= pages - 1} onClick={() => onPage(page + 1)} aria-label="Next page">
+            <ChevronRight className="size-3.5" />
+          </button>
+        </nav>
+      )}
+    </div>
+  );
+}
+
+/** Notice for pages that still show sample data. */
+export function SampleBanner({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex items-start gap-3 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-5 py-4 text-sm text-ink-2">
+      <span className="mt-0.5 rounded-md bg-amber-500 px-1.5 py-0.5 text-[11px] font-semibold text-white">Sample data</span>
+      <span>{children}</span>
+    </div>
+  );
+}
+
+export function EmptyState({ icon: Icon, title, children, action }: { icon: typeof Check; title: string; children?: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="flex flex-col items-center px-6 py-14 text-center">
+      <IconBubble icon={Icon} tone="violet" size="size-16" />
+      <h3 className="mt-5 text-lg font-semibold">{title}</h3>
+      {children && <p className="mt-1 max-w-md text-sm text-muted">{children}</p>}
+      {action && <div className="mt-6 flex flex-wrap justify-center gap-3">{action}</div>}
+    </div>
+  );
+}
+
+/** Centered dialog with a dimmed backdrop. Closes on Escape or a backdrop click. */
+export function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 px-4 py-[8vh] backdrop-blur-[2px]" onMouseDown={onClose}>
+      <div role="dialog" aria-modal="true" aria-label={title} className="w-full max-w-lg rounded-[24px] bg-surface p-6 shadow-2xl sm:p-8" onMouseDown={(e) => e.stopPropagation()}>
+        <h2 className="text-[20px] font-semibold tracking-tight">{title}</h2>
+        <div className="mt-5">{children}</div>
+        {footer && <div className="mt-6 flex flex-wrap justify-end gap-3">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+export function ErrorNote({ children }: { children: ReactNode }) {
+  return <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-700 dark:text-rose-300">{children}</div>;
 }
 
 export function EmptyIcon() {

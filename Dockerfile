@@ -33,8 +33,7 @@ RUN cargo test --locked --release --quiet \
  && for arch in amd64:x86_64 arm64:aarch64; do \
       cargo build --locked --release --target "${arch#*:}-unknown-linux-musl" \
       && install -D "target/${arch#*:}-unknown-linux-musl/release/opskills" "/out/${arch%%:*}/opskills"; \
-    done \
- && mkdir -p /out/data
+    done
 
 # 3. Debian packages
 FROM --platform=$BUILDPLATFORM build AS deb-build
@@ -45,16 +44,18 @@ RUN VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1) \
 FROM scratch AS debs
 COPY --from=deb-build /debs/ /
 
-# 4. Runtime image
-FROM gcr.io/distroless/static-debian13:nonroot
+# 4. Runtime image: Alpine provides /bin/sh and BusyBox tools for runbook steps
+FROM alpine:3.22
 ARG TARGETARCH
 LABEL org.opencontainers.image.title="OpSkills" \
       org.opencontainers.image.description="Runbooks your whole team can run" \
       org.opencontainers.image.url="https://opskills.app" \
       org.opencontainers.image.source="https://github.com/opskills-app/opskills" \
       org.opencontainers.image.licenses="Apache-2.0"
+RUN addgroup -S -g 65532 opskills \
+ && adduser -S -D -H -u 65532 -G opskills -h /var/lib/opskills -s /sbin/nologin opskills \
+ && install -d -o opskills -g opskills -m 0750 /var/lib/opskills
 COPY --from=build /out/${TARGETARCH}/opskills /usr/bin/opskills
-COPY --from=build --chown=65532:65532 /out/data /var/lib/opskills
 USER 65532:65532
 EXPOSE 8080
 VOLUME ["/var/lib/opskills"]

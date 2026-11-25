@@ -1,4 +1,4 @@
-//! HTTP: health probes, the system endpoint, and the embedded web app.
+//! HTTP: health probes, the API, and the embedded web app.
 
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -15,29 +15,62 @@ use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
-use crate::firststart;
+use crate::executor::Executor;
+use crate::store::Store;
+use crate::vault::Vault;
+use crate::{api, firststart};
 
 /// The built web app (ui/dist), compiled into the binary.
 #[derive(RustEmbed)]
 #[folder = "../ui/dist"]
 struct WebApp;
 
-struct AppState {
-    cfg: Config,
-    server_id: String,
-    started: Instant,
-    started_unix: u64,
+pub struct AppState {
+    pub cfg: Config,
+    pub server_id: String,
+    pub started: Instant,
+    pub started_unix: u64,
+    pub store: Arc<Store>,
+    pub executor: Arc<Executor>,
+    pub vault: Vault,
 }
 
-pub async fn serve(cfg: Config, fs_state: firststart::State) -> Result<()> {
-    let listen = cfg.server.listen.clone();
-    let state = Arc::new(AppState {
+impl AppState {
+    pub fn secure_cookies(&self) -> bool {
+        self.cfg.server.public_url.as_deref().is_some_and(|u| u.starts_with("https://"))
+    }
+}
+
+/// Open the store and build the shared state. Must run inside the async runtime.
+pub fn build_state(cfg: Config, fs: &firststart::State) -> Result<Arc<AppState>> {
+    let store = Arc::new(Store::open(&cfg.data.dir.join("opskills.redb")).context("opening the database")?);
+    let interrupted = store.fail_interrupted_runs()?;
+    if interrupted > 0 {
+        tracing::warn!(runs = interrupted, "marked runs interrupted by a restart as failed");
+    }
+    if fs.initial_password.is_some() {
+        // A new admin password invalidates every existing session.
+        store.clear_sessions()?;
+    }
+    let work_root = cfg.data.dir.join("work");
+    let _ = std::fs::remove_dir_all(&work_root);
+    std::fs::create_dir_all(&work_root).context("creating the work directory")?;
+    let vault = Vault::from_key_hex(&fs.master_key).context("loading the vault key")?;
+    let executor = Executor::new(store.clone(), work_root, cfg.runs.max_concurrent);
+    Ok(Arc::new(AppState {
         cfg,
-        server_id: fs_state.server_id,
+        server_id: fs.server_id.clone(),
         started: Instant::now(),
         started_unix: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-    });
+        store,
+        executor,
+        vault,
+    }))
+}
 
+pub async fn serve(cfg: Config, fs: firststart::State) -> Result<()> {
+    let listen = cfg.server.listen.clone();
+    let state = build_state(cfg, &fs)?;
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(&listen).await.with_context(|| format!("listening on {listen}"))?;
     tracing::info!(listen = %listen, version = crate::VERSION, "opskills is ready");
@@ -46,15 +79,33 @@ pub async fn serve(cfg: Config, fs_state: firststart::State) -> Result<()> {
     Ok(())
 }
 
-fn router(state: Arc<AppState>) -> Router {
+pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readyz))
-        .route("/api/v1/system", get(system))
+        .nest("/api/v1", api::router(state.clone()))
         .fallback(static_file)
         .with_state(state)
-        .layer(CompressionLayer::new())
+        .layer(CompressionLayer::new().compress_when(NotEventStream))
         .layer(TraceLayer::new_for_http())
+}
+
+/// Never compress Server-Sent Events: compression buffers them and breaks live output.
+#[derive(Clone, Copy)]
+struct NotEventStream;
+
+impl tower_http::compression::predicate::Predicate for NotEventStream {
+    fn should_compress<B>(&self, response: &axum::http::Response<B>) -> bool
+    where
+        B: axum::body::HttpBody,
+    {
+        let is_sse = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("text/event-stream"));
+        !is_sse && tower_http::compression::predicate::DefaultPredicate::new().should_compress(response)
+    }
 }
 
 async fn readyz(State(st): State<Arc<AppState>>) -> Response {
@@ -62,17 +113,6 @@ async fn readyz(State(st): State<Arc<AppState>>) -> Response {
         Ok(m) if m.is_dir() => (StatusCode::OK, "ready").into_response(),
         _ => (StatusCode::SERVICE_UNAVAILABLE, "data directory unavailable").into_response(),
     }
-}
-
-async fn system(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    Json(json!({
-        "name": "OpSkills",
-        "version": crate::VERSION,
-        "server_id": st.server_id,
-        "started_at_unix": st.started_unix,
-        "uptime_seconds": st.started.elapsed().as_secs(),
-        "public_url": st.cfg.server.public_url,
-    }))
 }
 
 async fn static_file(uri: Uri) -> Response {
@@ -100,6 +140,8 @@ fn asset_response(file: rust_embed::EmbeddedFile, immutable: bool) -> Response {
     }
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("same-origin"));
     res
 }
 

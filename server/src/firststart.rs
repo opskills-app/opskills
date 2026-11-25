@@ -12,6 +12,10 @@ use crate::config::Config;
 
 pub struct State {
     pub server_id: String,
+    /// Set only when this start created a new admin password.
+    pub initial_password: Option<String>,
+    /// The 256-bit vault key, hex.
+    pub master_key: String,
 }
 
 const PASSWORD_ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -23,9 +27,10 @@ pub fn prepare(cfg: &Config) -> Result<State> {
     let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o750));
 
     let server_id = read_or_create(&dir.join("server-id"), || uuid::Uuid::now_v7().to_string())?;
-    read_or_create(&dir.join("master.key"), || hex::encode(random_bytes::<32>()))?;
+    let master_key = read_or_create(&dir.join("master.key"), || hex::encode(random_bytes::<32>()))?;
 
     let admin_hash = dir.join("admin.hash");
+    let mut initial_password = None;
     if !admin_hash.exists() {
         let password = random_password(24);
         let salt = random_bytes::<16>();
@@ -36,10 +41,11 @@ pub fn prepare(cfg: &Config) -> Result<State> {
         let record = format!("argon2id$v=19$m=19456,t=2,p=1${}${}\n", hex::encode(salt), hex::encode(out));
         write_new(&admin_hash, record.as_bytes())?;
         announce_admin_password(&password);
+        initial_password = Some(password);
     }
 
     tracing::info!(server_id = %server_id, data_dir = %dir.display(), "data directory ready");
-    Ok(State { server_id })
+    Ok(State { server_id, initial_password, master_key })
 }
 
 /// Read a value file, or create it with mode 0600 if it does not exist.
@@ -67,7 +73,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn random_bytes<const N: usize>() -> [u8; N] {
+pub fn random_bytes<const N: usize>() -> [u8; N] {
     let mut buf = [0u8; N];
     File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut buf))
@@ -93,6 +99,7 @@ fn announce_admin_password(password: &str) {
     eprintln!();
     eprintln!("==============================================================");
     eprintln!(" OpSkills first start");
+    eprintln!(" Sign in at http://<host>:<port> as:");
     eprintln!(" Admin user:     admin");
     eprintln!(" Admin password: {password}");
     eprintln!(" This password is shown only once. Store it somewhere safe.");

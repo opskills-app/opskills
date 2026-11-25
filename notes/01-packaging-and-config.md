@@ -23,7 +23,7 @@ How OpSkills is installed, configured and run.
 |---|---|---|
 | `/usr/bin/opskills` | The binary | 0755 |
 | `/etc/opskills/opskills.toml` | Main config (conffile) | 0640, `root:opskills` |
-| `/var/lib/opskills/` | Data dir: SQLite database, encryption key, server identity | 0750, `opskills:opskills` |
+| `/var/lib/opskills/` | Data dir: database (`opskills.redb`), encryption key, server identity, per-run work folders | 0750, `opskills:opskills` |
 | `/var/lib/opskills/plugins/` | Installed plugins | 0750 |
 | `/lib/systemd/system/opskills.service` | Service unit | 0644 |
 
@@ -61,8 +61,8 @@ One file, `opskills.toml`. Every key can be overridden by an environment variabl
 listen = "0.0.0.0:8080"
 public_url = "https://ops.example.com"
 
-[database]
-url = "sqlite:///var/lib/opskills/opskills.db"   # or postgres://...
+[data]
+dir = "/var/lib/opskills"   # database, keys and run work folders
 
 [auth]
 session_timeout = "8h"

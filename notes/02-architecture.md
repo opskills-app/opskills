@@ -93,6 +93,22 @@ Plugins are separate executables that speak JSON over stdin and stdout, so they 
 | Audit sink | Database, stdout |
 | Git sync | Import and export runbooks |
 
+## Storage
+
+v0.2.0 stores runbooks, runs, run output and sessions in one embedded database
+file, `opskills.redb`, using redb (a pure-Rust key-value store). Values are JSON
+documents; run IDs are UUID v7, so key order is creation order. Choosing a
+pure-Rust store keeps the release build free of C code, so static binaries for
+amd64 and arm64 cross-compile with Rust's bundled linker alone.
+
+Vault secrets are stored in the same file, encrypted with AES-256-GCM under the
+server's `master.key`, a fresh random nonce per value and the secret name as
+associated data. Runs receive only the secrets their runbook lists, as
+environment variables, and the executor masks their values in output.
+
+All access goes through one `Store` type, so a SQL backend (SQLite or
+PostgreSQL, needed for clustering) can replace it without touching the API.
+
 ## Runs
 
 - A scheduler in the server places runs on a queue. Workers (in-process to start, separate processes later) take runs from it.

@@ -13,7 +13,7 @@ Restart=on-failure
 RestartSec=2s
 UMask=0077
 
-# Sandboxing
+# Sandboxing. These limits also apply to the commands runbooks run.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/opskills
@@ -30,7 +30,6 @@ RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CapabilityBoundingSet=
 AmbientCapabilities=

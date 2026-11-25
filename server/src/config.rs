@@ -13,6 +13,8 @@ pub struct Config {
     pub server: Server,
     pub data: Data,
     pub logs: Logs,
+    pub auth: Auth,
+    pub runs: Runs,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -38,6 +40,32 @@ pub struct Logs {
     pub format: String,
     /// Level or filter, e.g. "info" or "opskills=debug,info".
     pub level: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Auth {
+    /// How long a sign-in lasts, in hours.
+    pub session_hours: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Runs {
+    /// How many runs may execute at the same time; others wait in the queue.
+    pub max_concurrent: usize,
+}
+
+impl Default for Auth {
+    fn default() -> Self {
+        Self { session_hours: 8 }
+    }
+}
+
+impl Default for Runs {
+    fn default() -> Self {
+        Self { max_concurrent: 4 }
+    }
 }
 
 impl Default for Server {
@@ -98,6 +126,12 @@ fn apply_env(cfg: &mut Config, get: impl Fn(&str) -> Option<String>) -> Result<(
     if let Some(v) = get("OPSKILLS_LOGS__LEVEL") {
         cfg.logs.level = v;
     }
+    if let Some(v) = get("OPSKILLS_AUTH__SESSION_HOURS") {
+        cfg.auth.session_hours = v.parse().context("OPSKILLS_AUTH__SESSION_HOURS must be a whole number")?;
+    }
+    if let Some(v) = get("OPSKILLS_RUNS__MAX_CONCURRENT") {
+        cfg.runs.max_concurrent = v.parse().context("OPSKILLS_RUNS__MAX_CONCURRENT must be a whole number")?;
+    }
     Ok(())
 }
 
@@ -111,6 +145,8 @@ fn validate(cfg: &Config) -> Result<()> {
         "logs.format must be \"json\" or \"pretty\", got {:?}",
         cfg.logs.format
     );
+    anyhow::ensure!((1..=720).contains(&cfg.auth.session_hours), "auth.session_hours must be 1 to 720");
+    anyhow::ensure!((1..=64).contains(&cfg.runs.max_concurrent), "runs.max_concurrent must be 1 to 64");
     Ok(())
 }
 

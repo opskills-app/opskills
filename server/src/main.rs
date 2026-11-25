@@ -1,7 +1,13 @@
 //! OpSkills server: serves the web app and the HTTP API from a single binary.
 
+mod api;
+mod auth;
 mod config;
+mod executor;
 mod firststart;
+mod model;
+mod store;
+mod vault;
 mod web;
 
 use std::io::{Read, Write};
@@ -110,3 +116,6 @@ fn healthcheck(cfg: &config::Config) -> Result<()> {
         anyhow::bail!("unexpected response: {}", head.lines().next().unwrap_or(""))
     }
 }
+
+#[cfg(test)]
+mod tests;

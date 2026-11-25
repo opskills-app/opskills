@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Monitor, RefreshCw, Server, ServerCog } from "lucide-react";
 import { hosts } from "../data";
-import { Avatar, Badge, Button, Card, Delta, IconBubble, PageHeader, Pagination, SearchField, SortButton, TableHeading, type BadgeTone } from "../components/ui";
+import { Avatar, Badge, Button, Card, Delta, IconBubble, PageHeader, Pagination, SearchField, SortButton, TableHeading, type BadgeTone, SampleBanner } from "../components/ui";
 
 const statusTone: Record<string, BadgeTone> = { online: "green", offline: "red", degraded: "amber" };
 
@@ -21,6 +21,7 @@ export function HostsPage() {
           </Button>
         }
       />
+      <SampleBanner>Hosts arrive in a later release. In this version, runbook steps run on the OpSkills server itself.</SampleBanner>
 
       <Card className="grid grid-cols-1 gap-4 px-4 py-6 md:grid-cols-3 md:divide-x md:divide-line md:px-6 md:py-8">
         <div className="flex items-center gap-5 px-2 py-2 sm:px-6">

@@ -170,6 +170,7 @@
       font-size: 12px; font-weight: 500; border: 1px solid;
     }
     .badge.blue { color: var(--sky-ink); border-color: var(--sky-ink); background: color-mix(in oklab, var(--sky-ink) 12%, transparent); }
+    .badge.green { color: var(--mint-ink); border-color: var(--mint-ink); background: color-mix(in oklab, var(--mint-ink) 12%, transparent); }
     .badge.amber { color: var(--amber-ink); border-color: var(--amber-ink); background: color-mix(in oklab, var(--amber-ink) 12%, transparent); }
 
     /* Sections */
@@ -201,6 +202,9 @@
     .feature { padding: 30px; }
     .feature h3 { margin: 22px 0 8px; font-size: 18px; letter-spacing: -0.01em; }
     .feature p { margin: 0; font-size: 14px; color: var(--muted); }
+    .avail { display: inline-block; margin: -2px 0 10px; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .avail.now { background: var(--mint); color: var(--mint-ink); }
+    .avail.soon { background: var(--surface-2); color: var(--muted); }
 
     .how { display: grid; gap: 28px; margin-top: 40px; align-items: start; }
     @media (min-width: 960px) { .how { grid-template-columns: 1fr 1.1fr; gap: 40px; } }
@@ -308,7 +312,7 @@
           <path d="M18 2.5l13.4 7.75v15.5L18 33.5 4.6 25.75V10.25z" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/>
           <path d="M12.5 18.2l3.8 3.8 7.4-8" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-        OpSkills <small>v0.1</small>
+        OpSkills <small>v0.2</small>
       </a>
       <nav class="links" aria-label="Sections">
         <a href="#features">Features</a>
@@ -331,9 +335,9 @@
 
   <main id="top">
     <div class="wrap hero">
-      <a class="pill" href="#install"><span class="dot"></span>v0.1.0 preview is out: Docker and Debian</a>
+      <a class="pill" href="#install"><span class="dot"></span>v0.2.0: write runbooks and watch them run live</a>
       <h1>Runbooks your whole team <span>can run.</span></h1>
-      <p class="lede">OpSkills turns the procedures you repeat into safe, self-service runbooks. Run them by hand, on a schedule or from a webhook, with live output, approvals and a full audit trail.</p>
+      <p class="lede">OpSkills turns the procedures you repeat into safe, self-service runbooks. Write the steps once, then anyone on your team can run them and watch the output live. Every run is kept.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="#install">Install the preview <svg aria-hidden="true"><use href="#i-arrow"/></svg></a>
         <a class="btn btn-soft" href="https://github.com/opskills-app/opskills"><svg aria-hidden="true"><use href="#i-github"/></svg>View on GitHub</a>
@@ -348,13 +352,13 @@
       <div class="shot">
         <div class="float left">
           <span class="bubble violet" style="width:44px;height:44px"><svg style="width:20px;height:20px" aria-hidden="true"><use href="#i-play"/></svg></span>
-          <span><b>Rolling restart: web tier</b><small>13 of 24 hosts done</small></span>
+          <span><b>Rolling restart: web tier</b><small>Step 2 of 3: Restart</small></span>
           <span class="badge blue">Running</span>
         </div>
         <div class="float right">
-          <span class="bubble amber" style="width:44px;height:44px"><svg style="width:20px;height:20px" aria-hidden="true"><use href="#i-hand"/></svg></span>
-          <span><b>Approval needed</b><small>Reload 7 edge hosts</small></span>
-          <span class="badge amber">Review</span>
+          <span class="bubble mint" style="width:44px;height:44px"><svg style="width:20px;height:20px" aria-hidden="true"><use href="#i-check-circle"/></svg></span>
+          <span><b>Check disk space</b><small>2 steps in 1s, exit code 0</small></span>
+          <span class="badge green">Succeeded</span>
         </div>
         <div class="frame">
           <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -369,7 +373,7 @@
         <div class="card stats">
           <div class="stat"><span class="bubble mint"><svg aria-hidden="true"><use href="#i-box"/></svg></span><div><b>One binary</b><span>No JVM, no interpreter, no extra services</span></div></div>
           <div class="stat"><span class="bubble sky"><svg aria-hidden="true"><use href="#i-shield"/></svg></span><div><b>Secure by default</b><span>Unique keys and admin password on first start</span></div></div>
-          <div class="stat"><span class="bubble pink"><svg aria-hidden="true"><use href="#i-plug"/></svg></span><div><b>Plugins in any language</b><span>Simple JSON over stdin and stdout</span></div></div>
+          <div class="stat"><span class="bubble pink"><svg aria-hidden="true"><use href="#i-activity"/></svg></span><div><b>Live output</b><span>Every line streams to your browser as it runs</span></div></div>
         </div>
       </div>
     </section>
@@ -382,12 +386,12 @@
           <p>Write a procedure once, then let anyone on the team run it safely, with the guardrails built in.</p>
         </div>
         <div class="features">
-          <article class="card feature"><span class="bubble violet"><svg aria-hidden="true"><use href="#i-code"/></svg></span><h3>Runbooks as code</h3><p>Plain YAML you keep in Git and review like any other change. Inputs, targets, steps and triggers in one file.</p></article>
-          <article class="card feature"><span class="bubble sky"><svg aria-hidden="true"><use href="#i-activity"/></svg></span><h3>Live runs</h3><p>Stream output from every host as it happens, filter by host or step, and cancel with one click.</p></article>
-          <article class="card feature"><span class="bubble mint"><svg aria-hidden="true"><use href="#i-layers"/></svg></span><h3>Safe rollouts</h3><p>Go in batches, by percentage or canary first, and stop automatically when a host fails.</p></article>
-          <article class="card feature"><span class="bubble amber"><svg aria-hidden="true"><use href="#i-hand"/></svg></span><h3>Approval gates</h3><p>Pause a run until the right person signs off, then continue exactly where it stopped.</p></article>
-          <article class="card feature"><span class="bubble pink"><svg aria-hidden="true"><use href="#i-key"/></svg></span><h3>Built-in vault</h3><p>SSH keys, passwords and tokens encrypted at rest, never shown again, and masked in every log.</p></article>
-          <article class="card feature"><span class="bubble violet"><svg aria-hidden="true"><use href="#i-clock"/></svg></span><h3>Schedules and webhooks</h3><p>Run on a cron schedule, from a deploy pipeline, or from any system that can send an HTTP request.</p></article>
+          <article class="card feature"><span class="bubble violet"><svg aria-hidden="true"><use href="#i-code"/></svg></span><h3>Runbooks as code</h3><span class="avail soon">Coming soon</span><p>Plain YAML you keep in Git and review like any other change. Inputs, targets, steps and triggers in one file.</p></article>
+          <article class="card feature"><span class="bubble sky"><svg aria-hidden="true"><use href="#i-activity"/></svg></span><h3>Live runs</h3><span class="avail now">Available now</span><p>Stream output from every host as it happens, filter by host or step, and cancel with one click.</p></article>
+          <article class="card feature"><span class="bubble mint"><svg aria-hidden="true"><use href="#i-layers"/></svg></span><h3>Safe rollouts</h3><span class="avail soon">Coming soon</span><p>Go in batches, by percentage or canary first, and stop automatically when a host fails.</p></article>
+          <article class="card feature"><span class="bubble amber"><svg aria-hidden="true"><use href="#i-hand"/></svg></span><h3>Approval gates</h3><span class="avail soon">Coming soon</span><p>Pause a run until the right person signs off, then continue exactly where it stopped.</p></article>
+          <article class="card feature"><span class="bubble pink"><svg aria-hidden="true"><use href="#i-key"/></svg></span><h3>Built-in vault</h3><span class="avail now">Available now</span><p>SSH keys, passwords and tokens encrypted at rest, never shown again, and masked in every log.</p></article>
+          <article class="card feature"><span class="bubble violet"><svg aria-hidden="true"><use href="#i-clock"/></svg></span><h3>Schedules and webhooks</h3><span class="avail soon">Coming soon</span><p>Run on a cron schedule, from a deploy pipeline, or from any system that can send an HTTP request.</p></article>
         </div>
       </div>
     </section>
@@ -401,34 +405,28 @@
         </div>
         <div class="how">
           <ol class="steps">
-            <li class="card step"><span class="num">1</span><div><h3>Describe the procedure</h3><p>Write the steps, the inputs it needs and which hosts it targets in a short YAML file.</p></div></li>
-            <li class="card step"><span class="num">2</span><div><h3>Choose how it rolls out</h3><p>Pick batches or a canary, add an approval gate, and connect secrets from the vault.</p></div></li>
-            <li class="card step"><span class="num">3</span><div><h3>Let the team run it</h3><p>Start it by hand, on a schedule or from a webhook, and watch every host report back live.</p></div></li>
+            <li class="card step"><span class="num">1</span><div><h3>Write the steps</h3><p>Give the runbook a name and add steps. Each step is a shell command, like the ones in your wiki page.</p></div></li>
+            <li class="card step"><span class="num">2</span><div><h3>Set the guardrails</h3><p>Steps run in order, a failing step stops the run, and each step has a timeout you choose.</p></div></li>
+            <li class="card step"><span class="num">3</span><div><h3>Let the team run it</h3><p>Anyone signed in presses Run and watches the output stream live, step by step. Every run is kept.</p></div></li>
           </ol>
           <div class="code" role="figure" aria-label="Example runbook file">
-            <div class="bar">runbooks/restart-web.yaml</div>
-<pre><span class="k">name</span>: <span class="s">restart-web</span>
-<span class="k">description</span>: <span class="s">Rolling restart of the web tier</span>
-<span class="k">inputs</span>:
-  - <span class="k">name</span>: <span class="s">reason</span>
-    <span class="k">required</span>: <span class="n">true</span>
-<span class="k">targets</span>:
-  <span class="k">filter</span>: <span class="s">"tags:web env:prod"</span>
-<span class="k">rollout</span>:
-  <span class="k">strategy</span>: <span class="s">batches</span>
-  <span class="k">batch_size</span>: <span class="s">25%</span>
-  <span class="k">stop_on_failure</span>: <span class="n">true</span>
+            <div class="bar">Rolling restart: web tier</div>
+<pre><span class="k">name</span>: <span class="s">Rolling restart: web tier</span>
+<span class="k">description</span>: <span class="s">Drain, restart and check each web host in turn.</span>
+<span class="k">tags</span>: [<span class="s">web</span>, <span class="s">prod</span>]
+<span class="k">timeout_seconds</span>: <span class="n">300</span>
 <span class="k">steps</span>:
   - <span class="k">name</span>: <span class="s">Drain</span>
-    <span class="k">run</span>: <span class="s">sudo systemctl reload nginx-drain</span>
+    <span class="k">run</span>: <span class="s">./lb drain web-01 web-02 web-03</span>
   - <span class="k">name</span>: <span class="s">Restart</span>
-    <span class="k">run</span>: <span class="s">sudo systemctl restart app</span>
+    <span class="k">run</span>: |
+      <span class="s">for h in web-01 web-02 web-03; do</span>
+      <span class="s">  ssh "$h" sudo systemctl restart app</span>
+      <span class="s">done</span>
   - <span class="k">name</span>: <span class="s">Health check</span>
-    <span class="k">http</span>:
-      <span class="k">url</span>: <span class="s">"http://{{ host.address }}:8080/healthz"</span>
-      <span class="k">expect_status</span>: <span class="n">200</span>
-<span class="k">triggers</span>:
-  - <span class="k">schedule</span>: <span class="s">"0 3 * * 1"</span>  <span class="c"># Mondays at 03:00</span></pre>
+    <span class="k">run</span>: <span class="s">curl -fsS https://web.internal/healthz</span>
+  - <span class="k">name</span>: <span class="s">Back in the pool</span>
+    <span class="k">run</span>: <span class="s">./lb undrain web-01 web-02 web-03</span>  <span class="c"># runs only if every step above passed</span></pre>
           </div>
         </div>
       </div>
@@ -446,7 +444,7 @@
             <h3 class="list-title">Install in minutes</h3>
             <ul class="list">
               <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>Debian package</b><span>With a sandboxed systemd service.</span></div></li>
-              <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>Container image</b><span>About 3 MB to download, for amd64 and arm64.</span></div></li>
+              <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>Container image</b><span>About 7 MB to download, for amd64 and arm64.</span></div></li>
               <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>One config file</b><span>TOML, with environment variable overrides.</span></div></li>
             </ul>
           </div>
@@ -454,21 +452,22 @@
             <h3 class="list-title">Secure from the first start</h3>
             <ul class="list">
               <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>No default passwords</b><span>A unique admin password is generated and shown once.</span></div></li>
-              <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>Encrypted secrets</b><span>AES-256-GCM with a key created on your server.</span></div></li>
-              <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>Single sign-on and roles</b><span>OIDC, API tokens and per-workspace permissions.</span></div></li>
+              <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>Protected sessions</b><span>HttpOnly cookies, cross-site request protection and slowed-down guessing.</span></div></li>
+              <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>Encrypted vault</b><span>AES-256-GCM with a key created on your server; values are masked in output.</span></div></li>
+              <li><svg aria-hidden="true"><use href="#i-check-circle"/></svg><div><b>Least privilege</b><span>Runs as its own user, in a sandboxed service or a non-root container.</span></div></li>
             </ul>
           </div>
         </div>
 
         <div class="section-head" id="install" style="margin-top: 88px; scroll-margin-top: 90px">
           <div class="eyebrow">Install</div>
-          <h2>Run the v0.1.0 preview in minutes</h2>
+          <h2>Run the v0.2.0 preview in minutes</h2>
           <p>Pick Docker for any computer, or the Debian package for a Linux server. Both support amd64 and arm64.</p>
         </div>
 
         <div class="preview-note card">
           <span class="bubble amber" style="width:44px;height:44px"><svg style="width:20px;height:20px" aria-hidden="true"><use href="#i-shield"/></svg></span>
-          <p><b>Preview:</b> the server installs, secures itself on first start and serves the app with sample data. There's no sign-in screen yet, so these steps keep OpSkills reachable from your own machine only.</p>
+          <p><b>Preview:</b> sign in, keep secrets in the encrypted vault, write runbooks and run them with live output. Steps run as shell commands on the OpSkills server itself, so these steps keep it reachable from your own machine only. Other hosts and schedules come next.</p>
         </div>
 
         <div class="tabs" role="tablist" aria-label="Install method">
@@ -488,14 +487,14 @@
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.1.0</pre></div>
+  opskills/opskills:0.2.0</pre></div>
               </div>
             </li>
             <li>
               <span class="num">2</span>
               <div>
                 <h3>Save the admin password</h3>
-                <p>It's printed once, on the first start. Keep it in your password manager.</p>
+                <p>It's printed once, on the first start. You sign in with it, so keep it in your password manager.</p>
                 <div class="code"><div class="bar"><span>Terminal</span><button class="copy" type="button" data-copy="d2">Copy</button></div>
 <pre id="d2">docker logs opskills 2&gt;&amp;1 | grep 'Admin password'</pre></div>
               </div>
@@ -503,8 +502,8 @@
             <li>
               <span class="num">3</span>
               <div>
-                <h3>Open the app</h3>
-                <p>Go to <b>http://localhost:8080</b>. After about 15 seconds, <code>docker ps</code> shows the container as <code>healthy</code>.</p>
+                <h3>Sign in and run a runbook</h3>
+                <p>Go to <b>http://localhost:8080</b> and sign in as <code>admin</code> with that password. Choose <b>New runbook</b>, start from an example, and press <b>Run now</b>.</p>
               </div>
             </li>
           </ol>
@@ -519,8 +518,8 @@
                 <h3>Download and verify</h3>
                 <p>For Debian 12+ or Ubuntu 22.04+. Run <code>dpkg --print-architecture</code> and use <code>arm64</code> instead of <code>amd64</code> if that's what it prints.</p>
                 <div class="code"><div class="bar"><span>Terminal</span><button class="copy" type="button" data-copy="b1">Copy</button></div>
-<pre id="b1">curl -LO https://github.com/opskills-app/opskills/releases/download/v0.1.0/opskills_0.1.0_amd64.deb
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.1.0/SHA256SUMS
+<pre id="b1">curl -LO https://github.com/opskills-app/opskills/releases/download/v0.2.0/opskills_0.2.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.2.0/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS</pre></div>
               </div>
             </li>
@@ -530,7 +529,7 @@ sha256sum --check --ignore-missing SHA256SUMS</pre></div>
                 <h3>Install and start the service</h3>
                 <p>Installs a sandboxed systemd service that runs as its own <code>opskills</code> user.</p>
                 <div class="code"><div class="bar"><span>Terminal</span><button class="copy" type="button" data-copy="b2">Copy</button></div>
-<pre id="b2">sudo apt install ./opskills_0.1.0_amd64.deb
+<pre id="b2">sudo apt install ./opskills_0.2.0_amd64.deb
 sudo systemctl start opskills</pre></div>
               </div>
             </li>
@@ -546,8 +545,8 @@ sudo systemctl start opskills</pre></div>
             <li>
               <span class="num">4</span>
               <div>
-                <h3>Open the app</h3>
-                <p>On the server, go to <b>http://localhost:8080</b>. From your laptop, open an SSH tunnel first, then visit the same address.</p>
+                <h3>Sign in</h3>
+                <p>On the server, go to <b>http://localhost:8080</b> and sign in as <code>admin</code>. From your laptop, open an SSH tunnel first, then visit the same address.</p>
                 <div class="code"><div class="bar"><span>Your laptop</span><button class="copy" type="button" data-copy="b4">Copy</button></div>
 <pre id="b4">ssh -L 8080:localhost:8080 you@your-server</pre></div>
               </div>
@@ -559,7 +558,7 @@ sudo systemctl start opskills</pre></div>
 
         <div class="final">
           <h2>Runbooks your whole team can run</h2>
-          <p>The v0.1.0 preview is out as a container image and Debian packages. Running real runbooks is the next milestone.</p>
+          <p>The v0.2.0 preview runs real runbooks with live output. Running steps on other hosts over SSH is the next milestone.</p>
           <div class="cta-row">
             <a class="btn btn-white" href="#install">Install the preview</a>
             <a class="btn btn-ghost-white" href="https://github.com/opskills-app/opskills"><svg aria-hidden="true"><use href="#i-github"/></svg>View on GitHub</a>

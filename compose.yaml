@@ -4,11 +4,11 @@
 # Then open http://localhost:8080
 services:
   opskills:
-    image: opskills/opskills:0.1.0
+    image: opskills/opskills:0.2.0
     container_name: opskills
     restart: unless-stopped
     ports:
-      # Reachable from this machine only. The v0.1.0 preview has no sign-in yet.
+      # Reachable from this machine only. Runbooks run shell commands on this server.
       - "127.0.0.1:8080:8080"
     volumes:
       - opskills-data:/var/lib/opskills
