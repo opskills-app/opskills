@@ -59,3 +59,7 @@ npm run deploy     # deploy to Cloudflare (requires `npx wrangler login`)
 ```
 
 `opskills.app` serves the site. `getopskills.com` and `opskills.dev` redirect to it.
+
+## License
+
+OpSkills is open source under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE).
