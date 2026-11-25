@@ -225,6 +225,21 @@ docker buildx build --platform linux/amd64,linux/arm64 -t opskills .
 The binaries are static (musl) and cross-compiled with Rust's bundled linker, so
 no C cross-toolchain is needed.
 
+### Continuous delivery
+
+[`.github/workflows/docker.yml`](.github/workflows/docker.yml) builds the image for
+both architectures on every pull request, running all tests inside the build, and
+publishes to [Docker Hub](https://hub.docker.com/r/opskills/opskills):
+
+| Event | Image tags |
+|---|---|
+| Pull request | Built and tested, not published |
+| Merge to `main` | `edge`, `sha-<commit>` |
+| Version tag `vX.Y.Z` | `X.Y.Z`, `X.Y`, `latest` |
+
+It needs the repository variable `DOCKERHUB_USERNAME` and the secret
+`DOCKERHUB_TOKEN` (a Docker Hub access token with read and write access).
+
 ### Website
 
 ```bash
