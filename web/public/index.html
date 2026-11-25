@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpSkills</title>
+  <meta name="description" content="OpSkills: job and runbook automation for operations teams. Coming soon.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f6f5e'/%3E%3Cpath d='M9 16.5l4.5 4.5L23 11' stroke='white' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      --bg: #f7f6f2;
+      --fg: #1c1f1e;
+      --muted: #5d6662;
+      --accent: #2f6f5e;
+      --line: #dcdad2;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #121514;
+        --fg: #eceeed;
+        --muted: #9aa39f;
+        --accent: #6fc2a8;
+        --line: #2a302e;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      padding: 0 16px;
+    }
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      max-width: 640px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    .mark {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 650;
+      font-size: 1.05rem;
+      letter-spacing: -0.01em;
+      margin-bottom: 48px;
+    }
+    .mark svg { width: 28px; height: 28px; }
+    h1 {
+      font-size: clamp(2rem, 6vw, 3.25rem);
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      margin: 0 0 20px;
+      font-weight: 700;
+    }
+    h1 span { color: var(--accent); }
+    p {
+      font-size: 1.125rem;
+      line-height: 1.6;
+      color: var(--muted);
+      margin: 0 0 32px;
+      max-width: 52ch;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.875rem;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 14px;
+      align-self: flex-start;
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 2.4s ease-in-out infinite;
+    }
+    @keyframes pulse { 50% { opacity: 0.35; } }
+    @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+    footer {
+      max-width: 640px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px 0;
+      border-top: 1px solid var(--line);
+      font-size: 0.8125rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)"/><path d="M9 16.5l4.5 4.5L23 11" stroke="var(--bg)" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      OpSkills
+    </div>
+    <h1>Runbooks your whole team <span>can run.</span></h1>
+    <p>Job and runbook automation for operations teams. Turn the procedures you repeat into safe, self-service jobs that run across your infrastructure.</p>
+    <div class="status"><span class="dot"></span>Coming soon</div>
+  </main>
+  <footer>&copy; 2026 OpSkills</footer>
+</body>
+</html>
