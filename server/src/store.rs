@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{ApiToken, EnrollmentToken, Host, LogLine, Run, Runbook, Secret, Status, StoredApiToken, StoredHost, StoredSecret, now_ms};
+use crate::model::{ApiToken, EnrollmentToken, Host, LogLine, Run, Runbook, Secret, Status, StoredApiToken, StoredHost, StoredSecret, StoredWebhook, Webhook, now_ms};
 
 const RUNBOOKS: TableDefinition<&str, &str> = TableDefinition::new("runbooks");
 const RUNS: TableDefinition<&str, &str> = TableDefinition::new("runs");
@@ -25,6 +25,8 @@ const ENROLLMENT: TableDefinition<&str, &str> = TableDefinition::new("enrollment
 const SESSIONS: TableDefinition<&str, &str> = TableDefinition::new("sessions");
 /// Key: API token id. Value: the token plus the SHA-256 of its secret.
 const API_TOKENS: TableDefinition<&str, &str> = TableDefinition::new("api_tokens");
+/// Key: webhook id. Value: the webhook, its token hash and sealed signing secret.
+const WEBHOOKS: TableDefinition<&str, &str> = TableDefinition::new("webhooks");
 /// Key: "<runbook id>/<schedule id>". Value: when it last fired, and how that went.
 const SCHEDULE_STATE: TableDefinition<&str, &str> = TableDefinition::new("schedule_state");
 
@@ -58,6 +60,7 @@ impl Store {
             w.open_table(ENROLLMENT)?;
             w.open_table(API_TOKENS)?;
             w.open_table(SCHEDULE_STATE)?;
+            w.open_table(WEBHOOKS)?;
         }
         w.commit()?;
         Ok(Store { db })
@@ -286,6 +289,46 @@ impl Store {
     }
 
     // Sessions
+
+    // Webhooks
+
+    pub fn put_webhook(&self, h: &StoredWebhook) -> Result<()> {
+        self.put(WEBHOOKS, &h.hook.id, &serde_json::to_string(h)?)
+    }
+    pub fn webhook(&self, id: &str) -> Result<Option<StoredWebhook>> {
+        self.get(WEBHOOKS, id)?.map(|s| serde_json::from_str(&s).map_err(Into::into)).transpose()
+    }
+    /// The webhooks of one runbook, oldest first.
+    pub fn webhooks_of(&self, runbook_id: &str) -> Result<Vec<Webhook>> {
+        let mut out: Vec<Webhook> = self
+            .values(WEBHOOKS)?
+            .iter()
+            .map(|s| serde_json::from_str::<StoredWebhook>(s).map(|h| h.hook))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|h| h.runbook_id == runbook_id)
+            .collect();
+        out.sort_by_key(|h| h.created_at);
+        Ok(out)
+    }
+    /// Change a webhook in one write transaction, so a delivery being recorded can't
+    /// undo an edit or a new URL made at the same moment (or the other way round).
+    pub fn update_webhook<T>(&self, id: &str, f: impl FnOnce(&mut StoredWebhook) -> T) -> Result<Option<T>> {
+        let w = self.db.begin_write()?;
+        let out = {
+            let mut t = w.open_table(WEBHOOKS)?;
+            let Some(cur) = t.get(id)?.map(|v| v.value().to_string()) else { return Ok(None) };
+            let mut h: StoredWebhook = serde_json::from_str(&cur)?;
+            let out = f(&mut h);
+            t.insert(id, serde_json::to_string(&h)?.as_str())?;
+            out
+        };
+        w.commit()?;
+        Ok(Some(out))
+    }
+    pub fn delete_webhook(&self, id: &str) -> Result<bool> {
+        self.remove(WEBHOOKS, id)
+    }
 
     // Schedules
 

@@ -43,10 +43,27 @@ pub fn new_api_token() -> (String, String, String) {
 }
 
 pub const API_TOKEN_PREFIX: &str = "osk_";
+/// Inbound webhook URLs end in `owh_<12 hex id>_<64 hex secret>`.
+pub const WEBHOOK_PREFIX: &str = "owh_";
+
+pub fn new_webhook_token() -> (String, String, String) {
+    let id = hex::encode(random_bytes::<6>());
+    let secret = hex::encode(random_bytes::<32>());
+    let whole = format!("{WEBHOOK_PREFIX}{id}_{secret}");
+    (id, secret, whole)
+}
+
+pub fn parse_webhook_token(token: &str) -> Option<(&str, &str)> {
+    parse_prefixed(token, WEBHOOK_PREFIX)
+}
 
 /// Split a token into its id and secret, if it has the right shape.
 pub fn parse_api_token(token: &str) -> Option<(&str, &str)> {
-    let (id, secret) = token.strip_prefix(API_TOKEN_PREFIX)?.split_once('_')?;
+    parse_prefixed(token, API_TOKEN_PREFIX)
+}
+
+fn parse_prefixed<'a>(token: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
+    let (id, secret) = token.strip_prefix(prefix)?.split_once('_')?;
     let hex = |s: &str, n: usize| s.len() == n && s.chars().all(|c| c.is_ascii_hexdigit());
     (hex(id, 12) && hex(secret, 64)).then_some((id, secret))
 }

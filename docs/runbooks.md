@@ -215,6 +215,57 @@ The editor shows the next times as you type. Through the API,
 and last error, and `POST /api/v1/schedules/preview` with `{"cron": ..., "timezone": ...}`
 returns the next five times without saving anything.
 
+## Webhooks
+
+A webhook is a secret URL that another system, like CI, GitHub or a monitoring
+tool, calls to start the runbook. On the runbook page, use **New** under
+**Webhooks**. The URL is shown once; only a hash of its secret part is stored, so
+if you lose it, give the webhook a new URL (the arrows icon) and the old one stops
+working.
+
+Calls are a `POST` with a JSON body and need no sign-in:
+
+```bash
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"repository": {"name": "shop"}, "after": "9f2c1e7"}' \
+  https://ops.example.com/api/v1/hooks/owh_...
+```
+
+**Inputs** come from the body. For each runbook input, give a dotted path into
+the JSON, like `repository.name`, `after` or `commits.0.id` (array positions are
+numbers). Strings are used as they are; numbers, booleans and objects as JSON. An
+input with no path, or whose path isn't in the body, gets its default, and a
+required input without one fails the call. Values are checked like any other run's
+inputs, and expand quoted in commands.
+
+**Signatures.** Turn on **Require a signature** and the server makes a signing
+secret, shown once and kept encrypted with the vault key. Each call must then send
+the HMAC-SHA256 of the exact body, as hex:
+
+```bash
+sig=$(printf %s "$body" | openssl dgst -sha256 -hmac "$secret" | sed 's/.* //')
+curl -X POST -H "X-OpSkills-Signature: sha256=$sig" -d "$body" https://ops.example.com/api/v1/hooks/owh_...
+```
+
+GitHub sends the same signature as `X-Hub-Signature-256`, which also works. To use
+OpSkills from a GitHub repository, add a webhook there with the OpSkills URL,
+content type `application/json`, and the signing secret.
+
+| Answer | Why |
+|---|---|
+| `202` | A run started: `{"run_id": "...", "status": "queued"}` |
+| `400` | The body isn't JSON, or an input is missing or not valid |
+| `401` | Signing is on and the signature is missing or wrong |
+| `404` | No webhook has this URL (also for a URL that was replaced) |
+| `409` | The webhook is turned off, or no host matches the runbook's targets |
+| `413` | The body is over 256 KB |
+
+The runbook page shows each webhook's last call: the run it started, or why it
+didn't. The last 20 calls are kept and returned by
+`GET /api/v1/runbooks/{id}/webhooks`. Runs from a webhook have the trigger
+`webhook` and show `webhook <name>` as who started them. A runbook can have up to
+20 webhooks, and deleting the runbook deletes them.
+
 ## Running on several hosts
 
 A runbook that runs on hosts runs every step on each host, in order. The `targets`

@@ -138,6 +138,13 @@ Since 0.4.0, runbooks have typed inputs and per-step control:
   sink and the halt flags are shared behind short-lived locks. A failed step stops
   only its own host; `on_host_failure` decides whether hosts that haven't started
   still run.
+- Inbound webhooks (since 0.9.0) are stored apart from runbooks, in the `webhooks`
+  table: the SHA-256 of the URL token's secret (`owh_<id>_<secret>`, compared in
+  constant time) and, if signing is on, the HMAC secret sealed with the vault key
+  (associated data `webhook:<id>`). `POST /hooks/{token}` skips the session and CSRF
+  checks. Every change, including recording a delivery, goes through
+  `Store::update_webhook`, one read and write in a single transaction, so a delivery
+  can't undo a rotation made at the same moment.
 - Schedules (since 0.8.0) live on the runbook (`schedules`: cron in an IANA time
   zone, or a one-time `at`). `schedule.rs` uses croner and chrono-tz; a loop started
   by `web::serve` calls `tick(floor, now)` every 5 s on a blocking thread. `tick` fires

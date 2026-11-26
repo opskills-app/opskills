@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { Check, Copy, KeyRound, Plus, Trash2 } from "lucide-react";
+import { KeyRound, Plus, Trash2 } from "lucide-react";
+import { CopyButton } from "../components/CopyButton";
 import { api, useData, type ApiToken } from "../api";
 import { timeAgo } from "../format";
 import { Avatar, Button, Card, CardHeader, ErrorNote, Modal, PageHeader, SampleBanner } from "../components/ui";
@@ -12,25 +13,6 @@ function expiresText(ms: number | null) {
   const days = Math.ceil((ms - Date.now()) / 86_400_000);
   if (days <= 0) return "Expired";
   return days === 1 ? "Tomorrow" : `In ${days} days`;
-}
-
-/** Copies text and briefly says so. */
-function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
-  const [done, setDone] = useState(false);
-  return (
-    <Button
-      size="sm"
-      type="button"
-      onClick={() =>
-        navigator.clipboard.writeText(text).then(() => {
-          setDone(true);
-          setTimeout(() => setDone(false), 1500);
-        })
-      }
-    >
-      {done ? <Check className="size-3.5" /> : <Copy className="size-3.5" />} {done ? "Copied" : label}
-    </Button>
-  );
 }
 
 function NewTokenDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
