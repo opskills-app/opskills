@@ -12,7 +12,21 @@ function Logo() {
   );
 }
 
-export function Login({ onSignedIn }: { onSignedIn: (user: string) => void }) {
+/** Where to get this program's source (AGPL-3.0, section 13). The server sends the exact version's link. */
+export const SOURCE_URL = "https://github.com/opskills-app/opskills";
+
+export function SourceLink({ href, className = "" }: { href: string; className?: string }) {
+  return (
+    <p className={`text-[11px] text-muted ${className}`}>
+      <a className="font-medium hover:text-ink" href={href} target="_blank" rel="noreferrer">
+        Source code
+      </a>{" "}
+      · AGPL-3.0
+    </p>
+  );
+}
+
+export function Login({ onSignedIn, sourceUrl }: { onSignedIn: (user: string) => void; sourceUrl: string }) {
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
@@ -99,6 +113,7 @@ export function Login({ onSignedIn }: { onSignedIn: (user: string) => void }) {
             .
           </p>
         </div>
+        <SourceLink href={sourceUrl} className="mt-6 text-center" />
       </div>
     </div>
   );

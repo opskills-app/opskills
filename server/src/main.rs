@@ -27,6 +27,10 @@ use clap::{Parser, Subcommand};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Where people using this server can get its source code (AGPL-3.0, section 13).
+/// If you run a modified version for others, point this at your own source.
+pub const SOURCE_URL: &str = "https://github.com/opskills-app/opskills";
+
 #[derive(Parser)]
 #[command(name = "opskills", version, about = "Runbooks your whole team can run")]
 struct Cli {

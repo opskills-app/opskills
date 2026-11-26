@@ -203,6 +203,8 @@ async fn system(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "started_at_unix": st.started_unix,
         "uptime_seconds": st.started.elapsed().as_secs(),
         "public_url": st.cfg.server.public_url,
+        "license": "AGPL-3.0-only",
+        "source_url": format!("{}/tree/v{}", crate::SOURCE_URL, crate::VERSION),
     }))
 }
 

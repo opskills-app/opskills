@@ -1,8 +1,8 @@
 [package]
 name = "opskills"
-version = "0.10.0"
+version = "0.11.0"
 description = "Runbooks your whole team can run: self-hosted job and runbook automation"
-license = "Apache-2.0"
+license = "AGPL-3.0-only"
 repository = "https://github.com/opskills-app/opskills"
 homepage = "https://opskills.app"
 readme = "../README.md"

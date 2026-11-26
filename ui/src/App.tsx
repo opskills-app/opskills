@@ -4,7 +4,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { Avatar, Button, cx, Kbd } from "./components/ui";
 import { api, UNAUTHORIZED_EVENT } from "./api";
 import { go, useRoute } from "./router";
-import { Login } from "./pages/Login";
+import { Login, SourceLink, SOURCE_URL } from "./pages/Login";
 import { Overview } from "./pages/Overview";
 import { RunbooksPage } from "./pages/Runbooks";
 import { RunbookDetail } from "./pages/RunbookDetail";
@@ -49,12 +49,16 @@ function useTheme() {
 export default function App() {
   const [user, setUser] = useState<string | null | undefined>(undefined);
   const [version, setVersion] = useState("");
+  const [sourceUrl, setSourceUrl] = useState(SOURCE_URL);
 
   useEffect(() => {
     api.me().then((r) => setUser(r.user), () => setUser(null));
     fetch("/api/v1/system")
       .then((r) => r.json())
-      .then((s) => setVersion(s.version ?? ""))
+      .then((s) => {
+        setVersion(s.version ?? "");
+        if (s.source_url) setSourceUrl(s.source_url);
+      })
       .catch(() => {});
     const onUnauthorized = () => setUser(null);
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
@@ -62,11 +66,11 @@ export default function App() {
   }, []);
 
   if (user === undefined) return <div className="flex min-h-full items-center justify-center text-sm text-muted">Loading...</div>;
-  if (user === null) return <Login onSignedIn={setUser} />;
-  return <Shell user={user} version={version} onSignOut={() => setUser(null)} />;
+  if (user === null) return <Login onSignedIn={setUser} sourceUrl={sourceUrl} />;
+  return <Shell user={user} version={version} sourceUrl={sourceUrl} onSignOut={() => setUser(null)} />;
 }
 
-function Shell({ user, version, onSignOut }: { user: string; version: string; onSignOut: () => void }) {
+function Shell({ user, version, sourceUrl, onSignOut }: { user: string; version: string; sourceUrl: string; onSignOut: () => void }) {
   const route = useRoute();
   const [dark, setDark] = useTheme();
   const [palette, setPalette] = useState(false);
@@ -159,6 +163,7 @@ function Shell({ user, version, onSignOut }: { user: string; version: string; on
             <LogOut className="size-4" />
           </button>
         </div>
+        <SourceLink href={sourceUrl} className="mt-3 px-2" />
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -196,6 +201,7 @@ function Shell({ user, version, onSignOut }: { user: string; version: string; on
         </header>
 
         <main className="w-full max-w-[1320px] flex-1 px-4 pt-2 pb-10 sm:px-8 lg:px-12">{page}</main>
+        <SourceLink href={sourceUrl} className="px-4 pb-4 text-center lg:hidden" />
 
         <nav className="sticky bottom-0 z-20 flex justify-around bg-surface/95 py-2 shadow-soft backdrop-blur lg:hidden">
           {nav.slice(0, 5).map((n) => (
