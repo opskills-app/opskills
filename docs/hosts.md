@@ -2,8 +2,17 @@
 
 Runbooks run on the OpSkills server by default. To run them on other Linux
 machines, install the **OpSkills agent** on each machine and enroll it with your
-server. This guide covers installing, enrolling, targeting, removing and
-troubleshooting hosts.
+server. This guide covers installing one host, deploying agents to many hosts,
+targeting, removing and troubleshooting.
+
+**Agents are the workers.** OpSkills has no other worker process to deploy: the
+server runs steps that target itself (up to `runs.max_concurrent` runs at once), and
+the agent on each enrolled host runs the steps for that host.
+
+Contents: [How it works](#how-it-works) ·
+[Add a host](#add-a-host) · [Deploy agents to many hosts](#deploy-agents-to-many-hosts) ·
+[Run a runbook on hosts](#run-a-runbook-on-hosts) · [Remove a host](#remove-a-host) ·
+[Troubleshooting](#troubleshooting)
 
 ## How it works
 
@@ -66,6 +75,80 @@ all four.
 
 To enroll without the token showing in the shell history, set it in the
 environment instead: `sudo OPSKILLS_ENROLL_TOKEN=<token> opskills-agent enroll --server ...`.
+
+### In one line
+
+The dialog also offers steps 2 and 3 as one command. Your OpSkills server serves
+an installer at `/install-agent.sh` that picks the `.deb` or `.rpm` for the host's
+system and architecture, installs it, enrolls the host and starts the service:
+
+```bash
+curl -fsSL https://opskills.example.com/install-agent.sh | sudo sh -s -- \
+  --server https://opskills.example.com --token <token> --name web-1 --tags web,prod
+```
+
+It needs `curl` (or `wget`), `apt-get`, `dnf` or `yum`, and root. Running it again
+on an enrolled host upgrades the agent to the server's version and keeps the
+enrollment, so no token is needed then. To read it before running it:
+`curl -fsSL https://opskills.example.com/install-agent.sh -o install-agent.sh`.
+
+## Deploy agents to many hosts
+
+Every host needs its own enrollment token. Automation creates them with the API:
+sign in once as `admin`, then `POST /api/v1/hosts/enrollment-tokens` for each host.
+Every request that changes something needs the `X-OpSkills-Request: 1` header.
+
+```bash
+OPSKILLS=https://opskills.example.com
+curl -fsS -c cookies.txt -H 'X-OpSkills-Request: 1' -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"..."}' "$OPSKILLS/api/v1/auth/login"
+curl -fsS -b cookies.txt -X POST -H 'X-OpSkills-Request: 1' "$OPSKILLS/api/v1/hosts/enrollment-tokens"
+# {"token":"3f9c...","expires_at":1764201600000}
+```
+
+The [`deploy/`](../deploy/) folder has three ready-made ways to use it. Each one
+installs the agent from your OpSkills server and is safe to run again.
+
+### Over SSH
+
+[`deploy/enroll-hosts.sh`](../deploy/enroll-hosts.sh) asks for the admin password,
+then for each host creates a token and runs the one-line installer over SSH. Set the
+three variables at the top (server address, hosts, tags) and run it from a machine
+that can SSH to the hosts and use `sudo` there:
+
+```bash
+sh deploy/enroll-hosts.sh
+```
+
+### With Ansible
+
+[`deploy/ansible/deploy-opskills-agent.yml`](../deploy/ansible/deploy-opskills-agent.yml)
+enrolls every host in the `opskills_hosts` group that isn't enrolled yet, upgrades
+the agent on the others, and keeps the service running. Keep the admin password in
+Ansible Vault:
+
+```bash
+cp deploy/ansible/inventory.example.ini inventory.ini        # list your hosts
+ansible-vault create opskills-vault.yml                      # opskills_password: ...
+ansible-playbook -i inventory.ini deploy/ansible/deploy-opskills-agent.yml \
+  -e @opskills-vault.yml -e opskills_url=https://opskills.example.com --ask-vault-pass
+```
+
+Set `opskills_tags` per host or group in the inventory. Managed hosts need Python 3,
+as for any Ansible run.
+
+### At first boot (cloud-init)
+
+For new cloud machines, create a token first and pass
+[`deploy/cloud-init.yaml`](../deploy/cloud-init.yaml) as user data, with your server
+address and the token filled in. The machine enrolls itself on first boot. Create a
+separate token for each machine; a token works once.
+
+### Machine images
+
+Don't enroll the machine you build an image from: every copy would share its
+credential. Install the package in the image if you like, and enroll each machine at
+first boot (cloud-init above, or your own first-boot script).
 
 ## Run a runbook on hosts
 

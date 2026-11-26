@@ -120,6 +120,10 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   sudo systemctl enable --now opskills-agent
   ```
 
+- **Many hosts**: `/install-agent.sh` on your server installs, enrolls and starts the
+  agent in one line, and [`deploy/`](deploy/) has a tested SSH script, an Ansible
+  playbook and a cloud-init example. See
+  [Deploy agents to many hosts](docs/hosts.md#deploy-agents-to-many-hosts).
 - **Connection**: the agent connects **out** to the server over HTTPS and asks for
   work, so hosts need no open ports, no SSH keys and no inbound firewall rules. A
   host is online while its agent is in touch; steps for an offline host fail.
@@ -213,6 +217,7 @@ The web app uses the same HTTP API you can call yourself, under `/api/v1`:
 | `POST /hosts/enrollment-tokens` | Create a one-time enrollment token |
 | `GET /hosts/packages` | Agent packages for this version |
 | `GET /downloads/{file}` | Download an agent package (no sign-in needed) |
+| `GET /install-agent.sh` | One-line agent installer for this version (no sign-in needed) |
 
 Agents use their own endpoints under `/api/v1/agent/` with a per-host credential;
 see [notes/02-architecture.md](notes/02-architecture.md).
@@ -234,6 +239,7 @@ Errors are JSON with `title`, `status` and a readable `detail`.
 | [`ui/`](ui/) | The web app: React, TypeScript, Vite and Tailwind CSS, built into the server |
 | [`web/`](web/) | The opskills.app website, deployed to Cloudflare Workers |
 | [`docs/`](docs/) | User documentation: [install and run](docs/install.md), [hosts and the agent](docs/hosts.md) |
+| [`deploy/`](deploy/) | Deploying agents to many hosts: SSH script, Ansible playbook, cloud-init |
 | [`notes/`](notes/) | Design documents: [packaging and configuration](notes/01-packaging-and-config.md), [architecture](notes/02-architecture.md) |
 | [`compose.yaml`](compose.yaml) | Run the published image with Docker Compose |
 | [`Dockerfile`](Dockerfile) | Builds the container image and all packages from source |
