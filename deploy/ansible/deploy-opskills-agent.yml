@@ -1,0 +1,63 @@
+# Install the OpSkills agent on every host in the opskills_hosts group, enroll each
+# one with its own token, and keep the service running. Safe to run again: enrolled
+# hosts are upgraded in place and keep their enrollment.
+#
+#   ansible-playbook -i inventory.ini deploy-opskills-agent.yml --ask-vault-pass
+#
+- name: Deploy the OpSkills agent
+  hosts: opskills_hosts
+  become: true
+  # Variables (set them in the inventory, a vars file or with -e):
+  #   opskills_url       the address hosts use to reach OpSkills (required)
+  #   opskills_password  the admin password, kept in Ansible Vault (required)
+  #   opskills_tags      tags for the host, comma separated (optional, per host or group)
+
+  tasks:
+    - name: Check whether the host is already enrolled
+      ansible.builtin.command: opskills-agent status
+      register: agent_status
+      changed_when: false
+      failed_when: false
+
+    - name: Sign in to OpSkills
+      ansible.builtin.uri:
+        url: "{{ opskills_url }}/api/v1/auth/login"
+        method: POST
+        body_format: json
+        body: { username: admin, password: "{{ opskills_password }}" }
+        headers: { X-OpSkills-Request: "1" }
+      register: opskills_login
+      delegate_to: localhost
+      become: false
+      run_once: true
+      no_log: true
+
+    - name: Create an enrollment token for this host
+      ansible.builtin.uri:
+        url: "{{ opskills_url }}/api/v1/hosts/enrollment-tokens"
+        method: POST
+        headers:
+          X-OpSkills-Request: "1"
+          Cookie: "{{ opskills_login.cookies_string }}"
+        status_code: 201
+      register: enrollment
+      delegate_to: localhost
+      become: false
+      when: agent_status.rc != 0
+      no_log: true
+
+    - name: Install or upgrade the agent, and enroll the host if needed
+      ansible.builtin.shell: >
+        set -e;
+        curl -fsSL {{ opskills_url }}/install-agent.sh |
+        sh -s -- --server {{ opskills_url }} --name {{ inventory_hostname }} --tags '{{ opskills_tags | default("") }}'
+      environment:
+        OPSKILLS_ENROLL_TOKEN: "{{ enrollment.json.token | default('') }}"
+      register: install
+      changed_when: install.stdout is search('Enrolled as|Installed opskills-agent|Upgraded opskills-agent')
+
+    - name: Keep the agent running
+      ansible.builtin.systemd_service:
+        name: opskills-agent
+        enabled: true
+        state: started

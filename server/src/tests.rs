@@ -505,3 +505,13 @@ async fn agents_can_check_their_credential() {
     call(&s.app, "DELETE", &format!("/api/v1/hosts/{host}"), None, Some(&c), true).await;
     assert_eq!(s.app.clone().oneshot(req(&auth)).await.unwrap().status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn the_install_script_is_served_for_this_version() {
+    let s = server();
+    let r = call(&s.app, "GET", "/install-agent.sh", None, None, false).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.starts_with("#!/bin/sh"));
+    assert!(r.body.contains(&format!("VERSION=\"{}\"", crate::VERSION)));
+    assert!(!r.body.contains("@VERSION@"));
+}

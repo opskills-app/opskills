@@ -88,6 +88,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readyz))
         .route("/downloads/{file}", get(download))
+        .route("/install-agent.sh", get(install_script))
         .nest("/api/v1", api::router(state.clone()))
         .fallback(static_file)
         .with_state(state)
@@ -144,6 +145,17 @@ async fn download(State(st): State<Arc<AppState>>, axum::extract::Path(file): ax
         }
         Err(_) => axum::response::Redirect::temporary(&api::release_url(&pkg.file)).into_response(),
     }
+}
+
+/// One-line agent installer, for this server's version.
+async fn install_script() -> Response {
+    let script = include_str!("../packaging/agent/install-agent.sh").replace("@VERSION@", crate::VERSION);
+    let mut res = (StatusCode::OK, script).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/x-shellscript; charset=utf-8"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    res
 }
 
 async fn static_file(uri: Uri) -> Response {

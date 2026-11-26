@@ -161,6 +161,8 @@ function AddHost({ packages, serverUrl, onClose, onEnrolled }: { packages: Agent
     .split(",")
     .map((t) => t.trim())
     .filter(Boolean);
+  const flags = [name.trim() ? ` --name ${shellQuote(name.trim())}` : "", tagList.length ? ` --tags ${shellQuote(tagList.join(","))}` : ""].join("");
+  const oneLine = `curl -fsSL ${serverUrl}/install-agent.sh | sudo sh -s -- --server ${serverUrl} --token ${token?.token ?? "..."}${flags}`;
   const enroll = [
     `sudo opskills-agent enroll --server ${serverUrl} --token ${token?.token ?? "..."}`,
     name.trim() ? ` --name ${shellQuote(name.trim())}` : "",
@@ -260,6 +262,14 @@ function AddHost({ packages, serverUrl, onClose, onEnrolled }: { packages: Agent
             </p>
           )}
         </Numbered>
+
+        <details className="group rounded-xl bg-surface-2 px-4 py-3 text-sm">
+          <summary className="cursor-pointer font-medium text-ink-2 marker:text-muted">Or do steps 2 and 3 in one line</summary>
+          <div className="mt-3 space-y-2">
+            <p className="text-xs text-muted">Picks the package for the host's system and architecture, installs it, enrolls the host and starts the agent.</p>
+            <CommandBlock label="one-line install" lines={[oneLine]} />
+          </div>
+        </details>
 
         <div className={cx("flex items-center gap-3 rounded-xl px-4 py-3 text-sm", joined ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-surface-2 text-muted")} role="status">
           {joined ? (

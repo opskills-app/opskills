@@ -1,0 +1,6 @@
+#cloud-config
+# Install and enroll the OpSkills agent on a new machine's first boot.
+# Create a token on the Hosts page (or with the API) for each machine, and replace
+# the server address and TOKEN below. Tokens work once and expire after 24 hours.
+runcmd:
+  - [sh, -c, "curl -fsSL https://opskills.example.com/install-agent.sh | sh -s -- --server https://opskills.example.com --token TOKEN --tags web,prod"]
