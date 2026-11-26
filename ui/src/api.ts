@@ -216,6 +216,16 @@ export interface Run {
   retry_of?: string;
 }
 
+/** An API token for automation. Its value is shown only once, when it's created. */
+export interface ApiToken {
+  id: string;
+  name: string;
+  user: string;
+  created_at: number;
+  expires_at: number | null;
+  last_used_at: number | null;
+}
+
 export interface LogLine {
   seq: number;
   ts: number;
@@ -264,7 +274,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
-  me: () => request<{ user: string }>("GET", "/auth/me"),
+  me: () => request<{ user: string; token: string | null }>("GET", "/auth/me"),
+  tokens: () => request<ApiToken[]>("GET", "/me/tokens"),
+  createToken: (name: string, expires_in_days: number | null) => request<{ token: ApiToken; value: string }>("POST", "/me/tokens", { name, expires_in_days }),
+  revokeToken: (id: string) => request<void>("DELETE", `/me/tokens/${encodeURIComponent(id)}`),
   login: (username: string, password: string) => request<{ user: string }>("POST", "/auth/login", { username, password }),
   logout: () => request<void>("POST", "/auth/logout"),
   runbooks: () => request<Runbook[]>("GET", "/runbooks"),

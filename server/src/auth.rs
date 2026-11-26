@@ -33,6 +33,31 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// API tokens look like `osk_<12 hex id>_<64 hex secret>`, so they're easy to spot in
+/// logs and secret scanners. Returns (id, secret, the whole token).
+pub fn new_api_token() -> (String, String, String) {
+    let id = hex::encode(random_bytes::<6>());
+    let secret = hex::encode(random_bytes::<32>());
+    let whole = format!("{API_TOKEN_PREFIX}{id}_{secret}");
+    (id, secret, whole)
+}
+
+pub const API_TOKEN_PREFIX: &str = "osk_";
+
+/// Split a token into its id and secret, if it has the right shape.
+pub fn parse_api_token(token: &str) -> Option<(&str, &str)> {
+    let (id, secret) = token.strip_prefix(API_TOKEN_PREFIX)?.split_once('_')?;
+    let hex = |s: &str, n: usize| s.len() == n && s.chars().all(|c| c.is_ascii_hexdigit());
+    (hex(id, 12) && hex(secret, 64)).then_some((id, secret))
+}
+
+/// The token in an `Authorization: Bearer ...` header.
+pub fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    scheme.eq_ignore_ascii_case("bearer").then(|| token.trim().to_string())
+}
+
 pub fn new_token() -> String {
     hex::encode(random_bytes::<32>())
 }
@@ -78,6 +103,18 @@ mod tests {
         let mut bad = HeaderMap::new();
         bad.insert("cookie", format!("{COOKIE}=not-hex").parse().unwrap());
         assert_eq!(cookie_token(&bad), None);
+    }
+
+    #[test]
+    fn api_tokens_parse() {
+        let (id, secret, whole) = new_api_token();
+        assert_eq!(parse_api_token(&whole), Some((id.as_str(), secret.as_str())));
+        for bad in ["", "osk_", "osk_abc_def", "xyz_0123456789ab_0000", &whole.replace("osk_", "osx_"), &format!("{whole}0")] {
+            assert_eq!(parse_api_token(bad), None, "{bad}");
+        }
+        let mut h = HeaderMap::new();
+        h.insert("authorization", format!("bearer {whole}").parse().unwrap());
+        assert_eq!(bearer_token(&h), Some(whole));
     }
 
     #[test]

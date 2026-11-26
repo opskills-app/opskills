@@ -50,8 +50,8 @@ the right address in the commands it shows.
    `amd64` they look like this:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.6.0_amd64.deb
-   sudo apt install ./opskills-agent_0.6.0_amd64.deb
+   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.7.0_amd64.deb
+   sudo apt install ./opskills-agent_0.7.0_amd64.deb
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -59,8 +59,8 @@ the right address in the commands it shows.
    And for RHEL, Rocky, Alma or Fedora on `x86_64`:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.6.0-1.x86_64.rpm
-   sudo dnf install ./opskills-agent-0.6.0-1.x86_64.rpm
+   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.7.0-1.x86_64.rpm
+   sudo dnf install ./opskills-agent-0.7.0-1.x86_64.rpm
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -94,17 +94,20 @@ enrollment, so no token is needed then. To read it before running it:
 
 ## Deploy agents to many hosts
 
-Every host needs its own enrollment token. Automation creates them with the API:
-sign in once as `admin`, then `POST /api/v1/hosts/enrollment-tokens` for each host.
-Every request that changes something needs the `X-OpSkills-Request: 1` header.
+Every host needs its own enrollment token. Automation creates them with the API,
+using an API token from **Settings > API tokens**: `POST
+/api/v1/hosts/enrollment-tokens` once per host.
 
 ```bash
 OPSKILLS=https://opskills.example.com
-curl -fsS -c cookies.txt -H 'X-OpSkills-Request: 1' -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"..."}' "$OPSKILLS/api/v1/auth/login"
-curl -fsS -b cookies.txt -X POST -H 'X-OpSkills-Request: 1' "$OPSKILLS/api/v1/hosts/enrollment-tokens"
+OPSKILLS_TOKEN=osk_...   # from Settings > API tokens
+curl -fsS -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" "$OPSKILLS/api/v1/hosts/enrollment-tokens"
 # {"token":"3f9c...","expires_at":1764201600000}
 ```
+
+Without an API token, sign in as `admin` instead and send the session cookie plus
+the `X-OpSkills-Request: 1` header on every change, as `deploy/enroll-hosts.sh` does
+when no token is set.
 
 The [`deploy/`](../deploy/) folder has three ready-made ways to use it. Each one
 installs the agent from your OpSkills server and is safe to run again.

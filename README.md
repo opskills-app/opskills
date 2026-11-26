@@ -9,7 +9,7 @@ with live output, approvals and a full audit trail.
 
 Website: [opskills.app](https://opskills.app)
 
-> **Status:** v0.6.0 preview. Sign in, keep secrets in an encrypted vault, enroll
+> **Status:** v0.7.0 preview. Sign in, keep secrets in an encrypted vault, enroll
 > your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks with
 > inputs, retries, file copies and calls to other runbooks, and run them on the
 > server or on your hosts, with output streaming live to your browser. Schedules and approvals are next (the Settings page still shows sample
@@ -31,7 +31,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.6.0
+  opskills/opskills:0.7.0
 docker logs opskills 2>&1 | grep 'Admin password'
 ```
 
@@ -43,13 +43,13 @@ use the included [`compose.yaml`](compose.yaml): `docker compose up -d`.
 ### Debian and Ubuntu
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.6.0/opskills_0.6.0_amd64.deb
-sudo apt install ./opskills_0.6.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.7.0/opskills_0.7.0_amd64.deb
+sudo apt install ./opskills_0.7.0_amd64.deb
 sudo systemctl start opskills
 sudo journalctl -u opskills | grep 'Admin password'
 ```
 
-Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.6.0_arm64.deb`
+Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.7.0_arm64.deb`
 on ARM servers (`dpkg --print-architecture` tells you which). All downloads and
 checksums are on the [releases page](https://github.com/opskills-app/opskills/releases/latest).
 The package installs a sandboxed systemd service that runs as the `opskills`
@@ -129,8 +129,8 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   the exact commands:
 
   ```bash
-  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.6.0_amd64.deb
-  sudo apt install ./opskills-agent_0.6.0_amd64.deb
+  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.7.0_amd64.deb
+  sudo apt install ./opskills-agent_0.7.0_amd64.deb
   sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
   sudo systemctl enable --now opskills-agent
   ```
@@ -166,9 +166,13 @@ The full guide is [docs/hosts.md](docs/hosts.md).
 
 ## Security
 
-- Every API call needs a signed-in session (an HttpOnly, SameSite=Strict cookie).
-  Every change also needs the `X-OpSkills-Request: 1` header, which blocks
-  cross-site request forgery.
+- Every API call needs a signed-in session (an HttpOnly, SameSite=Strict cookie) or
+  an API token. With a session, every change also needs the `X-OpSkills-Request: 1`
+  header, which blocks cross-site request forgery.
+- API tokens (`osk_...`) are shown once and stored only as a SHA-256 hash. They can
+  expire, are revoked instantly, and can't create tokens or sign in. Runs record
+  which token started them. A token can do everything else the admin can, so keep
+  it in your CI's secret store.
 - Failed sign-ins are slowed down. Resetting the admin password signs out every
   session.
 - Runbooks run commands with the server user's permissions, and as **root** on
@@ -217,12 +221,21 @@ when the local server is healthy. HTTP probes are at `/healthz` and `/readyz`.
 
 ## API
 
-The web app uses the same HTTP API you can call yourself, under `/api/v1`:
+The web app uses the same HTTP API you can call yourself, under `/api/v1`. Scripts
+and CI use an **API token**: create one under **Settings > API tokens** (it's shown
+once) and send it as a Bearer token:
+
+```bash
+curl -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" \
+  https://ops.example.com/api/v1/runbooks/<id>/runs
+```
+
 
 | Endpoint | What it does |
 |---|---|
 | `GET /system` | Version and server ID (no sign-in needed) |
-| `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` | Sign in and out |
+| `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` | Sign in and out, and who you are |
+| `GET /me/tokens`, `POST /me/tokens`, `DELETE /me/tokens/{id}` | List, create (the value is returned once) and revoke API tokens; signed-in sessions only |
 | `GET /runbooks`, `POST /runbooks` | List and create runbooks |
 | `GET`, `PUT`, `DELETE /runbooks/{id}` | Read, replace and delete a runbook |
 | `POST /runbooks/{id}/runs` | Start a run; body `{"inputs": {...}}` when the runbook has inputs |

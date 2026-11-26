@@ -96,7 +96,7 @@ Start a run with input values through the API:
 
 ```bash
 curl -X POST https://ops.example.com/api/v1/runbooks/<id>/runs \
-  -H 'Content-Type: application/json' -H 'X-OpSkills-Request: 1' -b cookies.txt \
+  -H "Authorization: Bearer $OPSKILLS_TOKEN" -H 'Content-Type: application/json' \
   -d '{"inputs": {"service": "nginx", "region": "us-east"}}'
 ```
 
