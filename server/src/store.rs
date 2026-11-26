@@ -25,6 +25,8 @@ const ENROLLMENT: TableDefinition<&str, &str> = TableDefinition::new("enrollment
 const SESSIONS: TableDefinition<&str, &str> = TableDefinition::new("sessions");
 /// Key: API token id. Value: the token plus the SHA-256 of its secret.
 const API_TOKENS: TableDefinition<&str, &str> = TableDefinition::new("api_tokens");
+/// Key: "<runbook id>/<schedule id>". Value: when it last fired, and how that went.
+const SCHEDULE_STATE: TableDefinition<&str, &str> = TableDefinition::new("schedule_state");
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
@@ -55,6 +57,7 @@ impl Store {
             w.open_table(HOSTS)?;
             w.open_table(ENROLLMENT)?;
             w.open_table(API_TOKENS)?;
+            w.open_table(SCHEDULE_STATE)?;
         }
         w.commit()?;
         Ok(Store { db })
@@ -283,6 +286,15 @@ impl Store {
     }
 
     // Sessions
+
+    // Schedules
+
+    pub fn schedule_state(&self, key: &str) -> Result<Option<crate::schedule::ScheduleState>> {
+        self.get(SCHEDULE_STATE, key)?.map(|s| serde_json::from_str(&s).map_err(Into::into)).transpose()
+    }
+    pub fn put_schedule_state(&self, key: &str, s: &crate::schedule::ScheduleState) -> Result<()> {
+        self.put(SCHEDULE_STATE, key, &serde_json::to_string(s)?)
+    }
 
     // API tokens
 

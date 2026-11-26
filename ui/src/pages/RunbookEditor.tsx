@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ArrowDown, ArrowLeft, ArrowUp, Check, ChevronDown, FileText, KeyRound, Plus, Save, Server, SlidersHorizontal, Tag as TagIcon, Terminal, Trash2, Workflow } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, CalendarClock, Check, ChevronDown, FileText, KeyRound, Plus, Save, Server, SlidersHorizontal, Tag as TagIcon, Terminal, Trash2, Workflow } from "lucide-react";
 import {
   api,
   defaultRollout,
@@ -16,12 +16,14 @@ import {
   type Rollout,
   type Runbook,
   type RunbookInput,
+  type Schedule,
   type Step,
   type StepKind,
   type Targets,
 } from "../api";
 import { Button, Card, cx, ErrorNote, PageHeader, StatusDot } from "../components/ui";
 import { stepOptions } from "./RunbookDetail";
+import { when } from "../format";
 import { templates } from "../templates";
 import { go } from "../router";
 
@@ -310,6 +312,185 @@ function cleanRollout(r: Rollout | undefined): Rollout {
   }
   if (r.on_host_failure) out.on_host_failure = r.on_host_failure;
   return out;
+}
+
+const cronPresets: { cron: string; label: string }[] = [
+  { cron: "*/15 * * * *", label: "Every 15 minutes" },
+  { cron: "0 * * * *", label: "Every hour" },
+  { cron: "0 3 * * *", label: "Every day at 03:00" },
+  { cron: "0 9 * * 1-5", label: "Weekdays at 09:00" },
+  { cron: "0 6 * * 1", label: "Mondays at 06:00" },
+];
+
+const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+const zones = (() => {
+  const list = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [];
+  return ["UTC", ...list.filter((z) => z !== "UTC")];
+})();
+
+/** "2026-11-27T09:30" in the viewer's time zone, for a datetime-local field. */
+function toLocalInput(ms: number) {
+  const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60_000);
+  return d.toISOString().slice(0, 16);
+}
+
+const newSchedule = (): Schedule => ({ id: "", name: "", cron: "0 3 * * *", timezone: localZone, enabled: true, inputs: {} });
+
+/** The next times a cron expression fires, asked of the server as you type. */
+function useCronPreview(cron: string | undefined, timezone: string) {
+  const [state, setState] = useState<{ next: number[]; error: string | null }>({ next: [], error: null });
+  useEffect(() => {
+    if (cron === undefined) return;
+    const timer = setTimeout(() => {
+      api.previewSchedule(cron, timezone).then(
+        (r) => setState({ next: r.next, error: null }),
+        (e) => setState({ next: [], error: e instanceof Error ? e.message : String(e) }),
+      );
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [cron, timezone]);
+  return state;
+}
+
+function ScheduleCard({ s, index, inputs, onChange, onRemove }: { s: Schedule; index: number; inputs: InputDef[]; onChange: (s: Schedule) => void; onRemove: () => void }) {
+  const repeat = s.cron !== undefined;
+  const preview = useCronPreview(s.cron, s.timezone);
+  const preset = cronPresets.find((p) => p.cron === s.cron?.trim().replace(/\s+/g, " "));
+  const fillable = inputs.filter((d) => d.type !== "secret");
+  return (
+    <Card className="space-y-4 p-5 sm:p-6">
+      <div className="flex flex-wrap items-center gap-3">
+        <div role="radiogroup" aria-label={`Schedule ${index + 1} kind`} className="inline-flex gap-1 rounded-xl bg-surface-2 p-1">
+          {[
+            { on: repeat, label: "Repeat", pick: () => onChange({ ...s, cron: s.cron ?? "0 3 * * *", at: undefined }) },
+            { on: !repeat, label: "Once", pick: () => onChange({ ...s, cron: undefined, at: s.at ?? Date.now() + 3_600_000 }) },
+          ].map((o) => (
+            <button key={o.label} type="button" role="radio" aria-checked={o.on} onClick={o.pick} className={cx("h-8 rounded-lg px-3 text-xs font-medium", o.on ? "bg-surface text-accent shadow-sm" : "text-muted hover:text-ink")}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <input value={s.name} onChange={(e) => onChange({ ...s, name: e.target.value })} placeholder="Name (optional), like nightly" aria-label={`Schedule ${index + 1} name`} className={`${field} h-9 flex-1 min-w-[10rem]`} />
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={s.enabled} onChange={(e) => onChange({ ...s, enabled: e.target.checked })} className="size-4 accent-accent" />
+          On
+        </label>
+        <button type="button" onClick={onRemove} className="rounded-lg p-2 text-muted hover:text-rose-600" aria-label={`Remove schedule ${index + 1}`}>
+          <Trash2 className="size-4" />
+        </button>
+      </div>
+      {repeat ? (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label className={smallLabel} htmlFor={`sc-preset-${index}`}>
+              When
+            </label>
+            <select id={`sc-preset-${index}`} value={preset?.cron ?? ""} onChange={(e) => e.target.value && onChange({ ...s, cron: e.target.value })} className={`mt-1.5 ${field}`}>
+              {cronPresets.map((p) => (
+                <option key={p.cron} value={p.cron}>
+                  {p.label}
+                </option>
+              ))}
+              <option value="">Custom</option>
+            </select>
+          </div>
+          <div>
+            <label className={smallLabel} htmlFor={`sc-cron-${index}`}>
+              Cron expression
+            </label>
+            <input id={`sc-cron-${index}`} value={s.cron} onChange={(e) => onChange({ ...s, cron: e.target.value })} spellCheck={false} className={`mt-1.5 font-mono ${field}`} />
+          </div>
+          <div>
+            <label className={smallLabel} htmlFor={`sc-tz-${index}`}>
+              Time zone
+            </label>
+            <select id={`sc-tz-${index}`} value={s.timezone} onChange={(e) => onChange({ ...s, timezone: e.target.value })} className={`mt-1.5 ${field}`}>
+              {(zones.includes(s.timezone) ? zones : [s.timezone, ...zones]).map((z) => (
+                <option key={z} value={z}>
+                  {z}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="text-xs text-muted sm:pt-6">
+            {preview.error ? (
+              <span className="text-rose-600 dark:text-rose-400">{preview.error}</span>
+            ) : preview.next.length ? (
+              <>Next, in your time: {preview.next.slice(0, 3).map(when).join(" · ")}</>
+            ) : (
+              "Minute, hour, day of month, month, day of week."
+            )}
+          </div>
+        </div>
+      ) : (
+        <div>
+          <label className={smallLabel} htmlFor={`sc-at-${index}`}>
+            Run once at (your time)
+          </label>
+          <input
+            id={`sc-at-${index}`}
+            type="datetime-local"
+            value={s.at ? toLocalInput(s.at) : ""}
+            onChange={(e) => onChange({ ...s, at: e.target.value ? new Date(e.target.value).getTime() : undefined })}
+            className={`mt-1.5 ${field} sm:max-w-xs`}
+          />
+        </div>
+      )}
+      {fillable.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 rounded-xl bg-surface-2/60 p-4 sm:grid-cols-2">
+          {fillable.map((d) => (
+            <div key={d.name}>
+              <label className={smallLabel} htmlFor={`sc-in-${index}-${d.name}`}>
+                {d.label || d.name}
+                {d.required && d.default === null && <span className="text-rose-600"> *</span>}
+              </label>
+              {d.type === "choice" || d.type === "boolean" ? (
+                <select id={`sc-in-${index}-${d.name}`} value={s.inputs[d.name] ?? ""} onChange={(e) => onChange({ ...s, inputs: { ...s.inputs, [d.name]: e.target.value } })} className={`mt-1.5 ${field} bg-surface`}>
+                  <option value="">{d.default !== null ? `Default (${d.default})` : "Choose"}</option>
+                  {(d.type === "boolean" ? ["true", "false"] : d.choices).map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input id={`sc-in-${index}-${d.name}`} value={s.inputs[d.name] ?? ""} onChange={(e) => onChange({ ...s, inputs: { ...s.inputs, [d.name]: e.target.value } })} placeholder={d.default !== null ? `Default: ${d.default}` : ""} className={`mt-1.5 ${field} bg-surface`} />
+              )}
+            </div>
+          ))}
+          <p className="text-xs text-muted sm:col-span-2">Values for the runs this schedule starts. Secret inputs can't be scheduled.</p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** Repeating and one-time runs. */
+function SchedulesEditor({ schedules, inputs, onChange }: { schedules: Schedule[]; inputs: InputDef[]; onChange: (s: Schedule[]) => void }) {
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="pt-4 text-[19px] font-semibold">Schedules</h3>
+        <p className="mt-1 text-sm text-muted">Run this runbook by itself, on repeat or once. Times missed while the server is down are skipped.</p>
+      </div>
+      {schedules.map((s, i) => (
+        <ScheduleCard key={s.id || `new-${i}`} s={s} index={i} inputs={inputs} onChange={(n) => onChange(schedules.map((x, k) => (k === i ? n : x)))} onRemove={() => onChange(schedules.filter((_, k) => k !== i))} />
+      ))}
+      <button
+        type="button"
+        onClick={() => onChange([...schedules, newSchedule()])}
+        className="flex h-11 items-center gap-2 rounded-xl border border-dashed border-line-strong px-4 text-sm text-muted hover:border-accent hover:text-accent"
+      >
+        <CalendarClock className="size-4" /> Add schedule
+      </button>
+    </div>
+  );
+}
+
+/** Only the values the API needs: no empty inputs, and one of cron or at. */
+function cleanSchedule(s: Schedule): Schedule {
+  const inputs = Object.fromEntries(Object.entries(s.inputs).filter(([, v]) => v !== ""));
+  return s.cron !== undefined ? { ...s, at: undefined, cron: s.cron.trim(), inputs } : { ...s, cron: undefined, inputs };
 }
 
 /** Values people fill in when they start a run. */
@@ -662,6 +843,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
           on_step_failure: rb.on_step_failure ?? "stop",
           output_limit: rb.output_limit,
           rollout: rb.rollout ?? defaultRollout,
+          schedules: rb.schedules ?? [],
           secrets: rb.secrets ?? [],
           targets: rb.targets ?? { hosts: [], tags: [] },
           timeout_seconds: rb.timeout_seconds,
@@ -712,6 +894,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
         .filter(Boolean),
       inputs: (input.inputs ?? []).map(cleanInput),
       steps: input.steps.map(cleanStep),
+      schedules: (input.schedules ?? []).map(cleanSchedule),
       rollout: onHosts ? cleanRollout(input.rollout) : { ...defaultRollout },
       timeout_seconds: typeof input.timeout_seconds === "string" ? (durationValue(input.timeout_seconds) ?? undefined) : input.timeout_seconds,
     };
@@ -840,6 +1023,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
           >
             <Plus className="size-4" /> Add step
           </button>
+          <SchedulesEditor schedules={input.schedules ?? []} inputs={input.inputs ?? []} onChange={(schedules) => setInput((s) => ({ ...s, schedules }))} />
         </div>
 
         <aside className="space-y-4">

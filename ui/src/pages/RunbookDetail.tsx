@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ArrowLeft, Copy, FileText, Pencil, Play, Terminal, Trash2, Workflow } from "lucide-react";
 import { api, LOCAL_HOST_ID, MAX_OUTPUT_LINES, runsOnServer, useData, type FailurePolicy, type Host, type Rollout, type Runbook, type Step } from "../api";
 import { inputLabel } from "../components/StartRun";
-import { duration, runDuration, runNumber, timeAgo } from "../format";
+import { duration, fromNow, runDuration, runNumber, timeAgo, when } from "../format";
 import { Button, Card, CardHeader, cx, ErrorNote, PageHeader, StatusPill, Tag } from "../components/ui";
 import { useRunNow } from "./Runbooks";
 import { go } from "../router";
@@ -44,6 +44,20 @@ function toYaml(rb: Runbook) {
   }
   if (rb.output_limit && (rb.output_limit.lines !== MAX_OUTPUT_LINES || rb.output_limit.action !== "truncate")) {
     lines.push("output_limit:", `  lines: ${rb.output_limit.lines}`, `  action: ${rb.output_limit.action}`);
+  }
+  if (rb.schedules?.length) {
+    lines.push("schedules:");
+    for (const s of rb.schedules) {
+      lines.push(s.cron ? `  - cron: ${JSON.stringify(s.cron)}` : `  - at: ${new Date(s.at ?? 0).toISOString()}`);
+      if (s.name) lines.push(`    name: ${q(s.name)}`);
+      if (s.cron) lines.push(`    timezone: ${s.timezone}`);
+      if (!s.enabled) lines.push("    enabled: false");
+      const ins = Object.entries(s.inputs ?? {});
+      if (ins.length) {
+        lines.push("    inputs:");
+        for (const [k, v] of ins) lines.push(`      ${k}: ${q(v)}`);
+      }
+    }
   }
   lines.push("steps:");
   for (const s of rb.steps) {
@@ -160,6 +174,44 @@ function StepBody({ step }: { step: Step }) {
     );
   }
   return <pre className={pre}>{step.run}</pre>;
+}
+
+/** Each schedule with its next run and how the last one went. */
+function SchedulesCard({ rb }: { rb: Runbook }) {
+  const status = useData(() => api.scheduleStatus(rb.id), [rb.id, rb.updated_at], 30000);
+  if (!rb.schedules?.length) return null;
+  const byId = new Map((status.data ?? []).map((s) => [s.id, s]));
+  return (
+    <Card>
+      <CardHeader title="Schedules" />
+      <ul className="space-y-4 px-6 pb-6 text-sm sm:px-8">
+        {rb.schedules.map((s) => {
+          const st = byId.get(s.id);
+          const next = st?.next[0];
+          return (
+            <li key={s.id}>
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="font-medium">{s.name || (s.cron ? "Repeating" : "Once")}</span>
+                <code className="font-mono text-[11px] text-muted">{s.cron ? `${s.cron} ${s.timezone}` : s.at ? when(s.at) : ""}</code>
+              </div>
+              <p className="mt-0.5 text-xs text-muted">
+                {!s.enabled ? "Off" : next ? `Next: ${when(next)} (${fromNow(next)})` : s.cron ? "No upcoming time" : "Done"}
+                {st?.last_run_id && (
+                  <>
+                    {" · last "}
+                    <a href={`#/runs/${st.last_run_id}`} className="text-accent hover:underline">
+                      run #{runNumber(st.last_run_id)}
+                    </a>
+                  </>
+                )}
+              </p>
+              {st?.last_error && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">Last time it couldn't start: {st.last_error}</p>}
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
+  );
 }
 
 function failureText(rb: Runbook) {
@@ -414,6 +466,7 @@ export function RunbookDetail({ id }: { id: string }) {
               )}
             </dl>
           </Card>
+          <SchedulesCard rb={r} />
           {history[0] && (
             <Card>
               <CardHeader title="Last run" />

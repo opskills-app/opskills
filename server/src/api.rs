@@ -39,6 +39,8 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/runbooks", get(list_runbooks).post(create_runbook))
         .route("/runbooks/{id}", get(get_runbook).put(update_runbook).delete(delete_runbook))
         .route("/runbooks/{id}/runs", post(start_run))
+        .route("/runbooks/{id}/schedules", get(schedule_status))
+        .route("/schedules/preview", post(preview_schedule))
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
         .route("/runs/{id}/logs", get(run_logs))
@@ -73,6 +75,10 @@ impl ApiError {
     }
     fn not_found(what: &str) -> Self {
         Self::new(StatusCode::NOT_FOUND, format!("{what} not found."))
+    }
+    /// The message for people, also used when a run starts from a schedule or webhook.
+    pub fn detail(&self) -> String {
+        self.detail.clone()
     }
 }
 
@@ -309,6 +315,7 @@ async fn create_runbook(State(st): State<Arc<AppState>>, body: String) -> ApiRes
         on_step_failure: input.on_step_failure,
         output_limit: input.output_limit.unwrap_or_default(),
         rollout: input.rollout,
+        schedules: input.schedules,
         secrets: input.secrets,
         targets: input.targets,
         timeout_seconds: input.timeout_seconds.unwrap_or(DEFAULT_STEP_TIMEOUT),
@@ -333,6 +340,7 @@ async fn update_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>,
         on_step_failure: input.on_step_failure,
         output_limit: input.output_limit.unwrap_or_default(),
         rollout: input.rollout,
+        schedules: input.schedules,
         secrets: input.secrets,
         targets: input.targets,
         timeout_seconds: input.timeout_seconds.unwrap_or(existing.timeout_seconds),
@@ -426,16 +434,59 @@ async fn start_run(State(st): State<Arc<AppState>>, Extension(user): Extension<C
     } else {
         serde_json::from_str(&body).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("Invalid run request: {e}")))?
     };
-    // Checks the inputs and decrypts the runbook's secrets; values live only in memory for the run.
-    let values = st.executor.prepare(&rb, &start.inputs).map_err(|e| match e {
+    let run = start_runbook(&st, &rb, &start.inputs, &user.label(), "manual")?;
+    Ok((StatusCode::CREATED, Json(run)).into_response())
+}
+
+/// Start a run of `rb` on its targets: check the inputs, decrypt its secrets (held only
+/// in memory for the run), pick the hosts and hand it to the executor. Used by the
+/// API, schedules and webhooks.
+pub fn start_runbook(st: &AppState, rb: &Runbook, given: &serde_json::Map<String, serde_json::Value>, started_by: &str, trigger: &str) -> ApiResult<Run> {
+    let values = st.executor.prepare(rb, given).map_err(|e| match e {
         StartError::BadInput(m) => ApiError::new(StatusCode::BAD_REQUEST, m),
         StartError::Conflict(m) => ApiError::new(StatusCode::CONFLICT, m),
         StartError::Internal(e) => e.into(),
     })?;
-    let hosts = run_hosts(&st, &rb)?;
-    let run = Run::new(&rb, &user.label(), hosts, &values.inputs);
-    let run = st.executor.start(run, values)?;
-    Ok((StatusCode::CREATED, Json(run)).into_response())
+    let hosts = run_hosts(st, rb)?;
+    let mut run = Run::new(rb, started_by, hosts, &values.inputs);
+    run.trigger = trigger.into();
+    Ok(st.executor.start(run, values)?)
+}
+
+// Schedules
+
+/// What the scheduler knows about each of a runbook's schedules.
+async fn schedule_status(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<Json<Vec<serde_json::Value>>> {
+    let rb = st.store.runbook(&id)?.ok_or_else(|| ApiError::not_found("Runbook"))?;
+    let now = now_ms();
+    let mut out = Vec::new();
+    for s in &rb.schedules {
+        let state = st.store.schedule_state(&crate::schedule::state_key(&rb.id, &s.id))?.unwrap_or_default();
+        out.push(json!({
+            "id": s.id,
+            "next": crate::schedule::upcoming(s, now, 3),
+            "last_fired_at": state.last_fired_at,
+            "last_run_id": state.last_run_id,
+            "last_error": state.last_error,
+        }));
+    }
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreviewInput {
+    cron: String,
+    #[serde(default)]
+    timezone: Option<String>,
+}
+
+/// The next times a cron expression fires, for the editor to show while you type.
+async fn preview_schedule(body: String) -> ApiResult<Json<serde_json::Value>> {
+    let input: PreviewInput = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid preview request: {e}")))?;
+    let cron = crate::schedule::parse_cron(&input.cron).map_err(bad)?;
+    let tz = crate::schedule::parse_tz(input.timezone.as_deref().unwrap_or("UTC")).map_err(bad)?;
+    Ok(Json(json!({ "next": crate::schedule::next_times(&cron, tz, now_ms(), 5) })))
 }
 
 /// The hosts a run of `rb` goes to, in order: the server first if targeted, then hosts by name.

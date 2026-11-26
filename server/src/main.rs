@@ -9,6 +9,7 @@ mod filter;
 mod firststart;
 mod hub;
 mod model;
+mod schedule;
 mod store;
 mod template;
 mod vault;

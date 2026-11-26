@@ -83,6 +83,26 @@ export interface Rollout {
   on_host_failure?: "stop" | "continue";
 }
 
+/** When a runbook runs by itself: a cron expression in a time zone, or once. */
+export interface Schedule {
+  id: string;
+  name: string;
+  cron?: string;
+  /** Once: epoch milliseconds. */
+  at?: number;
+  timezone: string;
+  enabled: boolean;
+  inputs: Record<string, string>;
+}
+
+export interface ScheduleStatus {
+  id: string;
+  next: number[];
+  last_fired_at: number | null;
+  last_run_id: string | null;
+  last_error: string | null;
+}
+
 export const defaultRollout: Rollout = { mode: "sequential", max_parallel: 0, canary: 0, pause_seconds: 0 };
 
 /** Where a runbook runs. All empty: on the OpSkills server. */
@@ -109,6 +129,7 @@ export interface Runbook {
   on_step_failure: FailurePolicy;
   output_limit: OutputLimit;
   rollout: Rollout;
+  schedules: Schedule[];
   secrets: string[];
   targets: Targets;
   timeout_seconds: number;
@@ -125,6 +146,7 @@ export interface RunbookInput {
   on_step_failure?: FailurePolicy;
   output_limit?: OutputLimit;
   rollout?: Rollout;
+  schedules?: Schedule[];
   secrets: string[];
   targets: Targets;
   /** Seconds, or a duration string like "10m". */
@@ -287,6 +309,8 @@ export const api = {
   deleteRunbook: (id: string) => request<void>("DELETE", `/runbooks/${encodeURIComponent(id)}`),
   startRun: (runbookId: string, inputs?: Record<string, string>) =>
     request<Run>("POST", `/runbooks/${encodeURIComponent(runbookId)}/runs`, inputs ? { inputs } : undefined),
+  scheduleStatus: (runbookId: string) => request<ScheduleStatus[]>("GET", `/runbooks/${encodeURIComponent(runbookId)}/schedules`),
+  previewSchedule: (cron: string, timezone: string) => request<{ next: number[] }>("POST", "/schedules/preview", { cron, timezone }),
   runs: (opts: { runbookId?: string; limit?: number } = {}) => {
     const q = new URLSearchParams();
     if (opts.runbookId) q.set("runbook_id", opts.runbookId);

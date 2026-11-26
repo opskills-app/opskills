@@ -138,6 +138,13 @@ Since 0.4.0, runbooks have typed inputs and per-step control:
   sink and the halt flags are shared behind short-lived locks. A failed step stops
   only its own host; `on_host_failure` decides whether hosts that haven't started
   still run.
+- Schedules (since 0.8.0) live on the runbook (`schedules`: cron in an IANA time
+  zone, or a one-time `at`). `schedule.rs` uses croner and chrono-tz; a loop started
+  by `web::serve` calls `tick(floor, now)` every 5 s on a blocking thread. `tick` fires
+  only the latest due time after `max(floor, last_slot)`, where `floor` is when the
+  scheduler started (so missed times aren't replayed) and `last_slot` is stored per
+  schedule (so restarts don't fire twice). Runs start through `api::start_runbook`,
+  shared with the API.
 - API tokens (since 0.7.0): `osk_<12 hex id>_<64 hex secret>`, stored by id with the
   SHA-256 of the secret, compared in constant time. The guard accepts `Authorization:
   Bearer` (no CSRF header needed, since no cookie is involved) or a session. Tokens

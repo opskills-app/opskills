@@ -1,6 +1,6 @@
 [package]
 name = "opskills"
-version = "0.7.0"
+version = "0.8.0"
 description = "Runbooks your whole team can run: self-hosted job and runbook automation"
 license = "Apache-2.0"
 repository = "https://github.com/opskills-app/opskills"
@@ -13,7 +13,10 @@ aes-gcm = "0.11.1"
 anyhow = "1.0.105"
 argon2 = "0.6.0"
 axum = "0.8.9"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10.4"
 clap = { version = "4.6.10", features = ["derive", "env"] }
+croner = "=4.0.3"
 futures-util = "0.3.34"
 hex = "0.4.3"
 libc = "0.2.191"
