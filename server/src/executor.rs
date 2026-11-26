@@ -16,6 +16,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use futures_util::stream::{self, StreamExt};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Semaphore, broadcast, mpsc, watch};
@@ -219,13 +220,14 @@ impl Executor {
         };
         let limit = run.output_limit;
         let mut sink = Sink::new(&run.id, &live, &self.store, &values.hidden(), limit.lines, limit.action == LimitAction::Fail);
+        let first_host = run.hosts.first().map(|h| h.name.clone()).unwrap_or_else(|| LOCAL_HOST_NAME.into());
         if (!nested && permit.is_none()) || (nested && *cancel_rx.borrow()) {
             run.status = Status::Cancelled;
             for s in &mut run.steps {
                 s.status = Status::Skipped;
             }
             run.finished_at = Some(now_ms());
-            sink.system(0, "Run cancelled before it started.");
+            sink.system(0, &first_host, "Run cancelled before it started.");
             sink.flush();
             run.log_lines = sink.count;
             self.publish(&live, &run);
@@ -239,156 +241,53 @@ impl Executor {
 
         let hosts = if run.hosts.is_empty() { vec![RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into() }] } else { run.hosts.clone() };
         let per_host = run.steps.len() / hosts.len();
-        let finish_anyway = run.on_step_failure == FailurePolicy::FinishThenFail;
-        // A step failed that doesn't continue on error: the run ends as failed.
-        let mut failed = false;
-        let mut halt: Option<Halt> = None;
-        for (h, host) in hosts.iter().enumerate() {
-            let range = h * per_host..(h + 1) * per_host;
-            sink.host = host.name.clone();
-            let local = host.id == LOCAL_HOST_ID;
-            let workdir = self.work_root.join(&run.id);
-            let env = values.env(&run, host);
-            let template_values = values.template_values(&run, host);
-            let mut host_ok = true;
-            if local && halt.is_none()
-                && let Err(err) = std::fs::create_dir_all(&workdir) {
-                    sink.system(range.start, &format!("Could not create the working directory: {err}"));
-                    failed = true;
-                    host_ok = false;
-                    if !finish_anyway {
-                        halt = Some(Halt::Failed);
-                    }
-                }
-            for i in range.clone() {
-                if halt.is_some() || !host_ok {
-                    run.steps[i].status = Status::Skipped;
-                    continue;
-                }
-                let number = i - range.start + 1;
-                let last_on_host = i + 1 == range.end;
-                run.steps[i].status = Status::Running;
-                run.steps[i].started_at = Some(now_ms());
-                run.log_lines = sink.count;
-                self.publish(&live, &run);
-                if hosts.len() > 1 && number == 1 {
-                    sink.system(i, &format!("Host {} of {}: {}", h + 1, hosts.len(), host.name));
-                }
-                sink.system(i, &format!("Step {number}: {}", run.steps[i].name));
-
-                let step = run.steps[i].clone();
-                // What the step runs: its command, or the script that writes a copied file.
-                let prepared = match &step.copy {
-                    Some(copy) => copy_script(copy, &template_values, &values).map(|(script, extra)| {
-                        let mut e = env.clone();
-                        e.push(extra);
-                        (script, e)
-                    }),
-                    None => Ok((template::expand(&step.run, &template_values), env.clone())),
-                };
-                let timeout = Duration::from_secs(if step.timeout_seconds > 0 { step.timeout_seconds } else { run.timeout_seconds }.max(1));
-                let tries = step.retries + 1;
-                // Later steps on this host may still run after this one fails, so its files must stay.
-                let more_after_failure = !last_on_host && (step.continue_on_error || finish_anyway);
-                let mut attempt = 0;
-                let result = loop {
-                    attempt += 1;
-                    run.steps[i].attempts = attempt;
-                    if attempt > 1 {
-                        sink.system(i, &format!("Attempt {attempt} of {tries}."));
-                        run.log_lines = sink.count;
-                        self.publish(&live, &run);
-                    }
-                    let result = if let Some(call) = &step.call {
-                        match self.start_call(&run, i, host, call, &template_values) {
-                            Ok(child) => {
-                                sink.system(i, &format!("Running \"{}\" as run #{} on {}.", child.runbook_name, run_number(&child.id), host.name));
-                                run.steps[i].child_run_id = Some(child.id.clone());
-                                run.log_lines = sink.count;
-                                self.publish(&live, &run);
-                                self.wait_child(&child.id, timeout, &mut cancel_rx).await
-                            }
-                            Err(msg) => JobEnd::not_run(msg),
-                        }
-                    } else {
-                        match &prepared {
-                            Err(msg) => JobEnd::not_run(msg.clone()),
-                            Ok((command, step_env)) if local => {
-                                let mut full_env = base_env(&workdir, &run.id, number);
-                                full_env.extend(step_env.iter().cloned());
-                                run_command(command, &workdir, &full_env, timeout, &mut cancel_rx, |stream, line| sink.push(i, stream, &line)).await
-                            }
-                            Ok((command, step_env)) => {
-                                let job = Job {
-                                    id: uuid::Uuid::now_v7().to_string(),
-                                    run_id: run.id.clone(),
-                                    step: number,
-                                    command: command.clone(),
-                                    env: step_env.clone(),
-                                    timeout_seconds: timeout.as_secs(),
-                                    last: last_on_host,
-                                    keep_on_failure: attempt < tries || more_after_failure,
-                                };
-                                self.run_remote(&host.id, job, timeout, &mut cancel_rx, &mut sink, i).await
-                            }
-                        }
-                    };
-                    let succeeded = result.end == End::Exited && result.exit_code == Some(0);
-                    if succeeded || result.end == End::Cancelled || attempt >= tries {
-                        break result;
-                    }
-                    sink.system(i, &failure_message(&result, timeout));
-                    let delay = Duration::from_secs(step.retry_delay_seconds);
-                    if !delay.is_zero() {
-                        sink.system(i, &format!("Trying again in {}.", human_duration(step.retry_delay_seconds)));
-                        tokio::select! {
-                            _ = tokio::time::sleep(delay) => {}
-                            _ = wait_cancel(&mut cancel_rx) => break JobEnd { end: End::Cancelled, exit_code: None, error: None },
-                        }
-                    }
-                };
-
-                let over_limit = sink.limit_hit;
-                let step = &mut run.steps[i];
-                step.finished_at = Some(now_ms());
-                step.exit_code = result.exit_code;
-                step.status = match result.end {
-                    End::Exited if result.exit_code == Some(0) => Status::Succeeded,
-                    End::Cancelled if !over_limit => Status::Cancelled,
-                    _ => Status::Failed,
-                };
-                if step.status == Status::Succeeded {
-                    continue;
-                }
-                if over_limit {
-                    sink.system(i, &format!("The run reached its output limit of {} lines and was stopped.", limit.lines));
-                    failed = true;
-                    halt = Some(Halt::Failed);
-                } else if result.end == End::Cancelled {
-                    sink.system(i, "Run cancelled.");
-                    halt = Some(Halt::Cancelled);
-                } else {
-                    sink.system(i, &failure_message(&result, timeout));
-                    if step.continue_on_error {
-                        sink.system(i, "This step continues on error, so the run goes on.");
-                    } else {
-                        failed = true;
-                        if finish_anyway {
-                            sink.system(i, "The remaining steps still run; the run will end as failed.");
-                        } else {
-                            halt = Some(Halt::Failed);
-                        }
-                    }
+        let waves = run.rollout.waves(hosts.len());
+        let pause = run.rollout.pause_seconds;
+        let shared = Shared {
+            stop_on_host_failure: run.rollout.stops_on_host_failure(run.on_step_failure),
+            run: Mutex::new(run),
+            sink: Mutex::new(sink),
+            state: Mutex::new(RunState::default()),
+            live: &live,
+            values: &values,
+            hosts: &hosts,
+            per_host,
+        };
+        for (w, wave) in waves.iter().enumerate() {
+            let first = wave.hosts.start;
+            let (step0, name0) = (first * per_host, hosts[first].name.as_str());
+            if w > 0 && pause > 0 && shared.may_start_hosts() {
+                shared.system(step0, name0, &format!("Waiting {} before the next hosts.", human_duration(pause)));
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(pause)) => {}
+                    _ = wait_cancel(&mut cancel_rx) => {}
                 }
             }
-            if local {
-                let _ = std::fs::remove_dir_all(&workdir);
+            if *cancel_rx.borrow() {
+                shared.state.lock().unwrap().halt.get_or_insert(Halt::Cancelled);
             }
+            if !wave.label.is_empty() && shared.may_start_hosts() {
+                let names: Vec<&str> = hosts[wave.hosts.clone()].iter().map(|h| h.name.as_str()).collect();
+                shared.system(step0, name0, &format!("{}: {}", wave.label, names.join(", ")));
+            }
+            // Hosts of a wave run concurrently, at most `concurrency` at a time, all in this task.
+            stream::iter(wave.hosts.clone())
+                .map(|h| self.run_host(&shared, h, cancel_rx.clone()))
+                .buffer_unordered(wave.concurrency.max(1))
+                .collect::<Vec<()>>()
+                .await;
         }
 
-        run.status = match halt {
+        let Shared { run, sink, state, .. } = shared;
+        let (mut run, mut sink, state) = (run.into_inner().unwrap(), sink.into_inner().unwrap(), state.into_inner().unwrap());
+        for s in &mut run.steps {
+            if s.status == Status::Pending {
+                s.status = Status::Skipped;
+            }
+        }
+        run.status = match state.halt {
             Some(Halt::Cancelled) => Status::Cancelled,
-            _ if failed => Status::Failed,
+            _ if state.failed => Status::Failed,
             _ => Status::Succeeded,
         };
         run.finished_at = Some(now_ms());
@@ -397,6 +296,219 @@ impl Executor {
         self.publish(&live, &run);
         tracing::info!(run_id = %run.id, status = ?run.status, "run finished");
         drop(permit);
+    }
+
+    /// Run every step of host `h`, one after another, unless the run already stopped
+    /// starting hosts. Updates the shared run as it goes.
+    async fn run_host(self: &Arc<Self>, sh: &Shared<'_>, h: usize, mut cancel_rx: watch::Receiver<bool>) {
+        let host = &sh.hosts[h];
+        let range = h * sh.per_host..(h + 1) * sh.per_host;
+        if *cancel_rx.borrow() {
+            sh.state.lock().unwrap().halt.get_or_insert(Halt::Cancelled);
+        }
+        if !sh.may_start_hosts() {
+            sh.update(self, |r| range.clone().for_each(|i| r.steps[i].status = Status::Skipped));
+            return;
+        }
+        let (run_id, run_timeout, finish_anyway, limit_lines, env, template_values) = {
+            let r = sh.run.lock().unwrap();
+            (r.id.clone(), r.timeout_seconds, r.on_step_failure == FailurePolicy::FinishThenFail, r.output_limit.lines, sh.values.env(&r, host), sh.values.template_values(&r, host))
+        };
+        let name = host.name.as_str();
+        let local = host.id == LOCAL_HOST_ID;
+        let workdir = self.work_root.join(&run_id);
+        // A step failed that doesn't continue on error: this host fails.
+        let mut host_failed = false;
+        // This host's later steps are skipped.
+        let mut host_done = false;
+        if local
+            && let Err(err) = std::fs::create_dir_all(&workdir) {
+                sh.system(range.start, name, &format!("Could not create the working directory: {err}"));
+                host_failed = true;
+                host_done = true;
+            }
+        for i in range.clone() {
+            if host_done || sh.state.lock().unwrap().halt.is_some() {
+                sh.update(self, |r| r.steps[i].status = Status::Skipped);
+                continue;
+            }
+            let number = i - range.start + 1;
+            let last_on_host = i + 1 == range.end;
+            let step = sh.run.lock().unwrap().steps[i].clone();
+            sh.update(self, |r| {
+                r.steps[i].status = Status::Running;
+                r.steps[i].started_at = Some(now_ms());
+            });
+            if sh.hosts.len() > 1 && number == 1 {
+                sh.system(i, name, &format!("Host {} of {}: {}", h + 1, sh.hosts.len(), name));
+            }
+            sh.system(i, name, &format!("Step {number}: {}", step.name));
+
+            // What the step runs: its command, or the script that writes a copied file.
+            let prepared = match &step.copy {
+                Some(copy) => copy_script(copy, &template_values, sh.values).map(|(script, extra)| {
+                    let mut e = env.clone();
+                    e.push(extra);
+                    (script, e)
+                }),
+                None => Ok((template::expand(&step.run, &template_values), env.clone())),
+            };
+            let timeout = Duration::from_secs(if step.timeout_seconds > 0 { step.timeout_seconds } else { run_timeout }.max(1));
+            let tries = step.retries + 1;
+            // Later steps on this host may still run after this one fails, so its files must stay.
+            let more_after_failure = !last_on_host && (step.continue_on_error || finish_anyway);
+            let mut attempt = 0;
+            let result = loop {
+                attempt += 1;
+                if attempt > 1 {
+                    sh.system(i, name, &format!("Attempt {attempt} of {tries}."));
+                }
+                sh.update(self, |r| r.steps[i].attempts = attempt);
+                let result = if let Some(call) = &step.call {
+                    let parent = sh.run.lock().unwrap().clone();
+                    match self.start_call(&parent, i, host, call, &template_values) {
+                        Ok(child) => {
+                            sh.system(i, name, &format!("Running \"{}\" as run #{} on {}.", child.runbook_name, run_number(&child.id), name));
+                            sh.update(self, |r| r.steps[i].child_run_id = Some(child.id.clone()));
+                            self.wait_child(&child.id, timeout, &mut cancel_rx).await
+                        }
+                        Err(msg) => JobEnd::not_run(msg),
+                    }
+                } else {
+                    match &prepared {
+                        Err(msg) => JobEnd::not_run(msg.clone()),
+                        Ok((command, step_env)) if local => {
+                            let mut full_env = base_env(&workdir, &run_id, number);
+                            full_env.extend(step_env.iter().cloned());
+                            run_command(command, &workdir, &full_env, timeout, &mut cancel_rx, |stream, line| sh.sink.lock().unwrap().push(i, name, stream, &line)).await
+                        }
+                        Ok((command, step_env)) => {
+                            let job = Job {
+                                id: uuid::Uuid::now_v7().to_string(),
+                                run_id: run_id.clone(),
+                                step: number,
+                                command: command.clone(),
+                                env: step_env.clone(),
+                                timeout_seconds: timeout.as_secs(),
+                                last: last_on_host,
+                                keep_on_failure: attempt < tries || more_after_failure,
+                            };
+                            self.run_remote(&host.id, name, job, timeout, &mut cancel_rx, &sh.sink, i).await
+                        }
+                    }
+                };
+                let succeeded = result.end == End::Exited && result.exit_code == Some(0);
+                if succeeded || result.end == End::Cancelled || attempt >= tries {
+                    break result;
+                }
+                sh.system(i, name, &failure_message(&result, timeout));
+                let delay = Duration::from_secs(step.retry_delay_seconds);
+                if !delay.is_zero() {
+                    sh.system(i, name, &format!("Trying again in {}.", human_duration(step.retry_delay_seconds)));
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = wait_cancel(&mut cancel_rx) => break JobEnd { end: End::Cancelled, exit_code: None, error: None },
+                    }
+                }
+            };
+
+            let over_limit = sh.sink.lock().unwrap().limit_hit;
+            let status = match result.end {
+                End::Exited if result.exit_code == Some(0) => Status::Succeeded,
+                End::Cancelled if !over_limit => Status::Cancelled,
+                _ => Status::Failed,
+            };
+            sh.update(self, |r| {
+                let s = &mut r.steps[i];
+                s.finished_at = Some(now_ms());
+                s.exit_code = result.exit_code;
+                s.status = status;
+            });
+            if status == Status::Succeeded {
+                continue;
+            }
+            if over_limit {
+                sh.system(i, name, &format!("The run reached its output limit of {limit_lines} lines and was stopped."));
+                let mut s = sh.state.lock().unwrap();
+                s.failed = true;
+                s.halt.get_or_insert(Halt::Failed);
+            } else if result.end == End::Cancelled {
+                sh.system(i, name, "Run cancelled.");
+                sh.state.lock().unwrap().halt.get_or_insert(Halt::Cancelled);
+            } else {
+                sh.system(i, name, &failure_message(&result, timeout));
+                if step.continue_on_error {
+                    sh.system(i, name, "This step continues on error, so the run goes on.");
+                } else {
+                    host_failed = true;
+                    if finish_anyway {
+                        sh.system(i, name, "The remaining steps on this host still run; the run will end as failed.");
+                    } else {
+                        host_done = true;
+                    }
+                }
+            }
+        }
+        if local {
+            let _ = std::fs::remove_dir_all(&workdir);
+        }
+        if host_failed {
+            let stop = sh.stop_on_host_failure;
+            {
+                let mut s = sh.state.lock().unwrap();
+                s.failed = true;
+                if stop {
+                    s.stop_new_hosts = true;
+                }
+            }
+            let waiting = sh.run.lock().unwrap().steps.iter().any(|s| s.status == Status::Pending);
+            if stop && waiting {
+                sh.system(range.end - 1, name, &format!("{name} failed, so hosts that haven't started are skipped."));
+            }
+        }
+    }
+}
+
+/// What every host of a run shares while it runs. Locks are held only briefly and
+/// never across an await.
+struct Shared<'a> {
+    run: Mutex<Run>,
+    sink: Mutex<Sink<'a>>,
+    state: Mutex<RunState>,
+    live: &'a Live,
+    values: &'a RunValues,
+    hosts: &'a [RunHost],
+    per_host: usize,
+    stop_on_host_failure: bool,
+}
+
+#[derive(Default)]
+struct RunState {
+    /// A host failed: the run ends as failed.
+    failed: bool,
+    /// Cancelled, or stopped by the output limit: nothing more runs.
+    halt: Option<Halt>,
+    /// A host failed and the rollout stops on host failure: no new host starts.
+    stop_new_hosts: bool,
+}
+
+impl Shared<'_> {
+    fn may_start_hosts(&self) -> bool {
+        let s = self.state.lock().unwrap();
+        s.halt.is_none() && !s.stop_new_hosts
+    }
+
+    fn system(&self, step: usize, host: &str, text: &str) {
+        self.sink.lock().unwrap().system(step, host, text);
+    }
+
+    /// Change the run, then save and broadcast it.
+    fn update(&self, ex: &Executor, change: impl FnOnce(&mut Run)) {
+        let count = self.sink.lock().unwrap().count;
+        let mut run = self.run.lock().unwrap();
+        change(&mut run);
+        run.log_lines = count;
+        ex.publish(self.live, &run);
     }
 }
 
@@ -456,7 +568,8 @@ impl Executor {
     }
 
     /// Hand a step to the agent on `host_id` and follow it until it ends.
-    async fn run_remote(&self, host_id: &str, job: Job, timeout: Duration, cancel_rx: &mut watch::Receiver<bool>, sink: &mut Sink<'_>, step: usize) -> JobEnd {
+    #[allow(clippy::too_many_arguments)]
+    async fn run_remote(&self, host_id: &str, host_name: &str, job: Job, timeout: Duration, cancel_rx: &mut watch::Receiver<bool>, sink: &Mutex<Sink<'_>>, step: usize) -> JobEnd {
         let job_id = job.id.clone();
         let (slot, mut rx) = self.hub.dispatch(host_id, job);
         let queued = Instant::now();
@@ -478,7 +591,7 @@ impl Executor {
                         acked.get_or_insert(contact);
                         for l in lines {
                             let stream = if l.stream == "stderr" { "stderr" } else { "stdout" };
-                            sink.push(step, stream, &l.line);
+                            sink.lock().unwrap().push(step, host_name, stream, &l.line);
                         }
                     }
                     Some(AgentMsg::Finished(end)) => break end,
@@ -600,13 +713,11 @@ pub async fn wait_cancel(rx: &mut watch::Receiver<bool>) {
 
 /// Collects output lines: broadcasts each immediately, stores them in batches.
 struct Sink<'a> {
-    run_id: &'a str,
+    run_id: String,
     live: &'a Live,
     store: &'a Store,
     pending: Vec<LogLine>,
     count: u64,
-    /// Name of the host the current step runs on.
-    host: String,
     last_flush: Instant,
     truncated: bool,
     /// Secret values to hide in output, longest first.
@@ -637,14 +748,13 @@ fn mask_list(secrets: &[String]) -> Vec<String> {
 }
 
 impl<'a> Sink<'a> {
-    fn new(run_id: &'a str, live: &'a Live, store: &'a Store, hidden: &[String], limit: u64, fail_on_limit: bool) -> Self {
+    fn new(run_id: &str, live: &'a Live, store: &'a Store, hidden: &[String], limit: u64, fail_on_limit: bool) -> Self {
         Sink {
-            run_id,
+            run_id: run_id.to_string(),
             live,
             store,
             pending: Vec::new(),
             count: 0,
-            host: LOCAL_HOST_NAME.into(),
             last_flush: Instant::now(),
             truncated: false,
             masks: mask_list(hidden),
@@ -664,7 +774,8 @@ impl<'a> Sink<'a> {
         out
     }
 
-    fn push(&mut self, step: usize, stream: &str, text: &str) {
+    /// One output line from the step at index `step`, on the host named `host`.
+    fn push(&mut self, step: usize, host: &str, stream: &str, text: &str) {
         if self.count >= self.limit {
             if !self.truncated {
                 self.truncated = true;
@@ -673,23 +784,23 @@ impl<'a> Sink<'a> {
                     // Stops the step the same way a cancel does; the executor reports it as a failure.
                     let _ = self.live.cancel.send(true);
                 } else {
-                    self.emit(step, "system", &format!("Output limit of {} lines reached; further output is not kept.", self.limit));
+                    self.emit(step, host, "system", &format!("Output limit of {} lines reached; further output is not kept.", self.limit));
                 }
             }
             return;
         }
         let masked = self.mask(text);
         let text: String = masked.chars().take(MAX_LINE_CHARS).collect();
-        self.emit(step, stream, &text);
+        self.emit(step, host, stream, &text);
     }
 
-    fn system(&mut self, step: usize, text: &str) {
-        self.emit(step, "system", text);
+    fn system(&mut self, step: usize, host: &str, text: &str) {
+        self.emit(step, host, "system", text);
     }
 
-    fn emit(&mut self, step: usize, stream: &str, text: &str) {
+    fn emit(&mut self, step: usize, host: &str, stream: &str, text: &str) {
         self.count += 1;
-        let line = LogLine { seq: self.count, ts: now_ms(), step, host: self.host.clone(), stream: stream.into(), line: text.into() };
+        let line = LogLine { seq: self.count, ts: now_ms(), step, host: host.into(), stream: stream.into(), line: text.into() };
         {
             // Hold the backlog lock while broadcasting so subscribers never miss or repeat a line.
             let mut lines = self.live.lines.lock().unwrap();
@@ -703,7 +814,7 @@ impl<'a> Sink<'a> {
     }
 
     fn flush(&mut self) {
-        if let Err(err) = self.store.append_logs(self.run_id, &self.pending) {
+        if let Err(err) = self.store.append_logs(&self.run_id, &self.pending) {
             tracing::error!(run_id = %self.run_id, error = %err, "saving output failed");
         }
         self.pending.clear();

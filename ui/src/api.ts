@@ -68,6 +68,23 @@ export interface OutputLimit {
 
 export const MAX_OUTPUT_LINES = 20000;
 
+/** How a run spreads over its hosts. */
+export interface Rollout {
+  mode: "sequential" | "parallel" | "batches";
+  /** Parallel: most hosts at once; 0 means all. */
+  max_parallel?: number;
+  /** Batches: a number of hosts, or a percentage like "25%". */
+  batch_size?: number | string;
+  /** Hosts that run first, on their own. */
+  canary?: number;
+  /** Wait after the canary and between batches. The API also accepts "30s". */
+  pause_seconds?: number | string;
+  /** Unset: follows the runbook's "when a step fails" setting. */
+  on_host_failure?: "stop" | "continue";
+}
+
+export const defaultRollout: Rollout = { mode: "sequential", max_parallel: 0, canary: 0, pause_seconds: 0 };
+
 /** Where a runbook runs. Both empty: on the OpSkills server. */
 export interface Targets {
   hosts: string[];
@@ -89,6 +106,7 @@ export interface Runbook {
   steps: Step[];
   on_step_failure: FailurePolicy;
   output_limit: OutputLimit;
+  rollout: Rollout;
   secrets: string[];
   targets: Targets;
   timeout_seconds: number;
@@ -104,6 +122,7 @@ export interface RunbookInput {
   steps: Step[];
   on_step_failure?: FailurePolicy;
   output_limit?: OutputLimit;
+  rollout?: Rollout;
   secrets: string[];
   targets: Targets;
   /** Seconds, or a duration string like "10m". */
@@ -183,6 +202,7 @@ export interface Run {
   inputs?: Record<string, string>;
   on_step_failure?: FailurePolicy;
   output_limit?: OutputLimit;
+  rollout?: Rollout;
   hosts: { id: string; name: string }[];
   steps: StepResult[];
   error: string | null;

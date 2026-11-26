@@ -132,6 +132,12 @@ Since 0.4.0, runbooks have typed inputs and per-step control:
   truncating; it stops the running step through the same path as a cancel.
 - The job message has `keep_on_failure`, so an agent keeps the run's working folder
   when a retry or later step will still come. Older agents ignore the field.
+- A runbook's `rollout` (since 0.5.0) is planned up front as waves: the canary, then
+  either the rest one by one, the rest in parallel up to `max_parallel`, or batches.
+  Hosts of a wave run concurrently in the run's own task; the run record, the output
+  sink and the halt flags are shared behind short-lived locks. A failed step stops
+  only its own host; `on_host_failure` decides whether hosts that haven't started
+  still run.
 - A step is one of `run`, `copy` or `call`. A copy becomes a short shell script on
   the server (temp file, `chmod`, `mv`) with the content in `OPSKILLS_COPY_CONTENT`,
   so agents need nothing new. A call starts a child run of the other runbook on the

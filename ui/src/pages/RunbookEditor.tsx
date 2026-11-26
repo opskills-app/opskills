@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { ArrowDown, ArrowLeft, ArrowUp, Check, ChevronDown, FileText, KeyRound, Plus, Save, Server, SlidersHorizontal, Tag as TagIcon, Terminal, Trash2, Workflow } from "lucide-react";
 import {
   api,
+  defaultRollout,
   LOCAL_HOST_ID,
   MAX_OUTPUT_LINES,
   runsOnServer,
@@ -9,8 +10,10 @@ import {
   useData,
   type CallStep,
   type CopyStep,
+  type FailurePolicy,
   type InputDef,
   type InputKind,
+  type Rollout,
   type Runbook,
   type RunbookInput,
   type Step,
@@ -154,7 +157,7 @@ function RunOn({ targets, onChange, onHosts, setOnHosts }: { targets: Targets; o
             </div>
           )}
           <p className={cx("text-xs", count ? "text-muted" : "text-amber-700 dark:text-amber-300")}>
-            {count ? `Runs on ${count} host${count === 1 ? "" : "s"} now, one after another.` : "Pick at least one host or tag."}
+            {count ? `Runs on ${count} host${count === 1 ? "" : "s"} now. Choose how below, under Rollout.` : "Pick at least one host or tag."}
           </p>
         </div>
       )}
@@ -164,6 +167,101 @@ function RunOn({ targets, onChange, onHosts, setOnHosts }: { targets: Targets; o
 
 const field = "h-11 w-full rounded-xl bg-surface-2 px-4 text-sm outline-none focus:ring-2 focus:ring-accent";
 const smallLabel = "text-xs font-medium text-muted";
+
+/** How a run spreads over several hosts. */
+function RolloutCard({ rollout, stepPolicy, onChange }: { rollout: Rollout; stepPolicy: FailurePolicy; onChange: (r: Rollout) => void }) {
+  const set = (patch: Partial<Rollout>) => onChange({ ...rollout, ...patch });
+  const modes: { id: Rollout["mode"]; label: string; hint: string }[] = [
+    { id: "sequential", label: "One by one", hint: "Each host runs all steps, then the next host starts." },
+    { id: "parallel", label: "In parallel", hint: "Many hosts at once, up to the limit you set." },
+    { id: "batches", label: "In batches", hint: "A group of hosts at a time; the next group starts when it's done." },
+  ];
+  return (
+    <Card className="space-y-4 p-6">
+      <div>
+        <p className="text-sm font-medium">Rollout</p>
+        <div role="radiogroup" aria-label="Rollout" className="mt-3 grid grid-cols-3 gap-1 rounded-xl bg-surface-2 p-1">
+          {modes.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              role="radio"
+              aria-checked={rollout.mode === m.id}
+              onClick={() => set({ mode: m.id, batch_size: m.id === "batches" ? (rollout.batch_size ?? "25%") : undefined, max_parallel: m.id === "parallel" ? rollout.max_parallel : 0 })}
+              className={cx("h-9 rounded-lg text-xs font-medium", rollout.mode === m.id ? "bg-surface text-accent shadow-sm" : "text-muted hover:text-ink")}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-muted">{modes.find((m) => m.id === rollout.mode)?.hint}</p>
+      </div>
+      {rollout.mode === "parallel" && (
+        <div>
+          <label className={smallLabel} htmlFor="ro-max">
+            Most hosts at once
+          </label>
+          <input id="ro-max" type="number" min={0} max={1000} value={rollout.max_parallel || ""} placeholder="All of them" onChange={(e) => set({ max_parallel: Number(e.target.value) || 0 })} className={`mt-1.5 ${field}`} />
+        </div>
+      )}
+      {rollout.mode === "batches" && (
+        <div>
+          <label className={smallLabel} htmlFor="ro-batch">
+            Batch size
+          </label>
+          <input id="ro-batch" required value={rollout.batch_size ?? ""} placeholder="5 or 25%" onChange={(e) => set({ batch_size: e.target.value })} className={`mt-1.5 ${field}`} />
+          <p className="mt-1.5 text-xs text-muted">A number of hosts, or a percentage of the run's hosts (rounded up).</p>
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className={smallLabel} htmlFor="ro-canary">
+            Canary hosts
+          </label>
+          <input id="ro-canary" type="number" min={0} max={1000} value={rollout.canary || ""} placeholder="None" onChange={(e) => set({ canary: Number(e.target.value) || 0 })} className={`mt-1.5 ${field}`} />
+        </div>
+        <div>
+          <label className={smallLabel} htmlFor="ro-pause">
+            Pause between
+          </label>
+          <input id="ro-pause" value={typeof rollout.pause_seconds === "number" ? (rollout.pause_seconds ? `${rollout.pause_seconds}s` : "") : rollout.pause_seconds} placeholder="No pause" onChange={(e) => set({ pause_seconds: durationValue(e.target.value) ?? 0 })} className={`mt-1.5 ${field}`} />
+        </div>
+      </div>
+      <p className="-mt-2 text-xs text-muted">Canary hosts run first, on their own. The pause comes after the canary and between batches, like 30s or 5m.</p>
+      <div>
+        <label className={smallLabel} htmlFor="ro-fail">
+          If a host fails
+        </label>
+        <select
+          id="ro-fail"
+          value={rollout.on_host_failure ?? ""}
+          onChange={(e) => set({ on_host_failure: (e.target.value || undefined) as Rollout["on_host_failure"] })}
+          className={`mt-1.5 ${field}`}
+        >
+          <option value="">{stepPolicy === "finish_then_fail" ? "Keep going (default)" : "Skip the rest (default)"}</option>
+          <option value="stop">Skip the rest</option>
+          <option value="continue">Keep going</option>
+        </select>
+        <p className="mt-1.5 text-xs text-muted">
+          "Skip the rest" means hosts that haven't started are skipped; hosts already running always finish. The default follows "When a step fails". Either way, the run ends as failed.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
+/** Only the fields that apply to the chosen mode, as the API expects. */
+function cleanRollout(r: Rollout | undefined): Rollout {
+  if (!r) return { ...defaultRollout };
+  const out: Rollout = { mode: r.mode, canary: Number(r.canary) || 0, pause_seconds: typeof r.pause_seconds === "string" ? (durationValue(r.pause_seconds) ?? 0) : (r.pause_seconds ?? 0) };
+  if (r.mode === "parallel") out.max_parallel = Number(r.max_parallel) || 0;
+  if (r.mode === "batches") {
+    const b = String(r.batch_size ?? "").trim();
+    out.batch_size = /^\d+$/.test(b) ? Number(b) : b;
+  }
+  if (r.on_host_failure) out.on_host_failure = r.on_host_failure;
+  return out;
+}
 
 /** Values people fill in when they start a run. */
 function InputsEditor({ inputs, onChange }: { inputs: InputDef[]; onChange: (inputs: InputDef[]) => void }) {
@@ -514,6 +612,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
           steps: rb.steps,
           on_step_failure: rb.on_step_failure ?? "stop",
           output_limit: rb.output_limit,
+          rollout: rb.rollout ?? defaultRollout,
           secrets: rb.secrets ?? [],
           targets: rb.targets ?? { hosts: [], tags: [] },
           timeout_seconds: rb.timeout_seconds,
@@ -564,6 +663,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
         .filter(Boolean),
       inputs: (input.inputs ?? []).map(cleanInput),
       steps: input.steps.map(cleanStep),
+      rollout: onHosts ? cleanRollout(input.rollout) : { ...defaultRollout },
       timeout_seconds: typeof input.timeout_seconds === "string" ? (durationValue(input.timeout_seconds) ?? undefined) : input.timeout_seconds,
     };
     try {
@@ -786,6 +886,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
             </div>
           </Card>
           <RunOn targets={input.targets} onChange={(targets) => setInput((s) => ({ ...s, targets }))} onHosts={onHosts} setOnHosts={setOnHosts} />
+          {onHosts && <RolloutCard rollout={input.rollout ?? defaultRollout} stepPolicy={input.on_step_failure ?? "stop"} onChange={(rollout) => setInput((s) => ({ ...s, rollout }))} />}
           <Card className="p-6">
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm font-medium">Secrets</p>
@@ -825,7 +926,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
                 With <code className="font-mono text-xs">/bin/sh</code>: on the OpSkills server as the user it runs as, or on a host as root through the OpSkills agent.
               </li>
               <li>In a fresh temporary folder for each run, on each host.</li>
-              <li>On several hosts, one host after another: all steps on the first host, then the next.</li>
+              <li>Each host runs all the steps in order. Several hosts run one by one, in parallel or in batches, as the rollout says.</li>
               <li>
                 <code className="font-mono text-xs">$OPSKILLS_RUN_ID</code>, <code className="font-mono text-xs">$OPSKILLS_STEP</code>, <code className="font-mono text-xs">$OPSKILLS_HOST_NAME</code> and one{" "}
                 <code className="font-mono text-xs">$OPSKILLS_INPUT_...</code> per input are set for each step.

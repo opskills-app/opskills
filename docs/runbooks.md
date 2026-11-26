@@ -176,6 +176,35 @@ from 0.4.0 keep it after a failed step when a retry or a later step will still r
 there. Older agents remove it after any failed step; upgrade them to keep files
 between those steps.
 
+## Running on several hosts
+
+A runbook that runs on hosts runs every step on each host, in order. The `rollout`
+setting decides how the hosts take turns. In the editor it's the **Rollout** card,
+shown when **Run on** is set to hosts.
+
+| Field | Default | What it does |
+|---|---|---|
+| `mode` | `sequential` | `sequential`: one host at a time. `parallel`: many hosts at once. `batches`: a group of hosts at a time; the next group starts when the whole group is done |
+| `max_parallel` | `0` (all) | Parallel mode only: the most hosts running at once |
+| `batch_size` | | Batches mode only, required: a number of hosts like `5`, or a share like `"25%"` (rounded up, at least 1) |
+| `canary` | `0` | Hosts that run first, on their own, before any other host starts. A failed canary with the default failure setting stops the rollout there |
+| `pause_seconds` | `0` | Wait after the canary and between batches. Seconds or a duration like `30s`; at most 1 hour |
+| `on_host_failure` | follows `on_step_failure` | `stop`: hosts that haven't started are skipped. `continue`: the other hosts still run. Hosts already running always finish |
+
+```json
+"rollout": {"mode": "batches", "batch_size": "25%", "canary": 1, "pause_seconds": "1m"}
+```
+
+With 9 hosts, that runs one canary host, waits a minute, then runs batches of 3
+hosts (25% of 9, rounded up), waiting a minute between batches. The run log
+announces each wave, like `Canary: web-1` and `Batch 2 of 3: web-5, web-6, web-7`.
+
+A host fails when one of its steps fails and doesn't continue on error. The run
+then ends as failed whatever the rollout does next. When `on_host_failure` is unset,
+a runbook that stops at a failed step also stops starting hosts, and one set to
+finish then fail lets the other hosts run: the same as before rollouts existed.
+Cancelling a run stops every host that is running.
+
 ## Output limit
 
 A run keeps up to 20,000 lines of output (system lines included). A runbook can set a
