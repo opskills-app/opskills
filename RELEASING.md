@@ -11,7 +11,7 @@ built or uploaded from a laptop.
 | [`docker.yml`](.github/workflows/docker.yml) | Pull requests, merges to `main`, version tags | Builds and tests the image for `linux/amd64` and `linux/arm64`. Merges publish `opskills/opskills:edge`; a tag `v1.2.3` publishes `1.2.3`, `1.2` and `latest` |
 | [`tag.yml`](.github/workflows/tag.yml) | Merges to `main` that change `server/Cargo.toml` or `docs/releases/` | If the version in `server/Cargo.toml` has no tag yet and `docs/releases/vX.Y.Z.md` exists, tags the merge commit `vX.Y.Z` and starts `release.yml` and `docker.yml` on it |
 | [`release.yml`](.github/workflows/release.yml) | Version tags; pull requests that change packaging | Builds the server and agent packages and checks their versions and architectures (read only). For tags, a separate job attests their build provenance, writes `SHA256SUMS` and publishes the GitHub release, then `site.yml` runs. Pull requests only build and check |
-| [`site.yml`](.github/workflows/site.yml) | After a release, merges to `main` that change `web/`, or by hand | Deploys `web/` to Cloudflare and checks the live page. It skips the deploy while the site links to a release that doesn't exist yet |
+| [`site.yml`](.github/workflows/site.yml) | After a release, merges to `main` that change `web/`, or by hand | Deploys `web/` as it is on `main` to Cloudflare and checks the live page. It skips the deploy while the site links to a release that doesn't exist yet |
 
 ## Cutting a release
 
