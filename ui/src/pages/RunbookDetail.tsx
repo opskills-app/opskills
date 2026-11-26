@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { ArrowLeft, Copy, Pencil, Play, Terminal, Trash2 } from "lucide-react";
-import { api, LOCAL_HOST_ID, MAX_OUTPUT_LINES, runsOnServer, useData, type Host, type Runbook } from "../api";
+import { ArrowLeft, Copy, FileText, Pencil, Play, Terminal, Trash2, Workflow } from "lucide-react";
+import { api, LOCAL_HOST_ID, MAX_OUTPUT_LINES, runsOnServer, useData, type Host, type Runbook, type Step } from "../api";
 import { inputLabel } from "../components/StartRun";
 import { duration, runDuration, runNumber, timeAgo } from "../format";
 import { Button, Card, CardHeader, cx, ErrorNote, PageHeader, StatusPill, Tag } from "../components/ui";
@@ -38,11 +38,28 @@ function toYaml(rb: Runbook) {
   lines.push("steps:");
   for (const s of rb.steps) {
     lines.push(`  - name: ${q(s.name)}`);
-    if (s.run.includes("\n")) {
-      lines.push("    run: |");
-      for (const l of s.run.split("\n")) lines.push(`      ${l}`);
+    const block = (key: string, text: string, indent: string) => {
+      if (text.includes("\n")) {
+        lines.push(`${indent}${key}: |`);
+        for (const l of text.split("\n")) lines.push(`${indent}  ${l}`);
+      } else {
+        lines.push(`${indent}${key}: ${q(text)}`);
+      }
+    };
+    if (s.copy) {
+      lines.push("    copy:", `      to: ${q(s.copy.to)}`);
+      if (s.copy.secret !== undefined) lines.push(`      secret: ${s.copy.secret}`);
+      else block("content", s.copy.content ?? "", "      ");
+      if (s.copy.mode) lines.push(`      mode: "${s.copy.mode}"`);
+    } else if (s.call) {
+      lines.push("    call:", `      runbook: ${s.call.runbook}`);
+      const entries = Object.entries(s.call.inputs ?? {});
+      if (entries.length) {
+        lines.push("      inputs:");
+        for (const [k, v] of entries) lines.push(`        ${k}: ${q(v)}`);
+      }
     } else {
-      lines.push(`    run: ${q(s.run)}`);
+      block("run", s.run, "    ");
     }
     if (s.timeout_seconds) lines.push(`    timeout_seconds: ${s.timeout_seconds}`);
     if (s.retries) lines.push(`    retries: ${s.retries}`);
@@ -62,6 +79,59 @@ export function stepOptions(s: { timeout_seconds?: number | string | null; retri
   }
   if (s.continue_on_error) out.push("continues on error");
   return out;
+}
+
+const pre = "scroll-thin mt-3 overflow-x-auto rounded-lg bg-surface-2 px-3 py-2 font-mono text-[12.5px] text-ink-2";
+
+/** What a step does: its command, the file it writes, or the runbook it calls. */
+function StepBody({ step }: { step: Step }) {
+  const runbooks = useData(() => (step.call ? api.runbooks() : Promise.resolve([] as Runbook[])), [step.call?.runbook]);
+  if (step.copy) {
+    const c = step.copy;
+    return (
+      <>
+        <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-ink-2">
+          <FileText className="size-4 text-muted" /> Writes <code className="font-mono text-[12.5px]">{c.to}</code>
+          <span className="text-xs text-muted">mode {c.mode ?? (c.secret !== undefined ? "0600" : "0644")}</span>
+          {c.secret !== undefined && (
+            <>
+              from the vault secret{" "}
+              <a href="#/vault" className="font-mono text-[12.5px] hover:text-accent">
+                ${c.secret}
+              </a>
+            </>
+          )}
+        </p>
+        {c.secret === undefined && <pre className={pre}>{c.content}</pre>}
+      </>
+    );
+  }
+  if (step.call) {
+    const target = (runbooks.data ?? []).find((r) => r.id === step.call!.runbook);
+    const inputs = Object.entries(step.call.inputs ?? {});
+    return (
+      <div className="mt-3 text-sm text-ink-2">
+        <p className="flex items-center gap-2">
+          <Workflow className="size-4 text-muted" /> Runs{" "}
+          <a href={`#/runbooks/${step.call.runbook}`} className="font-medium text-accent hover:underline">
+            {target?.name ?? "another runbook"}
+          </a>{" "}
+          on the same host and waits for it
+        </p>
+        {inputs.length > 0 && (
+          <dl className="mt-2 space-y-1 rounded-lg bg-surface-2 px-3 py-2 font-mono text-[12px]">
+            {inputs.map(([k, v]) => (
+              <div key={k} className="flex gap-2">
+                <dt className="text-muted">{k}:</dt>
+                <dd className="min-w-0 break-all">{v}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+      </div>
+    );
+  }
+  return <pre className={pre}>{step.run}</pre>;
 }
 
 function failureText(rb: Runbook) {
@@ -164,7 +234,7 @@ export function RunbookDetail({ id }: { id: string }) {
                 <li key={i} className="relative flex gap-4">
                   {i < r.steps.length - 1 && <span className="absolute top-10 bottom-[-12px] left-[19px] w-px bg-line" />}
                   <span className="relative z-10 flex size-10 shrink-0 items-center justify-center rounded-full bg-accent-soft text-accent">
-                    <Terminal className="size-4" />
+                    {s.copy ? <FileText className="size-4" /> : s.call ? <Workflow className="size-4" /> : <Terminal className="size-4" />}
                   </span>
                   <Card className="min-w-0 flex-1 p-5 sm:p-6">
                     <div className="flex flex-wrap items-center gap-2">
@@ -176,7 +246,7 @@ export function RunbookDetail({ id }: { id: string }) {
                         </span>
                       ))}
                     </div>
-                    <pre className="scroll-thin mt-3 overflow-x-auto rounded-lg bg-surface-2 px-3 py-2 font-mono text-[12.5px] text-ink-2">{s.run}</pre>
+                    <StepBody step={s} />
                   </Card>
                 </li>
               ))}

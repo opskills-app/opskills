@@ -1,6 +1,22 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ArrowDown, ArrowLeft, ArrowUp, Check, ChevronDown, KeyRound, Plus, Save, Server, SlidersHorizontal, Tag as TagIcon, Trash2 } from "lucide-react";
-import { api, LOCAL_HOST_ID, MAX_OUTPUT_LINES, runsOnServer, useData, type InputDef, type InputKind, type RunbookInput, type Step, type Targets } from "../api";
+import { ArrowDown, ArrowLeft, ArrowUp, Check, ChevronDown, FileText, KeyRound, Plus, Save, Server, SlidersHorizontal, Tag as TagIcon, Terminal, Trash2, Workflow } from "lucide-react";
+import {
+  api,
+  LOCAL_HOST_ID,
+  MAX_OUTPUT_LINES,
+  runsOnServer,
+  stepKind,
+  useData,
+  type CallStep,
+  type CopyStep,
+  type InputDef,
+  type InputKind,
+  type Runbook,
+  type RunbookInput,
+  type Step,
+  type StepKind,
+  type Targets,
+} from "../api";
 import { Button, Card, cx, ErrorNote, PageHeader, StatusDot } from "../components/ui";
 import { stepOptions } from "./RunbookDetail";
 import { templates } from "../templates";
@@ -320,6 +336,161 @@ function StepOptions({ step, index, onChange }: { step: Step; index: number; onC
   );
 }
 
+const kindsOfStep: { id: StepKind; label: string; icon: typeof Terminal }[] = [
+  { id: "run", label: "Command", icon: Terminal },
+  { id: "copy", label: "Copy a file", icon: FileText },
+  { id: "call", label: "Call a runbook", icon: Workflow },
+];
+
+function StepKindSwitch({ kind, index, onChange }: { kind: StepKind; index: number; onChange: (k: StepKind) => void }) {
+  return (
+    <div role="radiogroup" aria-label={`Step ${index + 1} type`} className="mt-4 inline-flex flex-wrap gap-1 rounded-xl bg-surface-2 p-1">
+      {kindsOfStep.map((k) => (
+        <button
+          key={k.id}
+          type="button"
+          role="radio"
+          aria-checked={kind === k.id}
+          onClick={() => onChange(k.id)}
+          className={cx("flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-medium", kind === k.id ? "bg-surface text-accent shadow-sm" : "text-muted hover:text-ink")}
+        >
+          <k.icon className="size-3.5" /> {k.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Where a copy step writes, and what. */
+function CopyFields({ copy, index, vaultNames, onChange, onPickSecret }: { copy: CopyStep; index: number; vaultNames: string[]; onChange: (c: CopyStep) => void; onPickSecret: (name: string) => void }) {
+  const fromSecret = copy.secret !== undefined;
+  return (
+    <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_140px]">
+      <div>
+        <label className={smallLabel} htmlFor={`cp-to-${index}`}>
+          Destination path
+        </label>
+        <input id={`cp-to-${index}`} required value={copy.to} onChange={(e) => onChange({ ...copy, to: e.target.value })} placeholder="/etc/myapp/config.yml" spellCheck={false} className={`mt-1.5 font-mono ${field}`} />
+      </div>
+      <div>
+        <label className={smallLabel} htmlFor={`cp-mode-${index}`}>
+          Mode
+        </label>
+        <input id={`cp-mode-${index}`} value={copy.mode ?? ""} onChange={(e) => onChange({ ...copy, mode: e.target.value })} placeholder={fromSecret ? "0600" : "0644"} spellCheck={false} className={`mt-1.5 font-mono ${field}`} />
+      </div>
+      <div className="sm:col-span-2">
+        <div role="radiogroup" aria-label="Copy from" className="inline-flex gap-1 rounded-xl bg-surface-2 p-1">
+          {[
+            { on: !fromSecret, label: "Text", pick: () => onChange({ to: copy.to, mode: copy.mode, content: copy.content ?? "" }) },
+            { on: fromSecret, label: "Vault secret", pick: () => onChange({ to: copy.to, mode: copy.mode, secret: copy.secret ?? "" }) },
+          ].map((o) => (
+            <button key={o.label} type="button" role="radio" aria-checked={o.on} onClick={o.pick} className={cx("h-8 rounded-lg px-3 text-xs font-medium", o.on ? "bg-surface text-accent shadow-sm" : "text-muted hover:text-ink")}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+        {fromSecret ? (
+          <div className="mt-3">
+            <select
+              aria-label={`Step ${index + 1} secret to copy`}
+              required
+              value={copy.secret}
+              onChange={(e) => {
+                onChange({ ...copy, secret: e.target.value });
+                if (e.target.value) onPickSecret(e.target.value);
+              }}
+              className={`font-mono ${field}`}
+            >
+              <option value="">Choose a secret</option>
+              {vaultNames.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1.5 text-xs text-muted">The secret is added to this runbook's secrets. Its value is masked if it shows up in output.</p>
+          </div>
+        ) : (
+          <>
+            <textarea
+              value={copy.content ?? ""}
+              onChange={(e) => onChange({ ...copy, content: e.target.value })}
+              placeholder={"server_name {{ host.name }};\nlisten 8080;"}
+              aria-label={`Step ${index + 1} file content`}
+              rows={Math.min(14, Math.max(4, (copy.content ?? "").split("\n").length + 1))}
+              spellCheck={false}
+              className="mt-3 w-full resize-y rounded-xl bg-term px-4 py-3 font-mono text-[13px] leading-relaxed text-term-ink outline-none placeholder:text-white/30 focus:ring-2 focus:ring-accent"
+            />
+            <p className="mt-1.5 text-xs text-muted">{"{{ inputs.x }}"} and other run values are filled in as plain text. Up to 64 KB.</p>
+          </>
+        )}
+      </div>
+      <p className="text-xs text-muted sm:col-span-2">A relative path is inside the run's working folder. The file is written in full, then moved into place.</p>
+    </div>
+  );
+}
+
+/** Which runbook a call step runs, and the values for its inputs. */
+function CallFields({ call, index, runbooks, onChange }: { call: CallStep; index: number; runbooks: Runbook[]; onChange: (c: CallStep) => void }) {
+  const target = runbooks.find((r) => r.id === call.runbook);
+  return (
+    <div className="mt-4 space-y-4">
+      <div>
+        <label className={smallLabel} htmlFor={`call-rb-${index}`}>
+          Runbook to run
+        </label>
+        <select id={`call-rb-${index}`} required value={call.runbook} onChange={(e) => onChange({ runbook: e.target.value, inputs: {} })} className={`mt-1.5 ${field}`}>
+          <option value="">Choose a runbook</option>
+          {runbooks.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.name}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1.5 text-xs text-muted">It runs on the same host as this step, as its own run, and this step waits for it. A failed or cancelled call fails the step.</p>
+      </div>
+      {target && target.inputs.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 rounded-xl bg-surface-2/60 p-4 sm:grid-cols-2">
+          {target.inputs.map((d) => (
+            <div key={d.name}>
+              <label className={smallLabel} htmlFor={`call-in-${index}-${d.name}`}>
+                {d.label || d.name}
+                {d.required && d.default === null && <span className="text-rose-600"> *</span>}
+              </label>
+              <input
+                id={`call-in-${index}-${d.name}`}
+                value={call.inputs[d.name] ?? ""}
+                onChange={(e) => onChange({ ...call, inputs: { ...call.inputs, [d.name]: e.target.value } })}
+                placeholder={d.default !== null ? `Default: ${d.default}` : d.type === "choice" ? d.choices.join(" | ") : "{{ inputs.x }} or a value"}
+                type={d.type === "secret" ? "password" : "text"}
+                spellCheck={false}
+                className={`mt-1.5 ${field} bg-surface`}
+              />
+            </div>
+          ))}
+          <p className="text-xs text-muted sm:col-span-2">Use this runbook's values, like {"{{ inputs.x }}"} or {"{{ host.name }}"}. Empty fields use the called runbook's defaults.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Drop the fields of the kinds a step isn't, so the API sees exactly one. */
+function cleanStep(s: Step): Step {
+  const kind = stepKind(s);
+  if (kind === "copy") {
+    const c = s.copy!;
+    const copy: CopyStep = c.secret !== undefined ? { to: c.to, secret: c.secret } : { to: c.to, content: c.content ?? "" };
+    if (c.mode?.trim()) copy.mode = c.mode.trim();
+    return { ...s, run: "", call: undefined, copy };
+  }
+  if (kind === "call") {
+    const inputs = Object.fromEntries(Object.entries(s.call!.inputs).filter(([, v]) => v !== ""));
+    return { ...s, run: "", copy: undefined, call: { runbook: s.call!.runbook, inputs } };
+  }
+  return { ...s, copy: undefined, call: undefined };
+}
+
 export function RunbookEditor({ id, template }: { id?: string; template?: string }) {
   const editing = !!id;
   const [input, setInput] = useState<RunbookInput>(() => structuredClone(templates.find((t) => t.key === template)?.input ?? blank));
@@ -328,6 +499,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const vault = useData(() => api.secrets(), []);
+  const others = useData(() => api.runbooks(), []);
   const [onHosts, setOnHosts] = useState(false);
 
   useEffect(() => {
@@ -391,6 +563,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
         .map((t) => t.trim())
         .filter(Boolean),
       inputs: (input.inputs ?? []).map(cleanInput),
+      steps: input.steps.map(cleanStep),
       timeout_seconds: typeof input.timeout_seconds === "string" ? (durationValue(input.timeout_seconds) ?? undefined) : input.timeout_seconds,
     };
     try {
@@ -473,15 +646,41 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
                   </button>
                 </div>
               </div>
-              <textarea
-                value={step.run}
-                onChange={(e) => setStep(i, { run: e.target.value })}
-                placeholder="Shell command, for example: df -h"
-                aria-label={`Step ${i + 1} command`}
-                rows={Math.min(12, Math.max(3, step.run.split("\n").length + 1))}
-                spellCheck={false}
-                className="mt-4 w-full resize-y rounded-xl bg-term px-4 py-3 font-mono text-[13px] leading-relaxed text-term-ink outline-none placeholder:text-white/30 focus:ring-2 focus:ring-accent"
+              <StepKindSwitch
+                kind={stepKind(step)}
+                index={i}
+                onChange={(k) =>
+                  setStep(
+                    i,
+                    k === "run"
+                      ? { copy: undefined, call: undefined }
+                      : k === "copy"
+                        ? { call: undefined, copy: step.copy ?? { to: "", content: "" } }
+                        : { copy: undefined, call: step.call ?? { runbook: "", inputs: {} } },
+                  )
+                }
               />
+              {stepKind(step) === "run" && (
+                <textarea
+                  value={step.run}
+                  onChange={(e) => setStep(i, { run: e.target.value })}
+                  placeholder="Shell command, for example: df -h"
+                  aria-label={`Step ${i + 1} command`}
+                  rows={Math.min(12, Math.max(3, step.run.split("\n").length + 1))}
+                  spellCheck={false}
+                  className="mt-4 w-full resize-y rounded-xl bg-term px-4 py-3 font-mono text-[13px] leading-relaxed text-term-ink outline-none placeholder:text-white/30 focus:ring-2 focus:ring-accent"
+                />
+              )}
+              {step.copy && (
+                <CopyFields
+                  copy={step.copy}
+                  index={i}
+                  vaultNames={(vault.data ?? []).map((s) => s.name)}
+                  onChange={(copy) => setStep(i, { copy })}
+                  onPickSecret={(name) => setInput((s) => (s.secrets.includes(name) ? s : { ...s, secrets: [...s.secrets, name] }))}
+                />
+              )}
+              {step.call && <CallFields call={step.call} index={i} runbooks={(others.data ?? []).filter((r) => r.id !== id)} onChange={(call) => setStep(i, { call })} />}
               <StepOptions step={step} index={i} onChange={(patch) => setStep(i, patch)} />
             </Card>
           ))}

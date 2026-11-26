@@ -1,11 +1,70 @@
 # Writing runbooks
 
-A runbook is a list of steps. Each step is a shell command. This guide covers the
-parts that make a runbook reusable and safe to run: inputs, run values in commands,
-step options, and what happens when a step fails.
+A runbook is a list of steps. A step runs a shell command, copies a file to its
+host, or calls another runbook. This guide covers the parts that make a runbook
+reusable and safe to run: step types, inputs, run values, step options, and what
+happens when a step fails.
 
 Everything here works from the runbook editor in the web app and from the API
 (`POST /api/v1/runbooks`, `PUT /api/v1/runbooks/{id}`).
+
+## Step types
+
+Every step has a `name` and does exactly one of these things. Pick the type in the
+editor with the switch under the step's name.
+
+### Run a command
+
+```json
+{"name": "Restart", "run": "systemctl restart {{ inputs.service }}"}
+```
+
+The command runs with `/bin/sh` in the run's working folder.
+
+### Copy a file
+
+Writes a file on the step's host, from text you give or from a vault secret:
+
+```json
+{"name": "Write config", "copy": {"to": "/etc/myapp/app.ini", "content": "host={{ host.name }}\n", "mode": "0640"}}
+{"name": "Install key", "copy": {"to": "/etc/ssl/private/app.key", "secret": "TLS_KEY"}}
+```
+
+| Field | What it is |
+|---|---|
+| `to` | The file to write. A relative path is inside the run's working folder. Missing folders are created |
+| `content` | The text to write, up to 64 KB. `{{ ... }}` run values are filled in as plain text |
+| `secret` | Or the name of a vault secret to write. The runbook must list it under `secrets` (the editor does this for you) |
+| `mode` | File mode in octal. Default `0644`, or `0600` for a secret |
+
+The file is written next to its destination and then moved into place, so nothing
+ever reads it half written. Its content travels to the host in an environment
+variable, not on the command line, so other users can't see it in the process list.
+A secret's value is masked if it appears in the output.
+
+### Call another runbook
+
+Runs another runbook on the same host as this step, as a run of its own, and waits
+for it:
+
+```json
+{"name": "Health check", "call": {"runbook": "<runbook id>", "inputs": {"port": "8080", "service": "{{ inputs.service }}"}}}
+```
+
+`inputs` gives values for the called runbook's inputs; `{{ ... }}` run values of the
+calling run are filled in as plain text, and inputs left out use the called
+runbook's defaults. The called run uses its own secrets, steps and settings, and its
+own run page links back to the run that called it.
+
+- The step succeeds when the called run succeeds. A failed or cancelled call fails
+  the step; retries start a new call each time.
+- Cancelling the calling run, or reaching the step's timeout, cancels the called run.
+- Saving checks that the called runbook exists, that every input you give exists,
+  and that every required input without a default gets a value. A runbook can't call
+  itself, directly or through others, and calls nest at most 5 deep.
+- A runbook that others call can't be deleted until those calls are removed.
+- Called runs don't wait for a free run slot (`runs.max_concurrent`); they count as
+  part of the run that called them.
 
 ## Inputs
 

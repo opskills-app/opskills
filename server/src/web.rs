@@ -34,7 +34,7 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub executor: Arc<Executor>,
     pub hub: Arc<Hub>,
-    pub vault: Vault,
+    pub vault: Arc<Vault>,
 }
 
 impl AppState {
@@ -57,9 +57,9 @@ pub fn build_state(cfg: Config, fs: &firststart::State) -> Result<Arc<AppState>>
     let work_root = cfg.data.dir.join("work");
     let _ = std::fs::remove_dir_all(&work_root);
     std::fs::create_dir_all(&work_root).context("creating the work directory")?;
-    let vault = Vault::from_key_hex(&fs.master_key).context("loading the vault key")?;
+    let vault = Arc::new(Vault::from_key_hex(&fs.master_key).context("loading the vault key")?);
     let hub = Hub::new();
-    let executor = Executor::new(store.clone(), hub.clone(), work_root, cfg.runs.max_concurrent);
+    let executor = Executor::new(store.clone(), hub.clone(), vault.clone(), work_root, cfg.runs.max_concurrent);
     Ok(Arc::new(AppState {
         cfg,
         server_id: fs.server_id.clone(),

@@ -11,8 +11,8 @@ Website: [opskills.app](https://opskills.app)
 
 > **Status:** v0.4.0 preview. Sign in, keep secrets in an encrypted vault, enroll
 > your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks with
-> inputs, retries and failure handling, and run them on the server or on your hosts,
-> with output streaming live to your browser. Schedules and approvals are next (the Settings page still shows sample
+> inputs, retries, file copies and calls to other runbooks, and run them on the
+> server or on your hosts, with output streaming live to your browser. Schedules and approvals are next (the Settings page still shows sample
 > data).
 
 ## Install
@@ -69,9 +69,10 @@ These files, and the database `opskills.redb`, are readable only by the server.
 ## Using OpSkills
 
 1. **Sign in** as `admin` with the password from the first start.
-2. **Create a runbook**: give it a name, then add steps. Each step is a shell
-   command. Start from an example (Hello world, Check disk space, System health)
-   or from scratch. Add **inputs** for the values that change between runs, like a
+2. **Create a runbook**: give it a name, then add steps. A step runs a shell
+   command, copies a file (from text or a vault secret), or calls another runbook.
+   Start from an example (Hello world, Check disk space, System health) or from
+   scratch. Add **inputs** for the values that change between runs, like a
    service name, and use them as `{{ inputs.service }}` in a step.
 3. **Press Run.** Fill in the inputs, if any. The run page streams each step's
    output live, shows a timeline of the steps, and lets you cancel.
@@ -103,7 +104,7 @@ How steps run:
 - A run keeps up to 20,000 output lines; a runbook can set a lower limit that drops
   further output or stops the run.
 
-The full guide to inputs, run values, step options and failure handling is
+The full guide to step types, inputs, run values, step options and failure handling is
 [docs/runbooks.md](docs/runbooks.md).
 - Up to `runs.max_concurrent` runs execute at once (4 by default); others wait in
   the queue.

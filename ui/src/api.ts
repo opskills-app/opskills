@@ -4,9 +4,36 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export type RunStatus = "pending" | "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped";
 
+/** Writes a file on the step's host. */
+export interface CopyStep {
+  /** Destination; a relative path is inside the run's working folder. */
+  to: string;
+  /** File content; {{ ... }} values are filled in as plain text. */
+  content?: string;
+  /** Or a vault secret the runbook lists. */
+  secret?: string;
+  /** Octal, like "0644". */
+  mode?: string;
+}
+
+/** Runs another runbook on the step's host and waits for it. */
+export interface CallStep {
+  runbook: string;
+  inputs: Record<string, string>;
+}
+
+export type StepKind = "run" | "copy" | "call";
+
+export function stepKind(s: { copy?: CopyStep; call?: CallStep }): StepKind {
+  return s.copy ? "copy" : s.call ? "call" : "run";
+}
+
 export interface Step {
   name: string;
+  /** The shell command; empty for copy and call steps. */
   run: string;
+  copy?: CopyStep;
+  call?: CallStep;
   /** Overrides the runbook's step timeout. The API also accepts strings like "10m". */
   timeout_seconds?: number | string | null;
   /** Further tries after a failure, 0 to 10. */
@@ -131,6 +158,10 @@ export interface StepResult {
   continue_on_error?: boolean;
   /** How many times the step was started. */
   attempts?: number;
+  copy?: CopyStep;
+  call?: CallStep;
+  /** The run a call step started. */
+  child_run_id?: string;
 }
 
 /** Shown in place of a secret value. */
@@ -156,6 +187,9 @@ export interface Run {
   steps: StepResult[];
   error: string | null;
   log_lines: number;
+  /** Set when a call step in another run started this one. */
+  parent?: { run_id: string; runbook_name: string; step: number };
+  depth?: number;
 }
 
 export interface LogLine {
