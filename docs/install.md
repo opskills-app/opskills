@@ -335,8 +335,16 @@ output, sessions, hosts and the encrypted vault). Back up the whole directory: w
 
 ### Sending email
 
-Email notifications go through an SMTP server you already use, such as your mail
-provider's or a relay. Add an `[email]` section to the config:
+Email notifications go through an SMTP server you already use: your mail
+provider's, a relay, or the SMTP endpoint of a service like Amazon SES, SendGrid,
+Mailgun or Postmark.
+
+The easy way is **Settings > Email** in OpSkills: enter the server, port, security
+and sender, and pick the password from the vault (add it there first, for example
+as `SMTP_PASSWORD`; the settings only store its name). **Send a test** checks it.
+
+Or set it in the config file, which takes priority over the Settings page (the
+page then shows it read-only). Add an `[email]` section:
 
 ```toml
 [email]
@@ -360,9 +368,8 @@ Or, with Docker, the matching environment variables:
 Use `security = "tls"` with port 465. `opskills config` shows the settings without
 the password. The package's config file can be read only by root and the `opskills`
 user; runbook steps on the server run as that user, so anyone who can edit runbooks
-could read the password, as they could the vault key. Give OpSkills its own
-mailbox or app password. Then restart OpSkills and use **Send a test** on a
-notification in the runbook editor.
+could read the password, as they could the vault key. Either way, give OpSkills its
+own mailbox or app password. After changing the config file, restart OpSkills.
 
 ## Troubleshooting
 

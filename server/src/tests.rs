@@ -1545,15 +1545,23 @@ async fn slow_runs_notify_once_and_fast_ones_do_not() {
 
 /// A tiny SMTP server that accepts every message and keeps its text.
 async fn fake_smtp() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let (port, mail, _) = fake_smtp_with_auth().await;
+    (port, mail)
+}
+
+/// Like `fake_smtp`, and also keeps each AUTH command it was sent.
+#[allow(clippy::type_complexity)]
+async fn fake_smtp_with_auth() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let mail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let auths = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let m = mail.clone();
+    let (m, a) = (mail.clone(), auths.clone());
     tokio::spawn(async move {
         loop {
             let Ok((sock, _)) = listener.accept().await else { return };
-            let m = m.clone();
+            let (m, a) = (m.clone(), a.clone());
             tokio::spawn(async move {
                 let (r, mut w) = sock.into_split();
                 let mut lines = BufReader::new(r).lines();
@@ -1572,7 +1580,12 @@ async fn fake_smtp() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
                         continue;
                     }
                     let cmd = line.to_ascii_uppercase();
-                    let reply: &[u8] = if cmd.starts_with("DATA") {
+                    let reply: &[u8] = if cmd.starts_with("EHLO") {
+                        b"250-test\r\n250 AUTH PLAIN LOGIN\r\n"
+                    } else if cmd.starts_with("AUTH") {
+                        a.lock().unwrap().push(line.clone());
+                        b"235 2.7.0 accepted\r\n"
+                    } else if cmd.starts_with("DATA") {
                         in_data = true;
                         b"354 go ahead\r\n"
                     } else if cmd.starts_with("QUIT") {
@@ -1586,7 +1599,7 @@ async fn fake_smtp() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
             });
         }
     });
-    (port, mail)
+    (port, mail, auths)
 }
 
 #[tokio::test]
@@ -1624,4 +1637,124 @@ async fn email_notifications_go_through_the_smtp_server() {
     assert!(m.contains("Subject: [OpSkills] Rotate certs succeeded (run #"), "{m}");
     assert!(m.contains("To: oncall@example.com, lead@example.com") || m.contains("To: oncall@example.com,"), "{m}");
     assert!(m.contains(&format!("https://ops.example.com/#/runs/{id}")) && m.contains("env = prod"), "{m}");
+}
+
+#[tokio::test]
+async fn email_can_be_set_up_on_the_settings_page_with_a_vault_password() {
+    let (port, mail, auths) = fake_smtp_with_auth().await;
+    let s = server();
+    let c = sign_in(&s).await;
+    let get = || call(&s.app, "GET", "/api/v1/settings/email", None, Some(&c), false);
+    assert_eq!(get().await.json(), json!({"source": "off", "settings": null}));
+    let settings = json!({"smtp_host": "127.0.0.1", "smtp_port": port, "security": "none", "username": "ops", "password_secret": "SMTP_PASSWORD", "from": "OpSkills <ops@example.com>"});
+    let r = call(&s.app, "PUT", "/api/v1/settings/email", Some(settings.clone()), Some(&c), true).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "the secret isn't in the vault yet: {}", r.body);
+    for bad in [json!({"smtp_host": "", "from": "a@example.com"}), json!({"smtp_host": "smtp.example.com", "from": "nobody"}), json!({"smtp_host": "smtp.example.com", "from": "a@example.com", "username": "ops"}), json!({"smtp_host": "smtp.example.com", "from": "a@example.com", "security": "ssl"})] {
+        assert_eq!(call(&s.app, "PUT", "/api/v1/settings/email", Some(bad.clone()), Some(&c), true).await.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    add_secret(&s, &c, "SMTP_PASSWORD", "mail-pass-123").await;
+    let r = call(&s.app, "PUT", "/api/v1/settings/email", Some(settings), Some(&c), true).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let shown = get().await;
+    assert_eq!(shown.json()["source"], json!("settings"));
+    assert!(!shown.body.contains("mail-pass-123"), "{}", shown.body);
+    let ns = call(&s.app, "GET", "/api/v1/notifications/settings", None, Some(&c), false).await.json();
+    assert_eq!((ns["email"].clone(), ns["source"].as_str()), (json!(true), Some("settings")));
+
+    let t = call(&s.app, "POST", "/api/v1/notifications/test", Some(json!({"email": ["oncall@example.com"]})), Some(&c), true).await;
+    assert_eq!(t.status, StatusCode::OK, "{}", t.body);
+    assert_eq!(mail.lock().unwrap().len(), 1);
+    // It signed in with the password from the vault (AUTH PLAIN of "\0ops\0mail-pass-123").
+    let auth = auths.lock().unwrap().clone();
+    assert!(auth.iter().any(|l| l.contains("AG9wcwBtYWlsLXBhc3MtMTIz")), "{auth:?}");
+
+    // The password secret can't be deleted while email uses it.
+    let del = call(&s.app, "DELETE", "/api/v1/secrets/SMTP_PASSWORD", None, Some(&c), true).await;
+    assert_eq!(del.status, StatusCode::CONFLICT, "{}", del.body);
+    assert_eq!(call(&s.app, "DELETE", "/api/v1/settings/email", None, Some(&c), true).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(get().await.json()["source"], json!("off"));
+    assert_eq!(call(&s.app, "DELETE", "/api/v1/secrets/SMTP_PASSWORD", None, Some(&c), true).await.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn email_in_the_config_file_wins_and_is_read_only() {
+    let s = server_with(|cfg| {
+        cfg.email.smtp_host = Some("smtp.example.com".into());
+        cfg.email.from = Some("OpSkills <ops@example.com>".into());
+        cfg.email.username = Some("ops".into());
+        cfg.email.password = Some("from-config-file".into());
+    });
+    let c = sign_in(&s).await;
+    let got = call(&s.app, "GET", "/api/v1/settings/email", None, Some(&c), false).await;
+    assert_eq!((got.json()["source"].as_str(), got.json()["settings"]["smtp_host"].as_str()), (Some("config"), Some("smtp.example.com")));
+    assert!(!got.body.contains("from-config-file"));
+    let put = call(&s.app, "PUT", "/api/v1/settings/email", Some(json!({"smtp_host": "other.example.com", "from": "a@example.com"})), Some(&c), true).await;
+    assert_eq!(put.status, StatusCode::CONFLICT);
+}
+
+/// Records the headers of each POST.
+async fn header_receiver() -> (String, std::sync::Arc<std::sync::Mutex<Vec<axum::http::HeaderMap>>>) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let s2 = seen.clone();
+    let app = Router::new().fallback(move |headers: axum::http::HeaderMap| {
+        let seen = s2.clone();
+        async move {
+            seen.lock().unwrap().push(headers);
+            StatusCode::OK
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}/events"), seen)
+}
+
+#[tokio::test]
+async fn webhook_notifications_send_custom_headers_and_sign_in() {
+    let (url, seen) = header_receiver().await;
+    let s = server();
+    let c = sign_in(&s).await;
+    add_secret(&s, &c, "API_KEY", "k-123").await;
+    add_secret(&s, &c, "HOOK_PASS", "p@ss:word").await;
+    let rb = |n: Value| json!({"name": "H", "steps": [{"name": "a", "run": "true"}], "notifications": [n]});
+    for bad in [
+        json!({"on": ["failed"], "email": ["a@example.com"], "headers": [{"name": "X-A", "value": "b"}]}),
+        json!({"on": ["failed"], "webhook": url, "headers": [{"name": "Content-Type", "value": "text/plain"}]}),
+        json!({"on": ["failed"], "webhook": url, "headers": [{"name": "X Bad", "value": "b"}]}),
+        json!({"on": ["failed"], "webhook": url, "headers": [{"name": "X-A", "value": "{{ inputs.x }}"}]}),
+        json!({"on": ["failed"], "webhook": url, "headers": [{"name": "X-A", "value": "{{ secrets.NOT_THERE }}"}]}),
+        json!({"on": ["failed"], "webhook": url, "headers": [{"name": "Authorization", "value": "x"}], "auth": {"type": "bearer", "secret": "API_KEY"}}),
+        json!({"on": ["failed"], "webhook": url, "auth": {"type": "basic", "username": "a:b", "secret": "HOOK_PASS"}}),
+    ] {
+        let r = call(&s.app, "POST", "/api/v1/runbooks", Some(rb(bad.clone())), Some(&c), true).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad} -> {}", r.body);
+    }
+    let made = call(&s.app, "POST", "/api/v1/runbooks", Some(rb(json!({
+        "on": ["succeeded"], "webhook": url,
+        "headers": [{"name": "X-Api-Key", "value": "key-{{ secrets.API_KEY }}"}, {"name": "X-Team", "value": "ops"}],
+        "auth": {"type": "basic", "username": "opskills", "secret": "HOOK_PASS"}
+    }))), Some(&c), true).await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    assert!(!made.body.contains("k-123"), "only the reference is stored");
+    let rb_id = made.json()["id"].as_str().unwrap().to_string();
+    let run = call(&s.app, "POST", &format!("/api/v1/runbooks/{rb_id}/runs"), None, Some(&c), true).await.json();
+    let id = run["id"].as_str().unwrap().to_string();
+    wait_finished(&s, &c, &id).await;
+    let list = notices(&s, &c, &id, 1).await;
+    assert_eq!(list[0]["ok"], json!(true), "{list:?}");
+    let h = wait_for(|| seen.lock().unwrap().first().cloned(), "the webhook call").await;
+    let get = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    assert_eq!((get("x-api-key"), get("x-team")), ("key-k-123".to_string(), "ops".to_string()));
+    // base64("opskills:p@ss:word")
+    assert_eq!(get("authorization"), "Basic b3Bza2lsbHM6cEBzczp3b3Jk");
+
+    // Bearer, through the test endpoint.
+    let t = call(&s.app, "POST", "/api/v1/notifications/test", Some(json!({"webhook": url, "auth": {"type": "bearer", "secret": "API_KEY"}})), Some(&c), true).await;
+    assert_eq!(t.status, StatusCode::OK, "{}", t.body);
+    let h = wait_for(|| seen.lock().unwrap().get(1).cloned(), "the test call").await;
+    assert_eq!(h.get("authorization").unwrap(), "Bearer k-123");
+
+    // Secrets a notification uses can't be deleted.
+    let del = call(&s.app, "DELETE", "/api/v1/secrets/HOOK_PASS", None, Some(&c), true).await;
+    assert_eq!(del.status, StatusCode::CONFLICT, "{}", del.body);
 }

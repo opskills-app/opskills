@@ -25,6 +25,8 @@ const ENROLLMENT: TableDefinition<&str, &str> = TableDefinition::new("enrollment
 const SESSIONS: TableDefinition<&str, &str> = TableDefinition::new("sessions");
 /// Key: API token id. Value: the token plus the SHA-256 of its secret.
 const API_TOKENS: TableDefinition<&str, &str> = TableDefinition::new("api_tokens");
+/// Key: a setting's name, like "email". Value: its JSON.
+const SETTINGS: TableDefinition<&str, &str> = TableDefinition::new("settings");
 /// Key: run id. Value: the notifications sent about the run and how each went.
 const NOTICES: TableDefinition<&str, &str> = TableDefinition::new("notices");
 /// Key: webhook id. Value: the webhook, its token hash and sealed signing secret.
@@ -64,6 +66,7 @@ impl Store {
             w.open_table(SCHEDULE_STATE)?;
             w.open_table(WEBHOOKS)?;
             w.open_table(NOTICES)?;
+            w.open_table(SETTINGS)?;
         }
         w.commit()?;
         Ok(Store { db })
@@ -292,6 +295,18 @@ impl Store {
     }
 
     // Sessions
+
+    // Settings
+
+    pub fn email_settings(&self) -> Result<Option<crate::model::EmailSettings>> {
+        Ok(self.get(SETTINGS, "email")?.map(|s| serde_json::from_str(&s)).transpose()?)
+    }
+    pub fn put_email_settings(&self, s: Option<&crate::model::EmailSettings>) -> Result<()> {
+        match s {
+            Some(s) => self.put(SETTINGS, "email", &serde_json::to_string(s)?),
+            None => self.remove(SETTINGS, "email").map(|_| ()),
+        }
+    }
 
     // Notifications
 

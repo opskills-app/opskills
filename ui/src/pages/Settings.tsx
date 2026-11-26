@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { KeyRound, Plus, Trash2 } from "lucide-react";
+import { Check, KeyRound, Mail, Plus, Send, Trash2, X } from "lucide-react";
 import { CopyButton } from "../components/CopyButton";
-import { api, useData, type ApiToken } from "../api";
+import { api, useData, type ApiToken, type EmailSettings } from "../api";
 import { timeAgo } from "../format";
 import { Avatar, Button, Card, CardHeader, ErrorNote, Modal, PageHeader, SampleBanner } from "../components/ui";
 
@@ -179,11 +179,179 @@ const members = [
   { name: "Leo Martins", role: "Viewer" },
 ];
 
+const blankEmail: EmailSettings = { smtp_host: "", smtp_port: 587, security: "starttls", from: "" };
+
+/** SMTP settings for email notifications. The password is a vault secret. */
+function EmailCard() {
+  const current = useData(() => api.emailSettings(), []);
+  const vault = useData(() => api.secrets(), []);
+  const [form, setForm] = useState<EmailSettings | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [testTo, setTestTo] = useState("");
+  const [test, setTest] = useState<{ busy?: boolean; ok?: string; error?: string }>({});
+
+  const source = current.data?.source;
+  const value = form ?? current.data?.settings ?? blankEmail;
+  const set = (patch: Partial<EmailSettings>) => {
+    setSaved(false);
+    setForm({ ...value, ...patch });
+  };
+  const secrets = (vault.data ?? []).map((s) => s.name);
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const signIn = (value.username ?? "").trim() !== "";
+      await api.saveEmailSettings({ ...value, username: signIn ? value.username : undefined, password_secret: signIn ? value.password_secret : undefined });
+      setForm(null);
+      setSaved(true);
+      current.reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function turnOff() {
+    if (!window.confirm("Turn off email? Email notifications will fail until it's set up again.")) return;
+    setError(null);
+    try {
+      await api.deleteEmailSettings();
+      setForm(null);
+      current.reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function sendTest() {
+    setTest({ busy: true });
+    try {
+      const r = await api.testNotification({ email: [testTo.trim()] });
+      setTest({ ok: `Sent to ${r.target}.` });
+    } catch (err) {
+      setTest({ error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  const testRow = source && source !== "off" && (
+    <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4">
+      <input type="email" value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="you@example.com" aria-label="Send a test email to" className={`${field} h-9 max-w-xs`} />
+      <Button size="sm" type="button" onClick={sendTest} disabled={test.busy || !testTo.includes("@") || form !== null}>
+        <Send className="size-3.5" /> {test.busy ? "Sending..." : "Send a test"}
+      </Button>
+      {test.ok && <span className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-300"><Check className="size-3.5" /> {test.ok}</span>}
+      {test.error && <span className="flex min-w-0 items-center gap-1 text-xs text-rose-600 dark:text-rose-400"><X className="size-3.5 shrink-0" /> {test.error}</span>}
+    </div>
+  );
+
+  return (
+    <Card className="mb-4">
+      <CardHeader title="Email" hint="The SMTP server email notifications are sent through" />
+      <div className="space-y-4 px-6 pb-6 sm:px-8">
+        {(error || current.error) && <ErrorNote>{error ?? current.error}</ErrorNote>}
+        {source === "config" ? (
+          <>
+            <p className="text-sm text-muted">Set in the server config file, which takes priority. Change it there, or remove it there to manage email here.</p>
+            <dl className="grid grid-cols-[8rem_1fr] gap-y-1.5 text-sm">
+              {[
+                ["SMTP server", `${current.data?.settings?.smtp_host}:${current.data?.settings?.smtp_port}`],
+                ["Security", current.data?.settings?.security],
+                ["User name", current.data?.settings?.username ?? "None"],
+                ["Sender", current.data?.settings?.from],
+              ].map(([k, v]) => (
+                <div key={k} className="contents">
+                  <dt className="text-muted">{k}</dt>
+                  <dd className="truncate">{v}</dd>
+                </div>
+              ))}
+            </dl>
+            {testRow}
+          </>
+        ) : (
+          <form onSubmit={save} className="space-y-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_7rem_10rem]">
+              <label className="text-xs font-medium text-muted">
+                SMTP server
+                <input required value={value.smtp_host} onChange={(e) => set({ smtp_host: e.target.value })} placeholder="smtp.example.com" spellCheck={false} className={`mt-1.5 ${field} text-ink`} />
+              </label>
+              <label className="text-xs font-medium text-muted">
+                Port
+                <input type="number" required min={1} max={65535} value={value.smtp_port} onChange={(e) => set({ smtp_port: Number(e.target.value) })} className={`mt-1.5 ${field} text-ink`} />
+              </label>
+              <label className="text-xs font-medium text-muted">
+                Security
+                <select
+                  value={value.security}
+                  onChange={(e) => {
+                    const security = e.target.value as EmailSettings["security"];
+                    // Move between the usual ports, unless someone picked another.
+                    const port = security === "tls" && value.smtp_port === 587 ? 465 : security === "starttls" && value.smtp_port === 465 ? 587 : value.smtp_port;
+                    set({ security, smtp_port: port });
+                  }}
+                  className={`mt-1.5 ${field} text-ink`}
+                >
+                  <option value="starttls">STARTTLS</option>
+                  <option value="tls">TLS</option>
+                  <option value="none">None</option>
+                </select>
+              </label>
+            </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <label className="text-xs font-medium text-muted">
+                User name
+                <input value={value.username ?? ""} onChange={(e) => set({ username: e.target.value })} placeholder="Leave empty for no sign-in" autoComplete="off" className={`mt-1.5 ${field} text-ink`} />
+              </label>
+              <label className="text-xs font-medium text-muted">
+                Password, from the vault
+                <select value={value.password_secret ?? ""} onChange={(e) => set({ password_secret: e.target.value || undefined })} disabled={!(value.username ?? "").trim()} className={`mt-1.5 ${field} text-ink disabled:opacity-50`}>
+                  <option value="">{secrets.length ? "Pick a secret" : "The vault is empty"}</option>
+                  {secrets.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <p className="-mt-2 text-xs text-muted">
+              Add the password to the <a href="#/vault" className="text-accent hover:underline">vault</a> first, for example as SMTP_PASSWORD. It stays encrypted there; this page only stores its name.
+            </p>
+            <label className="block text-xs font-medium text-muted">
+              Sender
+              <input required value={value.from} onChange={(e) => set({ from: e.target.value })} placeholder="OpSkills <opskills@example.com>" className={`mt-1.5 ${field} text-ink`} />
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="primary" type="submit" disabled={busy || (form === null && source === "settings")}>
+                <Mail className="size-3.5" /> {busy ? "Saving..." : "Save"}
+              </Button>
+              {source === "settings" && (
+                <Button type="button" onClick={turnOff}>
+                  Turn off
+                </Button>
+              )}
+              {saved && <span className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-300"><Check className="size-3.5" /> Saved</span>}
+              {source === "off" && form === null && <span className="text-xs text-muted">Email is off.</span>}
+            </div>
+            {testRow}
+          </form>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 export function SettingsPage() {
   return (
     <>
-      <PageHeader title="Settings" subtitle="API tokens, workspace members and access." />
+      <PageHeader title="Settings" subtitle="API tokens, email, workspace members and access." />
       <ApiTokensCard />
+      <EmailCard />
       <SampleBanner>Members and roles below are a preview of a later release. This version has one built-in admin user.</SampleBanner>
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <Card>

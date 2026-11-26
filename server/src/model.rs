@@ -106,11 +106,124 @@ pub struct Notification {
     /// Or a URL that gets a JSON POST (Slack and similar incoming webhooks work).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook: Option<String>,
+    /// Extra headers for the webhook call. Values may use `{{ secrets.NAME }}`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<WebhookHeader>,
+    /// Sign the webhook call in with a vault secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<WebhookAuth>,
     #[serde(default = "yes")]
     pub enabled: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebhookHeader {
+    pub name: String,
+    pub value: String,
+}
+
+/// `Authorization` for a webhook call, from a vault secret.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum WebhookAuth {
+    /// `Authorization: Bearer <secret>`
+    Bearer { secret: String },
+    /// `Authorization: Basic base64(<username>:<secret>)`
+    Basic { username: String, secret: String },
+}
+
+impl WebhookAuth {
+    pub fn secret(&self) -> &str {
+        match self {
+            WebhookAuth::Bearer { secret } | WebhookAuth::Basic { secret, .. } => secret,
+        }
+    }
+}
+
+/// Headers people may not set: the server sets them, or they'd break the request.
+const RESERVED_HEADERS: &[&str] = &["host", "content-length", "content-type", "transfer-encoding", "connection", "x-opskills-event"];
+
+/// A piece of a header value: text, or the value of a vault secret.
+#[derive(Debug, PartialEq)]
+pub enum HeaderPart {
+    Text(String),
+    Secret(String),
+}
+
+/// Split a header value into text and `{{ secrets.NAME }}` references.
+pub fn header_parts(value: &str) -> Result<Vec<HeaderPart>, String> {
+    let mut parts = Vec::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("{{") {
+        if start > 0 {
+            parts.push(HeaderPart::Text(rest[..start].to_string()));
+        }
+        let after = &rest[start + 2..];
+        let end = after.find("}}").ok_or("a {{ has no closing }}.")?;
+        let inner = after[..end].trim();
+        let name = inner.strip_prefix("secrets.").ok_or_else(|| format!("only {{{{ secrets.NAME }}}} can be used in a header, not {{{{ {inner} }}}}."))?;
+        validate_secret_name(name)?;
+        parts.push(HeaderPart::Secret(name.to_string()));
+        rest = &after[end + 2..];
+    }
+    if !rest.is_empty() {
+        parts.push(HeaderPart::Text(rest.to_string()));
+    }
+    Ok(parts)
+}
+
 pub const MAX_NOTIFICATIONS: usize = 10;
+
+/// SMTP settings made on the Settings page. The password is a vault secret, by name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmailSettings {
+    pub smtp_host: String,
+    #[serde(default = "smtp_port")]
+    pub smtp_port: u16,
+    #[serde(default = "starttls")]
+    pub security: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_secret: Option<String>,
+    pub from: String,
+}
+
+fn smtp_port() -> u16 {
+    587
+}
+
+fn starttls() -> String {
+    "starttls".into()
+}
+
+impl EmailSettings {
+    pub fn validate(&mut self) -> Result<(), String> {
+        self.smtp_host = self.smtp_host.trim().to_string();
+        if self.smtp_host.is_empty() || self.smtp_host.len() > 253 || self.smtp_host.contains(char::is_whitespace) {
+            return Err("Give the SMTP server's host name, like smtp.example.com.".into());
+        }
+        if self.smtp_port == 0 {
+            return Err("The SMTP port must be 1 to 65535.".into());
+        }
+        if !["starttls", "tls", "none"].contains(&self.security.as_str()) {
+            return Err("Security must be starttls, tls or none.".into());
+        }
+        self.username = self.username.take().map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+        self.password_secret = self.password_secret.take().filter(|s| !s.is_empty());
+        if self.username.is_some() != self.password_secret.is_some() {
+            return Err("Give both a user name and a password secret, or neither.".into());
+        }
+        if let Some(s) = &self.password_secret {
+            validate_secret_name(s)?;
+        }
+        self.from = self.from.trim().to_string();
+        self.from.parse::<lettre::message::Mailbox>().map_err(|_| format!("{:?} is not a sender address. Use one like OpSkills <opskills@example.com>.", self.from))?;
+        Ok(())
+    }
+}
 
 impl Notification {
     pub fn validate(&mut self) -> Result<(), String> {
@@ -145,7 +258,61 @@ impl Notification {
             (true, Some(url)) => check_webhook_url(url)?,
             _ => return Err("send either to email addresses or to a webhook URL.".into()),
         }
+        if self.webhook.is_none() && (!self.headers.is_empty() || self.auth.is_some()) {
+            return Err("headers and sign-in are only for webhooks.".into());
+        }
+        if self.headers.len() > 10 {
+            return Err("a webhook can have at most 10 headers.".into());
+        }
+        let mut seen: Vec<String> = Vec::new();
+        for h in &mut self.headers {
+            h.name = h.name.trim().to_string();
+            let lower = h.name.to_ascii_lowercase();
+            if h.name.is_empty() || h.name.len() > 64 || !h.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                return Err(format!("{:?} is not a header name. Use letters, digits and dashes, like X-Api-Key.", h.name));
+            }
+            if RESERVED_HEADERS.contains(&lower.as_str()) {
+                return Err(format!("the {} header is set by OpSkills.", h.name));
+            }
+            if lower == "authorization" && self.auth.is_some() {
+                return Err("set Authorization either as a header or with sign-in, not both.".into());
+            }
+            if seen.contains(&lower) {
+                return Err(format!("the {} header is listed twice.", h.name));
+            }
+            seen.push(lower);
+            if h.value.len() > 1000 || h.value.chars().any(|c| c == '\r' || c == '\n' || c == '\0') {
+                return Err(format!("the {} header's value must be one line of at most 1000 characters.", h.name));
+            }
+            header_parts(&h.value).map_err(|e| format!("{}: {e}", h.name))?;
+        }
+        if let Some(auth) = &mut self.auth {
+            validate_secret_name(auth.secret())?;
+            if let WebhookAuth::Basic { username, .. } = auth {
+                *username = username.trim().to_string();
+                if username.is_empty() || username.len() > 200 || username.contains(':') || username.chars().any(char::is_control) {
+                    return Err("basic sign-in needs a user name without a colon.".into());
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// The vault secrets this notification uses.
+    pub fn secret_refs(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .headers
+            .iter()
+            .flat_map(|h| header_parts(&h.value).unwrap_or_default())
+            .filter_map(|p| match p {
+                HeaderPart::Secret(s) => Some(s),
+                HeaderPart::Text(_) => None,
+            })
+            .chain(self.auth.as_ref().map(|a| a.secret().to_string()))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// Who gets it, for logs and the run page. A webhook shows only its host, since

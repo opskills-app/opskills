@@ -104,8 +104,25 @@ export interface Notification {
   slow_after_seconds?: number;
   email?: string[];
   webhook?: string;
+  /** Values may use {{ secrets.NAME }}. */
+  headers?: { name: string; value: string }[];
+  auth?: WebhookAuth;
   enabled: boolean;
 }
+
+export type WebhookAuth = { type: "bearer"; secret: string } | { type: "basic"; username: string; secret: string };
+
+/** SMTP settings made on the Settings page; the password is a vault secret. */
+export interface EmailSettings {
+  smtp_host: string;
+  smtp_port: number;
+  security: "starttls" | "tls" | "none";
+  username?: string;
+  password_secret?: string;
+  from: string;
+}
+
+export type EmailSource = "config" | "settings" | "off";
 
 /** How one notification about a run went. */
 export interface Notice {
@@ -358,8 +375,11 @@ export const api = {
   updateWebhook: (id: string, w: WebhookInput) => request<{ webhook: Webhook; signing_secret: string | null }>("PUT", `/webhooks/${encodeURIComponent(id)}`, w),
   rotateWebhook: (id: string) => request<{ token: string }>("POST", `/webhooks/${encodeURIComponent(id)}/rotate`),
   deleteWebhook: (id: string) => request<void>("DELETE", `/webhooks/${encodeURIComponent(id)}`),
-  notificationSettings: () => request<{ email: boolean; from: string | null }>("GET", "/notifications/settings"),
-  testNotification: (target: { email?: string[]; webhook?: string }) => request<{ sent: boolean; target: string }>("POST", "/notifications/test", target),
+  notificationSettings: () => request<{ email: boolean; from: string | null; source: EmailSource }>("GET", "/notifications/settings"),
+  emailSettings: () => request<{ source: EmailSource; settings: EmailSettings | null }>("GET", "/settings/email"),
+  saveEmailSettings: (s: EmailSettings) => request<{ source: EmailSource; settings: EmailSettings }>("PUT", "/settings/email", s),
+  deleteEmailSettings: () => request<void>("DELETE", "/settings/email"),
+  testNotification: (target: { email?: string[]; webhook?: string; headers?: Notification["headers"]; auth?: WebhookAuth }) => request<{ sent: boolean; target: string }>("POST", "/notifications/test", target),
   runNotices: (runId: string) => request<Notice[]>("GET", `/runs/${encodeURIComponent(runId)}/notifications`),
   scheduleStatus: (runbookId: string) => request<ScheduleStatus[]>("GET", `/runbooks/${encodeURIComponent(runbookId)}/schedules`),
   previewSchedule: (cron: string, timezone: string) => request<{ next: number[] }>("POST", "/schedules/preview", { cron, timezone }),

@@ -285,7 +285,9 @@ test** to check it before saving.
 | `on` | Any of `started`, `succeeded`, `failed` and `slow` |
 | `slow_after_seconds` | With `slow`: how long a run may take before it counts as slow. Sent once per run, while it's still running |
 | `webhook` | A URL that gets a JSON `POST` |
-| `email` | Or up to 20 addresses; the server needs an SMTP server ([setup](install.md#sending-email)) |
+| `headers` | Extra headers for the webhook, up to 10: `[{"name": "X-Api-Key", "value": "{{ secrets.PD_KEY }}"}]` |
+| `auth` | Sign the webhook call in: `{"type": "bearer", "secret": "HOOK_TOKEN"}` or `{"type": "basic", "username": "ops", "secret": "HOOK_PASSWORD"}` |
+| `email` | Or up to 20 addresses; email must be set up first ([how](install.md#sending-email)) |
 | `enabled` | Default `true` |
 
 A runbook can have up to 10. Runs that a call step starts don't send their own
@@ -306,6 +308,15 @@ which Discord shows), plus the details for anything else:
   "output_tail": ["bucket not found", "Step failed with exit code 2."]
 }
 ```
+
+**Headers and sign-in.** For receivers that need a key or a token, add headers
+and pick a sign-in. A header value can include a vault secret as
+`{{ secrets.NAME }}`; **Bearer token** sends `Authorization: Bearer <secret>`, and
+**User name and password** sends basic sign-in with the secret as the password.
+Only the secret's name is saved with the runbook; its value is read from the vault
+when the message goes out, and kept out of any recorded error. A secret in use
+can't be deleted from the vault. `Host`, `Content-Type`, `Content-Length`,
+`Connection`, `Transfer-Encoding` and `X-OpSkills-Event` are set by OpSkills.
 
 The header `X-OpSkills-Event` names the event. `output_tail` holds the last 20
 output lines of a failed run (secret values are already masked) and is empty

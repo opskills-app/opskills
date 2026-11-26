@@ -10,8 +10,11 @@ use serde_json::json;
 
 use crate::config::{Config, Email};
 use crate::executor::{human_duration, run_number};
-use crate::model::{Notification, NotifyEvent, Run, Status, now_ms};
+use crate::model::{HeaderPart, Notification, NotifyEvent, Run, Status, WebhookAuth, header_parts, now_ms};
 use crate::store::Store;
+use crate::vault::{Sealed, Vault};
+
+type Headers = Vec<(String, String)>;
 
 /// Output lines included when a run fails.
 const TAIL_LINES: usize = 20;
@@ -41,9 +44,29 @@ pub struct Message {
 }
 
 pub struct Notifier {
+    /// From the config file; wins over the Settings page when set.
     email: Email,
     public_url: Option<String>,
     store: Arc<Store>,
+    vault: Arc<Vault>,
+}
+
+/// Where the SMTP settings come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailSource {
+    Config,
+    Settings,
+    Off,
+}
+
+/// SMTP settings ready to use, with the password in hand.
+struct Smtp {
+    host: String,
+    port: u16,
+    security: String,
+    credentials: Option<(String, String)>,
+    from: String,
 }
 
 /// Slow-run timers for one run; dropping it (when the run ends) cancels them.
@@ -58,17 +81,94 @@ impl Drop for SlowTimers {
 }
 
 impl Notifier {
-    pub fn new(cfg: &Config, store: Arc<Store>) -> Arc<Self> {
+    pub fn new(cfg: &Config, store: Arc<Store>, vault: Arc<Vault>) -> Arc<Self> {
         let public_url = cfg.server.public_url.as_deref().map(|u| u.trim_end_matches('/').to_string());
-        Arc::new(Notifier { email: cfg.email.clone(), public_url, store })
+        Arc::new(Notifier { email: cfg.email.clone(), public_url, store, vault })
+    }
+
+    pub fn email_source(&self) -> EmailSource {
+        if self.email.enabled() {
+            EmailSource::Config
+        } else if matches!(self.store.email_settings(), Ok(Some(_))) {
+            EmailSource::Settings
+        } else {
+            EmailSource::Off
+        }
+    }
+
+    /// The config file's SMTP settings (never the password), when they're in use.
+    pub fn config_email(&self) -> Option<serde_json::Value> {
+        let e = &self.email;
+        e.enabled().then(|| json!({ "smtp_host": e.smtp_host, "smtp_port": e.smtp_port, "security": e.security, "username": e.username, "from": e.from }))
     }
 
     pub fn email_enabled(&self) -> bool {
-        self.email.enabled()
+        self.email_source() != EmailSource::Off
     }
 
     pub fn email_from(&self) -> Option<String> {
-        self.email_enabled().then(|| self.email.from.clone()).flatten()
+        match self.email_source() {
+            EmailSource::Config => self.email.from.clone(),
+            EmailSource::Settings => self.store.email_settings().ok().flatten().map(|s| s.from),
+            EmailSource::Off => None,
+        }
+    }
+
+    /// The value of a vault secret.
+    pub fn secret_value(&self, name: &str) -> Result<String, String> {
+        let stored = self.store.secret(name).map_err(|e| e.to_string())?.ok_or_else(|| format!("the vault has no secret named {name}"))?;
+        let value = self.vault.open(name, &Sealed { nonce: stored.nonce, ciphertext: stored.ciphertext }).map_err(|e| format!("opening {name}: {e}"))?;
+        Ok(String::from_utf8_lossy(&value).into_owned())
+    }
+
+    fn smtp(&self) -> Result<Smtp, String> {
+        let e = &self.email;
+        if e.enabled() {
+            return Ok(Smtp {
+                host: e.smtp_host.clone().unwrap_or_default(),
+                port: e.smtp_port,
+                security: e.security.clone(),
+                credentials: e.username.clone().zip(e.password.clone()),
+                from: e.from.clone().unwrap_or_default(),
+            });
+        }
+        let s = self.store.email_settings().map_err(|e| e.to_string())?.ok_or("Email isn't set up on this server. Set it up under Settings > Email.")?;
+        let credentials = match (&s.username, &s.password_secret) {
+            (Some(u), Some(secret)) => Some((u.clone(), self.secret_value(secret).map_err(|e| format!("SMTP password: {e}"))?)),
+            _ => None,
+        };
+        Ok(Smtp { host: s.smtp_host, port: s.smtp_port, security: s.security, credentials, from: s.from })
+    }
+
+    /// The extra headers of a webhook notification, with secrets filled in.
+    /// Returns the headers, and the secret values in them (to keep out of errors).
+    fn webhook_headers(&self, n: &Notification) -> Result<(Headers, Vec<String>), String> {
+        let mut out = Vec::new();
+        let mut secrets = Vec::new();
+        for h in &n.headers {
+            let mut value = String::new();
+            for part in header_parts(&h.value)? {
+                match part {
+                    HeaderPart::Text(t) => value.push_str(&t),
+                    HeaderPart::Secret(name) => {
+                        let v = self.secret_value(&name).map_err(|e| format!("header {}: {e}", h.name))?;
+                        value.push_str(&v);
+                        secrets.push(v);
+                    }
+                }
+            }
+            out.push((h.name.clone(), value));
+        }
+        if let Some(auth) = &n.auth {
+            let secret = self.secret_value(auth.secret()).map_err(|e| format!("sign-in: {e}"))?;
+            let value = match auth {
+                WebhookAuth::Bearer { .. } => format!("Bearer {secret}"),
+                WebhookAuth::Basic { username, .. } => format!("Basic {}", base64(format!("{username}:{secret}").as_bytes())),
+            };
+            secrets.push(secret);
+            out.push(("Authorization".into(), value));
+        }
+        Ok((out, secrets))
     }
 
     /// The runbook's notification rules, read once when a run starts. Runs started by
@@ -152,7 +252,11 @@ impl Notifier {
 
     pub fn deliver(&self, n: &Notification, msg: &Message) -> Result<(), String> {
         match &n.webhook {
-            Some(url) => post_webhook(url, msg),
+            Some(url) => {
+                let (headers, secrets) = self.webhook_headers(n)?;
+                // Keep secret values out of anything recorded.
+                post_webhook(url, msg, &headers).map_err(|e| secrets.iter().filter(|s| !s.is_empty()).fold(e, |e, s| e.replace(s.as_str(), "***")))
+            }
             None => self.send_email(&n.email, msg),
         }
     }
@@ -161,25 +265,25 @@ impl Notifier {
         use lettre::message::{Mailbox, header::ContentType};
         use lettre::transport::smtp::authentication::Credentials;
         use lettre::{SmtpTransport, Transport};
-        let e = &self.email;
-        let host = e.smtp_host.as_deref().filter(|h| !h.is_empty()).ok_or("Email isn't set up on this server. Set [email] in the server config.")?;
-        let from: Mailbox = e.from.as_deref().unwrap_or_default().parse().map_err(|err| format!("email.from: {err}"))?;
+        let e = self.smtp()?;
+        let host = e.host.as_str();
+        let from: Mailbox = e.from.parse().map_err(|err| format!("sender {:?}: {err}", e.from))?;
         let builder = match e.security.as_str() {
             "tls" => SmtpTransport::relay(host),
             "starttls" => SmtpTransport::starttls_relay(host),
             _ => Ok(SmtpTransport::builder_dangerous(host)),
         }
         .map_err(|err| format!("SMTP: {err}"))?;
-        let mut builder = builder.port(e.smtp_port).timeout(Some(Duration::from_secs(20)));
-        if let (Some(user), Some(pass)) = (&e.username, &e.password) {
-            builder = builder.credentials(Credentials::new(user.clone(), pass.clone()));
+        let mut builder = builder.port(e.port).timeout(Some(Duration::from_secs(20)));
+        if let Some((user, pass)) = e.credentials.clone() {
+            builder = builder.credentials(Credentials::new(user, pass));
         }
         let mut mail = lettre::Message::builder().from(from).subject(msg.subject.as_str());
         for addr in to {
             mail = mail.to(addr.parse::<Mailbox>().map_err(|err| format!("{addr}: {err}"))?);
         }
         let mail = mail.header(ContentType::TEXT_PLAIN).body(msg.body.clone()).map_err(|err| format!("building the email: {err}"))?;
-        builder.build().send(&mail).map(|_| ()).map_err(|err| format!("SMTP {host}:{}: {err}", e.smtp_port))
+        builder.build().send(&mail).map(|_| ()).map_err(|err| format!("SMTP {host}:{}: {err}", e.port))
     }
 
     /// The message for one event of a run.
@@ -272,8 +376,26 @@ impl Notifier {
     }
 }
 
+/// Standard base64 with padding, for basic sign-in.
+fn base64(data: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 /// POST the JSON body, retrying when the receiver is down or busy.
-fn post_webhook(url: &str, msg: &Message) -> Result<(), String> {
+fn post_webhook(url: &str, msg: &Message, headers: &[(String, String)]) -> Result<(), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
         .http_status_as_error(false)
@@ -287,7 +409,11 @@ fn post_webhook(url: &str, msg: &Message) -> Result<(), String> {
         if attempt > 0 {
             std::thread::sleep(RETRY_DELAYS[attempt - 1]);
         }
-        match agent.post(url).header("Content-Type", "application/json").header("X-OpSkills-Event", msg.event).send(body.as_str()) {
+        let mut req = agent.post(url).header("Content-Type", "application/json").header("X-OpSkills-Event", msg.event);
+        for (k, v) in headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        match req.send(body.as_str()) {
             Ok(res) if res.status().is_success() => return Ok(()),
             Ok(res) => {
                 let code = res.status();
@@ -301,4 +427,14 @@ fn post_webhook(url: &str, msg: &Message) -> Result<(), String> {
         }
     }
     Err(last)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn base64_matches_the_standard() {
+        for (input, want) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("ops:s3cret!", "b3BzOnMzY3JldCE=")] {
+            assert_eq!(super::base64(input.as_bytes()), want, "{input}");
+        }
+    }
 }
