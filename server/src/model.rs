@@ -31,10 +31,101 @@ impl Status {
     }
 }
 
+/// A step writes a file on its host instead of running a command.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyStep {
+    /// Where to write. A relative path is inside the run's working folder.
+    pub to: String,
+    /// The file's content; `{{ ... }}` references are filled in as plain text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Or the value of this vault secret, which the runbook must list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// File mode in octal, like "0644". Defaults to 0644, or 0600 for a secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
+
+pub const MAX_COPY_CONTENT: usize = 64 * 1024;
+
+impl CopyStep {
+    pub fn mode_or_default(&self) -> String {
+        self.mode.clone().unwrap_or_else(|| if self.secret.is_some() { "0600".into() } else { "0644".into() })
+    }
+
+    fn validate(&mut self, secrets: &[String], inputs: &[String]) -> Result<(), String> {
+        self.to = self.to.trim().to_string();
+        if self.to.is_empty() || self.to.len() > 4096 || self.to.contains(['\0', '\n', '\r']) || self.to.ends_with('/') {
+            return Err("the destination must be a file path of up to 4096 characters, on one line.".into());
+        }
+        template::check(&self.to, inputs)?;
+        match (&self.content, &self.secret) {
+            (Some(c), None) => {
+                if c.len() > MAX_COPY_CONTENT || c.contains('\0') {
+                    return Err("the file content must be text of at most 64 KB.".into());
+                }
+                template::check(c, inputs)?;
+            }
+            (None, Some(s)) => {
+                if !secrets.contains(s) {
+                    return Err(format!("the secret {s} must also be selected under the runbook's secrets."));
+                }
+            }
+            _ => return Err("give either the file content or a vault secret to copy, not both.".into()),
+        }
+        if let Some(m) = &self.mode {
+            let digits = m.trim().trim_start_matches("0o");
+            match u32::from_str_radix(digits, 8) {
+                Ok(n) if n <= 0o7777 && !digits.is_empty() => self.mode = Some(format!("{n:04o}")),
+                _ => return Err(format!("{m:?} is not a file mode. Use octal, like 0644 or 0600.")),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A step runs another runbook on its host and waits for it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallStep {
+    /// Id of the runbook to run.
+    pub runbook: String,
+    /// Values for the called runbook's inputs; `{{ ... }}` references are filled in as plain text.
+    #[serde(default)]
+    pub inputs: BTreeMap<String, String>,
+}
+
+/// How deep calls may nest: a run, the runbook it calls, and so on.
+pub const MAX_CALL_DEPTH: u32 = 5;
+
+impl CallStep {
+    fn validate(&mut self, inputs: &[String]) -> Result<(), String> {
+        self.runbook = self.runbook.trim().to_string();
+        if self.runbook.is_empty() {
+            return Err("choose a runbook to call.".into());
+        }
+        for (name, value) in &self.inputs {
+            if value.chars().count() > MAX_INPUT_VALUE {
+                return Err(format!("the value for {name} must be at most {MAX_INPUT_VALUE} characters."));
+            }
+            template::check(value, inputs)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Step {
     pub name: String,
+    /// The shell command. Empty when the step copies a file or calls a runbook.
+    #[serde(default)]
     pub run: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<CopyStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<CallStep>,
     /// Overrides the runbook's step timeout. Accepts seconds or a duration like "10m".
     #[serde(default, deserialize_with = "seconds::option::deserialize")]
     pub timeout_seconds: Option<u64>,
@@ -403,31 +494,6 @@ impl RunbookInput {
             && !(MIN_OUTPUT_LINES..=MAX_OUTPUT_LINES).contains(&limit.lines) {
                 return Err(format!("The output limit must be {MIN_OUTPUT_LINES} to {MAX_OUTPUT_LINES} lines."));
             }
-        if self.steps.is_empty() || self.steps.len() > 50 {
-            return Err("A runbook needs 1 to 50 steps.".into());
-        }
-        for (i, step) in self.steps.iter_mut().enumerate() {
-            if step.timeout_seconds.is_some_and(|t| !(1..=MAX_TIMEOUT).contains(&t)) {
-                return Err(format!("Step {} timeout must be 1 second to 1 day.", i + 1));
-            }
-            if step.retries > MAX_RETRIES {
-                return Err(format!("Step {} can retry at most {MAX_RETRIES} times.", i + 1));
-            }
-            if step.retry_delay_seconds > MAX_RETRY_DELAY {
-                return Err(format!("Step {} retry delay must be at most 1 hour.", i + 1));
-            }
-            template::check(&step.run, &input_names).map_err(|e| format!("Step {}: {e}", i + 1))?;
-            step.name = step.name.trim().to_string();
-            if step.name.is_empty() {
-                step.name = format!("Step {}", i + 1);
-            }
-            if step.name.chars().count() > 100 {
-                return Err(format!("Step {} name must be at most 100 characters.", i + 1));
-            }
-            if step.run.trim().is_empty() || step.run.len() > 20_000 {
-                return Err(format!("Step {} command must be 1 to 20000 characters.", i + 1));
-            }
-        }
         let mut secrets: Vec<String> = Vec::new();
         for name in &self.secrets {
             validate_secret_name(name)?;
@@ -439,6 +505,41 @@ impl RunbookInput {
             return Err("A runbook can use at most 20 secrets.".into());
         }
         self.secrets = secrets;
+        if self.steps.is_empty() || self.steps.len() > 50 {
+            return Err("A runbook needs 1 to 50 steps.".into());
+        }
+        for (i, step) in self.steps.iter_mut().enumerate() {
+            let n = i + 1;
+            if step.timeout_seconds.is_some_and(|t| !(1..=MAX_TIMEOUT).contains(&t)) {
+                return Err(format!("Step {n} timeout must be 1 second to 1 day."));
+            }
+            if step.retries > MAX_RETRIES {
+                return Err(format!("Step {n} can retry at most {MAX_RETRIES} times."));
+            }
+            if step.retry_delay_seconds > MAX_RETRY_DELAY {
+                return Err(format!("Step {n} retry delay must be at most 1 hour."));
+            }
+            step.name = step.name.trim().to_string();
+            if step.name.is_empty() {
+                step.name = format!("Step {n}");
+            }
+            if step.name.chars().count() > 100 {
+                return Err(format!("Step {n} name must be at most 100 characters."));
+            }
+            let has_command = !step.run.trim().is_empty();
+            match (has_command, step.copy.as_mut(), step.call.as_mut()) {
+                (true, None, None) => {
+                    if step.run.len() > 20_000 {
+                        return Err(format!("Step {n} command must be at most 20000 characters."));
+                    }
+                    template::check(&step.run, &input_names).map_err(|e| format!("Step {n}: {e}"))?;
+                }
+                (false, Some(copy), None) => copy.validate(&self.secrets, &input_names).map_err(|e| format!("Step {n}: {e}"))?,
+                (false, None, Some(call)) => call.validate(&input_names).map_err(|e| format!("Step {n}: {e}"))?,
+                (false, None, None) => return Err(format!("Step {n} needs a command.")),
+                _ => return Err(format!("Step {n} must do one thing: run a command, copy a file, or call a runbook.")),
+            }
+        }
         match self.timeout_seconds {
             Some(t) if !(1..=MAX_TIMEOUT).contains(&t) => return Err("Step timeout must be 1 second to 1 day.".into()),
             _ => {}
@@ -471,6 +572,22 @@ pub struct StepResult {
     /// How many times the step was started.
     #[serde(default)]
     pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<CopyStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<CallStep>,
+    /// The run a call step started (its latest attempt).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_run_id: Option<String>,
+}
+
+/// The run and step that started a run through a call step.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParentRef {
+    pub run_id: String,
+    pub runbook_name: String,
+    /// Index of the calling step in the parent run's steps.
+    pub step: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -500,6 +617,12 @@ pub struct Run {
     pub steps: Vec<StepResult>,
     pub error: Option<String>,
     pub log_lines: u64,
+    /// Set when a call step in another run started this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ParentRef>,
+    /// 0 for a run started directly, 1 for a run it called, and so on.
+    #[serde(default)]
+    pub depth: u32,
 }
 
 fn local_id() -> String {
@@ -551,14 +674,33 @@ impl Run {
                         retry_delay_seconds: s.retry_delay_seconds,
                         continue_on_error: s.continue_on_error,
                         attempts: 0,
+                        copy: s.copy.clone(),
+                        call: s.call.clone(),
+                        child_run_id: None,
                     })
                 })
                 .collect(),
             hosts,
             error: None,
             log_lines: 0,
+            parent: None,
+            depth: 0,
         }
     }
+
+    /// A run of `runbook` started by step `step` of `parent`, on that step's host.
+    pub fn called(runbook: &Runbook, parent: &Run, step: usize, host: RunHost, inputs: &[InputValue]) -> Self {
+        let mut run = Run::new(runbook, &parent.started_by, vec![host], inputs);
+        run.trigger = "runbook".into();
+        run.parent = Some(ParentRef { run_id: parent.id.clone(), runbook_name: parent.runbook_name.clone(), step });
+        run.depth = parent.depth + 1;
+        run
+    }
+}
+
+/// Ids of the runbooks each runbook calls, for finding loops.
+pub fn calls_of(rb_steps: &[Step]) -> Vec<String> {
+    rb_steps.iter().filter_map(|s| s.call.as_ref().map(|c| c.runbook.clone())).collect()
 }
 
 /// A machine with the OpSkills agent, enrolled with this server.

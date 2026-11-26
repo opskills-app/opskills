@@ -5,8 +5,8 @@ Debian package, running your first runbook, and everyday tasks: logs,
 configuration, upgrades, backups and removal.
 
 > **About the v0.4.0 preview.** You sign in, keep secrets in an encrypted vault,
-> write runbooks (with inputs, retries and failure handling) and run them, with
-> output streaming live. Each step is a shell
+> write runbooks (with inputs, retries, file copies and calls to other runbooks)
+> and run them, with output streaming live. Each step is a shell
 > command that runs on the OpSkills server itself, or on Linux hosts you enroll
 > with the OpSkills agent ([docs/hosts.md](hosts.md)). Schedules and approvals come
 > later; the Settings page still shows sample data. Because runbooks run commands,

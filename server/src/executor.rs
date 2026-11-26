@@ -21,9 +21,43 @@ use tokio::process::Command;
 use tokio::sync::{Semaphore, broadcast, mpsc, watch};
 
 use crate::hub::{AgentMsg, CONTACT_TIMEOUT, End, Hub, Job, JobEnd, PICKUP_TIMEOUT};
-use crate::model::{FailurePolicy, InputValue, LOCAL_HOST_ID, LOCAL_HOST_NAME, LimitAction, LogLine, Run, RunHost, Status, now_ms};
+use crate::model::{
+    CallStep, CopyStep, FailurePolicy, InputValue, LOCAL_HOST_ID, LOCAL_HOST_NAME, LimitAction, LogLine, MAX_CALL_DEPTH, Run, RunHost, Runbook, Status, now_ms, resolve_inputs,
+};
 use crate::store::Store;
 use crate::template;
+use crate::vault::{Sealed, Vault};
+
+/// Why a run could not be started.
+#[derive(Debug)]
+pub enum StartError {
+    /// The input values don't fit the runbook's inputs.
+    BadInput(String),
+    /// The runbook needs something that is gone, like a vault secret.
+    Conflict(String),
+    Internal(anyhow::Error),
+}
+
+impl From<anyhow::Error> for StartError {
+    fn from(e: anyhow::Error) -> Self {
+        StartError::Internal(e)
+    }
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StartError::BadInput(m) | StartError::Conflict(m) => f.write_str(m),
+            StartError::Internal(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// A run's short number, as the web app shows it.
+pub fn run_number(id: &str) -> String {
+    let compact: String = id.chars().filter(|c| *c != '-').collect();
+    compact[compact.len().saturating_sub(6)..].to_string()
+}
 
 const MAX_LINE_CHARS: usize = 4000;
 const FLUSH_EVERY: Duration = Duration::from_millis(250);
@@ -103,14 +137,30 @@ enum Halt {
 pub struct Executor {
     store: Arc<Store>,
     hub: Arc<Hub>,
+    vault: Arc<Vault>,
     work_root: PathBuf,
     limit: Arc<Semaphore>,
     live: Mutex<HashMap<String, Arc<Live>>>,
 }
 
 impl Executor {
-    pub fn new(store: Arc<Store>, hub: Arc<Hub>, work_root: PathBuf, max_concurrent: usize) -> Arc<Self> {
-        Arc::new(Executor { store, hub, work_root, limit: Arc::new(Semaphore::new(max_concurrent.max(1))), live: Mutex::new(HashMap::new()) })
+    pub fn new(store: Arc<Store>, hub: Arc<Hub>, vault: Arc<Vault>, work_root: PathBuf, max_concurrent: usize) -> Arc<Self> {
+        Arc::new(Executor { store, hub, vault, work_root, limit: Arc::new(Semaphore::new(max_concurrent.max(1))), live: Mutex::new(HashMap::new()) })
+    }
+
+    /// Check input values against `rb` and decrypt the secrets it lists. The result
+    /// lives only in memory, for one run.
+    pub fn prepare(&self, rb: &Runbook, given: &serde_json::Map<String, serde_json::Value>) -> Result<RunValues, StartError> {
+        let inputs = resolve_inputs(&rb.inputs, given).map_err(StartError::BadInput)?;
+        let mut secrets = Vec::new();
+        for name in &rb.secrets {
+            let stored = self.store.secret(name)?.ok_or_else(|| {
+                StartError::Conflict(format!("The runbook \"{}\" uses the secret {name}, which is no longer in the vault. Add it again or edit the runbook.", rb.name))
+            })?;
+            let value = self.vault.open(name, &Sealed { nonce: stored.nonce, ciphertext: stored.ciphertext })?;
+            secrets.push((name.clone(), String::from_utf8_lossy(&value).into_owned()));
+        }
+        Ok(RunValues { secrets, inputs })
     }
 
     /// Subscribe to a live run. Returns the lines so far and a receiver for what follows,
@@ -142,7 +192,7 @@ impl Executor {
         let snapshot = run.clone();
         tokio::spawn(async move {
             let id = run.id.clone();
-            me.execute(run, values, live, cancel_rx).await;
+            me.clone().execute(run, values, live, cancel_rx).await;
             me.live.lock().unwrap().remove(&id);
         });
         Ok(snapshot)
@@ -155,14 +205,21 @@ impl Executor {
         let _ = live.tx.send(Event::Run(Box::new(run.clone())));
     }
 
-    async fn execute(&self, mut run: Run, values: RunValues, live: Arc<Live>, mut cancel_rx: watch::Receiver<bool>) {
-        let permit = tokio::select! {
-            p = self.limit.clone().acquire_owned() => p.ok(),
-            _ = wait_cancel(&mut cancel_rx) => None,
+    async fn execute(self: Arc<Self>, mut run: Run, values: RunValues, live: Arc<Live>, mut cancel_rx: watch::Receiver<bool>) {
+        // A called run is part of its parent, which already holds a slot; waiting for
+        // another could deadlock when every slot is taken by a parent.
+        let nested = run.parent.is_some();
+        let permit = if nested {
+            None
+        } else {
+            tokio::select! {
+                p = self.limit.clone().acquire_owned() => p.ok(),
+                _ = wait_cancel(&mut cancel_rx) => None,
+            }
         };
         let limit = run.output_limit;
         let mut sink = Sink::new(&run.id, &live, &self.store, &values.hidden(), limit.lines, limit.action == LimitAction::Fail);
-        if permit.is_none() {
+        if (!nested && permit.is_none()) || (nested && *cancel_rx.borrow()) {
             run.status = Status::Cancelled;
             for s in &mut run.steps {
                 s.status = Status::Skipped;
@@ -220,7 +277,15 @@ impl Executor {
                 sink.system(i, &format!("Step {number}: {}", run.steps[i].name));
 
                 let step = run.steps[i].clone();
-                let command = template::expand(&step.run, &template_values);
+                // What the step runs: its command, or the script that writes a copied file.
+                let prepared = match &step.copy {
+                    Some(copy) => copy_script(copy, &template_values, &values).map(|(script, extra)| {
+                        let mut e = env.clone();
+                        e.push(extra);
+                        (script, e)
+                    }),
+                    None => Ok((template::expand(&step.run, &template_values), env.clone())),
+                };
                 let timeout = Duration::from_secs(if step.timeout_seconds > 0 { step.timeout_seconds } else { run.timeout_seconds }.max(1));
                 let tries = step.retries + 1;
                 // Later steps on this host may still run after this one fails, so its files must stay.
@@ -234,22 +299,39 @@ impl Executor {
                         run.log_lines = sink.count;
                         self.publish(&live, &run);
                     }
-                    let result = if local {
-                        let mut step_env = base_env(&workdir, &run.id, number);
-                        step_env.extend(env.iter().cloned());
-                        run_command(&command, &workdir, &step_env, timeout, &mut cancel_rx, |stream, line| sink.push(i, stream, &line)).await
+                    let result = if let Some(call) = &step.call {
+                        match self.start_call(&run, i, host, call, &template_values) {
+                            Ok(child) => {
+                                sink.system(i, &format!("Running \"{}\" as run #{} on {}.", child.runbook_name, run_number(&child.id), host.name));
+                                run.steps[i].child_run_id = Some(child.id.clone());
+                                run.log_lines = sink.count;
+                                self.publish(&live, &run);
+                                self.wait_child(&child.id, timeout, &mut cancel_rx).await
+                            }
+                            Err(msg) => JobEnd::not_run(msg),
+                        }
                     } else {
-                        let job = Job {
-                            id: uuid::Uuid::now_v7().to_string(),
-                            run_id: run.id.clone(),
-                            step: number,
-                            command: command.clone(),
-                            env: env.clone(),
-                            timeout_seconds: timeout.as_secs(),
-                            last: last_on_host,
-                            keep_on_failure: attempt < tries || more_after_failure,
-                        };
-                        self.run_remote(&host.id, job, timeout, &mut cancel_rx, &mut sink, i).await
+                        match &prepared {
+                            Err(msg) => JobEnd::not_run(msg.clone()),
+                            Ok((command, step_env)) if local => {
+                                let mut full_env = base_env(&workdir, &run.id, number);
+                                full_env.extend(step_env.iter().cloned());
+                                run_command(command, &workdir, &full_env, timeout, &mut cancel_rx, |stream, line| sink.push(i, stream, &line)).await
+                            }
+                            Ok((command, step_env)) => {
+                                let job = Job {
+                                    id: uuid::Uuid::now_v7().to_string(),
+                                    run_id: run.id.clone(),
+                                    step: number,
+                                    command: command.clone(),
+                                    env: step_env.clone(),
+                                    timeout_seconds: timeout.as_secs(),
+                                    last: last_on_host,
+                                    keep_on_failure: attempt < tries || more_after_failure,
+                                };
+                                self.run_remote(&host.id, job, timeout, &mut cancel_rx, &mut sink, i).await
+                            }
+                        }
                     };
                     let succeeded = result.end == End::Exited && result.exit_code == Some(0);
                     if succeeded || result.end == End::Cancelled || attempt >= tries {
@@ -319,6 +401,60 @@ impl Executor {
 }
 
 impl Executor {
+    /// Start the run a call step asks for, on the calling step's host.
+    fn start_call(self: &Arc<Self>, parent: &Run, step: usize, host: &RunHost, call: &CallStep, values: &BTreeMap<String, String>) -> Result<Run, String> {
+        if parent.depth + 1 > MAX_CALL_DEPTH {
+            return Err(format!("Calls can nest at most {MAX_CALL_DEPTH} deep."));
+        }
+        let rb = self
+            .store
+            .runbook(&call.runbook)
+            .map_err(|e| e.to_string())?
+            .ok_or("The called runbook no longer exists. Edit this runbook to call another one.")?;
+        let given: serde_json::Map<String, serde_json::Value> =
+            call.inputs.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(template::expand_plain(v, values)))).collect();
+        let run_values = self.prepare(&rb, &given).map_err(|e| format!("Could not start \"{}\": {e}", rb.name))?;
+        let child = Run::called(&rb, parent, step, host.clone(), &run_values.inputs);
+        self.start(child, run_values).map_err(|e| e.to_string())
+    }
+
+    /// Wait for a called run to end, passing on a cancel and enforcing the step's timeout.
+    async fn wait_child(&self, child_id: &str, timeout: Duration, cancel_rx: &mut watch::Receiver<bool>) -> JobEnd {
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
+        let mut tick = tokio::time::interval(Duration::from_millis(200));
+        let mut stopped: Option<End> = None;
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    let child = match self.store.run(child_id) {
+                        Ok(Some(r)) => r,
+                        Ok(None) => return JobEnd::not_run("The called run disappeared."),
+                        Err(e) => return JobEnd::not_run(e.to_string()),
+                    };
+                    if !child.status.is_finished() {
+                        continue;
+                    }
+                    let n = run_number(child_id);
+                    return match (stopped, child.status) {
+                        (Some(end), _) => JobEnd { end, exit_code: None, error: None },
+                        (None, Status::Succeeded) => JobEnd { end: End::Exited, exit_code: Some(0), error: None },
+                        (None, Status::Cancelled) => JobEnd::not_run(format!("The called run #{n} was cancelled.")),
+                        (None, _) => JobEnd::not_run(format!("The called run #{n} failed.")),
+                    };
+                }
+                _ = wait_cancel(cancel_rx), if stopped.is_none() => {
+                    self.cancel(child_id);
+                    stopped = Some(End::Cancelled);
+                }
+                _ = &mut deadline, if stopped.is_none() => {
+                    self.cancel(child_id);
+                    stopped = Some(End::TimedOut);
+                }
+            }
+        }
+    }
+
     /// Hand a step to the agent on `host_id` and follow it until it ends.
     async fn run_remote(&self, host_id: &str, job: Job, timeout: Duration, cancel_rx: &mut watch::Receiver<bool>, sink: &mut Sink<'_>, step: usize) -> JobEnd {
         let job_id = job.id.clone();
@@ -379,6 +515,44 @@ impl Executor {
         self.hub.release(&job_id);
         end
     }
+}
+
+/// The shell script for a copy step, and the environment variable holding the file's
+/// content. The content travels in the environment, not the command line, so other
+/// users on the host can't read it from the process list. The file is written next
+/// to its destination and moved into place, so it is never seen half written.
+fn copy_script(copy: &CopyStep, values: &BTreeMap<String, String>, run_values: &RunValues) -> Result<(String, (String, String)), String> {
+    let content = match (&copy.content, &copy.secret) {
+        (Some(c), _) => template::expand_plain(c, values),
+        (None, Some(name)) => run_values
+            .secrets
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.clone())
+            .ok_or_else(|| format!("The secret {name} is not available to this run."))?,
+        (None, None) => return Err("This copy step has nothing to copy.".into()),
+    };
+    let to = template::expand_plain(&copy.to, values);
+    if to.contains(['\0', '\n', '\r']) {
+        return Err("The destination path can't contain line breaks.".into());
+    }
+    let mode = copy.mode_or_default();
+    let script = format!(
+        r#"set -e
+dest={dest}
+dir=$(dirname -- "$dest")
+mkdir -p -- "$dir"
+tmp=$(mktemp "$dir/.opskills-copy.XXXXXX")
+trap 'rm -f -- "$tmp"' EXIT
+printf '%s' "$OPSKILLS_COPY_CONTENT" > "$tmp"
+chmod {mode} "$tmp"
+mv -f -- "$tmp" "$dest"
+trap - EXIT
+echo "Wrote {bytes} bytes to $dest (mode {mode})""#,
+        dest = template::shell_quote(&to),
+        bytes = content.len(),
+    );
+    Ok((script, ("OPSKILLS_COPY_CONTENT".into(), content)))
 }
 
 /// Why a step attempt didn't succeed, for the run log.

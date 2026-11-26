@@ -122,6 +122,14 @@ pub fn expand(command: &str, values: &BTreeMap<String, String>) -> String {
         .into_owned()
 }
 
+/// Replace every reference with its value as plain text, for file content and the
+/// inputs of a called runbook. Never use this for a shell command.
+pub fn expand_plain(text: &str, values: &BTreeMap<String, String>) -> String {
+    pattern()
+        .replace_all(text, |c: &regex::Captures| values.get(&format!("{}.{}", &c[1], &c[2])).cloned().unwrap_or_else(|| c[0].to_string()))
+        .into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +159,7 @@ mod tests {
         v.insert("host.name".to_string(), "web-1".to_string());
         let out = expand("systemctl restart {{ inputs.service }} on {{host.name}} {{.Names}} {{ other.x }}", &v);
         assert_eq!(out, "systemctl restart 'nginx; reboot' on 'web-1' {{.Names}} {{ other.x }}");
+        assert_eq!(expand_plain("server_name {{ host.name }};", &v), "server_name web-1;");
         assert!(check("echo {{ inputs.service }} {{ run.id }}", &["service".into()]).is_ok());
         assert!(check("echo {{ inputs.missing }}", &["service".into()]).is_err());
         assert!(check("echo {{ host.address }}", &[]).is_err());

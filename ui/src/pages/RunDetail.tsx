@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownToLine, ArrowLeft, Ban, Check, CircleStop, Loader2, RotateCcw, Search, Server, X } from "lucide-react";
+import { ArrowDownToLine, ArrowLeft, ArrowUpRight, Ban, Check, CircleStop, Loader2, RotateCcw, Search, Server, X } from "lucide-react";
 import { api, isActive, type LogLine, type Run, type StepResult } from "../api";
 import { clock, duration, runDuration, runNumber, timeAgo } from "../format";
 import { Button, Card, CardHeader, cx, ErrorNote, StatusPill } from "../components/ui";
@@ -142,7 +142,20 @@ export function RunDetail({ id }: { id: string }) {
             <StatusPill status={run.status} />
           </div>
           <p className="mt-1 text-sm text-muted">
-            {run.trigger === "manual" ? "Started" : `Triggered by ${run.trigger},`} by {run.started_by} {timeAgo(run.created_at, now)}
+            {run.parent ? (
+              <>
+                Called by{" "}
+                <a href={`#/runs/${run.parent.run_id}`} className="font-medium text-accent hover:underline">
+                  {run.parent.runbook_name} #{runNumber(run.parent.run_id)}
+                </a>
+                , for {run.started_by}
+              </>
+            ) : (
+              <>
+                {run.trigger === "manual" ? "Started" : `Triggered by ${run.trigger},`} by {run.started_by}
+              </>
+            )}{" "}
+            {timeAgo(run.created_at, now)}
             {hostNames.length > 0 && <> · on {hostNames.length > 3 ? `${hostNames.length} hosts` : hostNames.join(", ")}</>}
             {run.secrets?.length > 0 && <> · secrets: <span className="font-mono text-xs">{run.secrets.map((n) => "$" + n).join(", ")}</span> (masked in output)</>}
           </p>
@@ -231,7 +244,7 @@ export function RunDetail({ id }: { id: string }) {
                     <StepIcon s={s.status} />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate font-medium">{s.name}</span>
-                      <span className="block truncate font-mono text-[11px] text-muted">{s.run.split("\n")[0]}</span>
+                      <span className="block truncate font-mono text-[11px] text-muted">{s.copy ? `copy to ${s.copy.to}` : s.call ? "calls a runbook" : s.run.split("\n")[0]}</span>
                     </span>
                     <span className="text-right text-xs text-muted tabular-nums">
                       {took !== null && <span className="block">{duration(took)}</span>}
@@ -240,6 +253,11 @@ export function RunDetail({ id }: { id: string }) {
                       {s.status === "failed" && s.continue_on_error && <span className="block">continued</span>}
                     </span>
                   </button>
+                  {s.child_run_id && (
+                    <a href={`#/runs/${s.child_run_id}`} className="ml-[42px] inline-flex items-center gap-1 pb-1 text-[11px] font-medium text-accent hover:underline">
+                      Open called run #{runNumber(s.child_run_id)} <ArrowUpRight className="size-3" />
+                    </a>
+                  )}
                 </li>
               );
             })}

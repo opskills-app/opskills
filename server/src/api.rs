@@ -18,13 +18,12 @@ use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::auth;
-use crate::executor::{Event, RunValues};
+use crate::executor::{Event, StartError};
 use crate::hub::{AgentInfo, JobEnd, OutLine, POLL_WAIT};
 use crate::model::{
-    resolve_inputs, DEFAULT_STEP_TIMEOUT, EnrollmentToken, Host, LOCAL_HOST_ID, LOCAL_HOST_NAME, Run, RunHost, Runbook, RunbookInput, Secret, StoredHost, normalize_tag, SecretInput, SecretUpdate, StoredSecret, now_ms, validate_secret_description, validate_secret_kind,
+    calls_of, DEFAULT_STEP_TIMEOUT, EnrollmentToken, Host, LOCAL_HOST_ID, LOCAL_HOST_NAME, Run, RunHost, Runbook, RunbookInput, Secret, StoredHost, normalize_tag, SecretInput, SecretUpdate, StoredSecret, now_ms, validate_secret_description, validate_secret_kind,
     validate_secret_name, validate_secret_value,
 };
-use crate::vault::Sealed;
 use crate::store::Session;
 use crate::web::AppState;
 
@@ -201,8 +200,49 @@ fn parse_input(st: &AppState, body: &str) -> ApiResult<RunbookInput> {
     Ok(input)
 }
 
+/// Check the call steps of `input` (saved as `self_id`, if it exists yet) against the
+/// stored runbooks: each called runbook exists, gets only inputs it has and every
+/// required one it has no default for, and no chain of calls comes back around.
+fn check_calls(st: &AppState, self_id: Option<&str>, input: &RunbookInput) -> ApiResult<()> {
+    let bad = |m: String| ApiError::new(StatusCode::BAD_REQUEST, m);
+    let all = st.store.runbooks()?;
+    for (i, step) in input.steps.iter().enumerate() {
+        let Some(call) = &step.call else { continue };
+        let n = i + 1;
+        if Some(call.runbook.as_str()) == self_id {
+            return Err(bad(format!("Step {n}: a runbook can't call itself.")));
+        }
+        let target = all.iter().find(|r| r.id == call.runbook).ok_or_else(|| bad(format!("Step {n}: there is no runbook with id {}.", call.runbook)))?;
+        if let Some(unknown) = call.inputs.keys().find(|k| !target.inputs.iter().any(|d| &d.name == *k)) {
+            return Err(bad(format!("Step {n}: \"{}\" has no input named {unknown}.", target.name)));
+        }
+        if let Some(missing) = target.inputs.iter().find(|d| d.required && d.default.is_none() && !call.inputs.contains_key(&d.name)) {
+            return Err(bad(format!("Step {n}: \"{}\" needs a value for its input {}.", target.name, missing.name)));
+        }
+    }
+    // Follow calls from this runbook through the stored ones; reaching it again is a loop.
+    if let Some(me) = self_id {
+        let mut stack: Vec<String> = calls_of(&input.steps);
+        let mut seen: Vec<String> = Vec::new();
+        while let Some(id) = stack.pop() {
+            if id == me {
+                return Err(bad("These calls would loop back to this runbook. Remove the call that closes the loop.".into()));
+            }
+            if seen.contains(&id) {
+                continue;
+            }
+            if let Some(rb) = all.iter().find(|r| r.id == id) {
+                stack.extend(calls_of(&rb.steps));
+            }
+            seen.push(id);
+        }
+    }
+    Ok(())
+}
+
 async fn create_runbook(State(st): State<Arc<AppState>>, body: String) -> ApiResult<Response> {
     let input = parse_input(&st, &body)?;
+    check_calls(&st, None, &input)?;
     let now = now_ms();
     let rb = Runbook {
         id: uuid::Uuid::now_v7().to_string(),
@@ -227,6 +267,7 @@ async fn create_runbook(State(st): State<Arc<AppState>>, body: String) -> ApiRes
 async fn update_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>, body: String) -> ApiResult<Json<Runbook>> {
     let existing = st.store.runbook(&id)?.ok_or_else(|| ApiError::not_found("Runbook"))?;
     let input = parse_input(&st, &body)?;
+    check_calls(&st, Some(&id), &input)?;
     let rb = Runbook {
         name: input.name,
         description: input.description,
@@ -246,6 +287,10 @@ async fn update_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>,
 }
 
 async fn delete_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    let callers: Vec<String> = st.store.runbooks()?.into_iter().filter(|r| r.id != id && calls_of(&r.steps).contains(&id)).map(|r| r.name).collect();
+    if !callers.is_empty() {
+        return Err(ApiError::new(StatusCode::CONFLICT, format!("This runbook is called by: {}. Remove those calls first.", callers.join(", "))));
+    }
     if st.store.delete_runbook(&id)? { Ok(StatusCode::NO_CONTENT) } else { Err(ApiError::not_found("Runbook")) }
 }
 
@@ -266,19 +311,15 @@ async fn start_run(State(st): State<Arc<AppState>>, Extension(user): Extension<C
     } else {
         serde_json::from_str(&body).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("Invalid run request: {e}")))?
     };
-    let inputs = resolve_inputs(&rb.inputs, &start.inputs).map_err(|msg| ApiError::new(StatusCode::BAD_REQUEST, msg))?;
-    // Decrypt the secrets this runbook uses; values live only in memory for the run.
-    let mut env = Vec::new();
-    for name in &rb.secrets {
-        let stored = st.store.secret(name)?.ok_or_else(|| {
-            ApiError::new(StatusCode::CONFLICT, format!("This runbook uses the secret {name}, which is no longer in the vault. Add it again or edit the runbook."))
-        })?;
-        let value = st.vault.open(name, &Sealed { nonce: stored.nonce, ciphertext: stored.ciphertext })?;
-        env.push((name.clone(), String::from_utf8_lossy(&value).into_owned()));
-    }
+    // Checks the inputs and decrypts the runbook's secrets; values live only in memory for the run.
+    let values = st.executor.prepare(&rb, &start.inputs).map_err(|e| match e {
+        StartError::BadInput(m) => ApiError::new(StatusCode::BAD_REQUEST, m),
+        StartError::Conflict(m) => ApiError::new(StatusCode::CONFLICT, m),
+        StartError::Internal(e) => e.into(),
+    })?;
     let hosts = run_hosts(&st, &rb)?;
-    let run = Run::new(&rb, &user.0, hosts, &inputs);
-    let run = st.executor.start(run, RunValues { secrets: env, inputs })?;
+    let run = Run::new(&rb, &user.0, hosts, &values.inputs);
+    let run = st.executor.start(run, values)?;
     Ok((StatusCode::CREATED, Json(run)).into_response())
 }
 
