@@ -285,7 +285,8 @@ test** to check it before saving.
 | `on` | Any of `started`, `succeeded`, `failed` and `slow` |
 | `slow_after_seconds` | With `slow`: how long a run may take before it counts as slow. Sent once per run, while it's still running |
 | `webhook` | A URL that gets a JSON `POST` |
-| `headers` | Extra headers for the webhook, up to 10: `[{"name": "X-Api-Key", "value": "{{ secrets.PD_KEY }}"}]` |
+| `headers` | Extra headers for the webhook, up to 10: `[{"name": "X-Api-Key", "value": "{{ secrets.ALERT_API_KEY }}"}]` |
+| `body` | A custom JSON body for the webhook, as a string (see below) |
 | `auth` | Sign the webhook call in: `{"type": "bearer", "secret": "HOOK_TOKEN"}` or `{"type": "basic", "username": "ops", "secret": "HOOK_PASSWORD"}` |
 | `email` | Or up to 20 addresses; email must be set up first ([how](install.md#sending-email)) |
 | `enabled` | Default `true` |
@@ -317,6 +318,50 @@ Only the secret's name is saved with the runbook; its value is read from the vau
 when the message goes out, and kept out of any recorded error. A secret in use
 can't be deleted from the vault. `Host`, `Content-Type`, `Content-Length`,
 `Connection`, `Transfer-Encoding` and `X-OpSkills-Event` are set by OpSkills.
+
+**Custom body.** Some receivers want their own format, like an incident tool's events API.
+Under **Body**, pick **Custom** and write the JSON to send. Any string in it can
+use placeholders, which take the same fields as the default body:
+
+| Placeholder | Value |
+|---|---|
+| `{{ text }}`, `{{ event }}` | The one-line message, and `started`, `succeeded`, `failed` or `slow` |
+| `{{ runbook.id }}`, `{{ runbook.name }}` | The runbook |
+| `{{ run.id }}`, `{{ run.number }}`, `{{ run.status }}`, `{{ run.trigger }}`, `{{ run.started_by }}`, `{{ run.url }}`, `{{ run.error }}` | The run |
+| `{{ run.started_at }}`, `{{ run.finished_at }}`, `{{ run.duration_seconds }}` | Epoch milliseconds, and seconds |
+| `{{ run.failed_step.name }}`, `{{ run.failed_step.host }}`, `{{ run.failed_step.exit_code }}` | The step that failed |
+| `{{ run.inputs.NAME }}` | An input value (secret inputs are masked) |
+| `{{ output_tail }}` | The last 20 output lines of a failed run |
+| `{{ secrets.NAME }}` | A vault secret, read when the message goes out |
+
+A string that is exactly one placeholder takes the value as it is, so
+`"{{ run.failed_step.exit_code }}"` becomes a number and `"{{ output_tail }}"` a
+list. Placeholders inside longer text are written in (a list as lines, a missing
+value as nothing). Values are always escaped, so the result is valid JSON. The body
+is checked when you save: it must be a JSON object or array, at most 16 KB, using
+only these placeholders. **Send a test** fills it with example values.
+
+To open an incident in an alerting tool when a run fails, and close it when the
+runbook next succeeds, use two webhook notifications to the tool's events URL,
+with its key in the vault (here `ALERT_ROUTING_KEY`). The first, on **Failed**,
+can start from **Start from an incident example** in the editor:
+
+```json
+{
+  "routing_key": "{{ secrets.ALERT_ROUTING_KEY }}",
+  "event_action": "trigger",
+  "dedup_key": "opskills-{{ runbook.id }}",
+  "payload": {"summary": "{{ text }}", "source": "opskills", "severity": "error",
+              "custom_details": {"failed_step": "{{ run.failed_step.name }}", "output": "{{ output_tail }}"}},
+  "links": [{"href": "{{ run.url }}", "text": "Open the run in OpSkills"}]
+}
+```
+
+The second, on **Succeeded**, sends the same key and dedup key with the action
+that resolves, like
+`{"routing_key": "{{ secrets.ALERT_ROUTING_KEY }}", "event_action": "resolve", "dedup_key": "opskills-{{ runbook.id }}"}`.
+Rename the fields to the ones your tool's API documents. Set `server.public_url`
+so `run.url` has a value.
 
 The header `X-OpSkills-Event` names the event. `output_tail` holds the last 20
 output lines of a failed run (secret values are already masked) and is empty

@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::config::{Config, Email};
 use crate::executor::{human_duration, run_number};
-use crate::model::{HeaderPart, Notification, NotifyEvent, Run, Status, WebhookAuth, header_parts, now_ms};
+use crate::model::{HeaderPart, Notification, NotifyEvent, Piece, Run, Status, WebhookAuth, header_parts, now_ms, placeholders};
 use crate::store::Store;
 use crate::vault::{Sealed, Vault};
 
@@ -245,7 +245,28 @@ impl Notifier {
             event: "test",
             subject: "[OpSkills] Test notification".into(),
             body: format!("{text}\n{}", self.public_url.as_deref().map(|u| format!("\n{u}")).unwrap_or_default()),
-            json: json!({ "event": "test", "text": text, "content": text }),
+            // Example values, so a custom body can be checked with the test too.
+            json: json!({
+                "event": "test",
+                "text": text,
+                "content": text,
+                "runbook": { "id": "example", "name": "Example runbook" },
+                "run": {
+                    "id": "00000000-0000-0000-0000-000000000000",
+                    "number": "000000",
+                    "status": "failed",
+                    "trigger": "manual",
+                    "started_by": "admin",
+                    "started_at": now_ms(),
+                    "finished_at": now_ms(),
+                    "duration_seconds": 0,
+                    "url": self.public_url.as_ref().map(|u| format!("{u}/#/runs")),
+                    "failed_step": { "name": "example step", "host": "OpSkills server", "exit_code": 1 },
+                    "error": null,
+                    "inputs": {},
+                },
+                "output_tail": ["This is a test notification."],
+            }),
         };
         self.deliver(n, &msg)
     }
@@ -253,12 +274,73 @@ impl Notifier {
     pub fn deliver(&self, n: &Notification, msg: &Message) -> Result<(), String> {
         match &n.webhook {
             Some(url) => {
-                let (headers, secrets) = self.webhook_headers(n)?;
+                let (headers, mut secrets) = self.webhook_headers(n)?;
+                let body = match &n.body {
+                    Some(template) => self.render_body(template, &msg.json, &mut secrets)?,
+                    None => msg.json.to_string(),
+                };
                 // Keep secret values out of anything recorded.
-                post_webhook(url, msg, &headers).map_err(|e| secrets.iter().filter(|s| !s.is_empty()).fold(e, |e, s| e.replace(s.as_str(), "***")))
+                post_webhook(url, msg.event, &body, &headers).map_err(|e| secrets.iter().filter(|s| !s.is_empty()).fold(e, |e, s| e.replace(s.as_str(), "***")))
             }
             None => self.send_email(&n.email, msg),
         }
+    }
+
+    /// Fill in a custom body. A string that is just one placeholder takes the value
+    /// as it is (a number stays a number); otherwise values are written into the text.
+    fn render_body(&self, template: &str, data: &serde_json::Value, secrets: &mut Vec<String>) -> Result<String, String> {
+        let mut doc: serde_json::Value = serde_json::from_str(template).map_err(|e| format!("the body isn't JSON: {e}"))?;
+        self.fill(&mut doc, data, secrets)?;
+        Ok(doc.to_string())
+    }
+
+    fn fill(&self, v: &mut serde_json::Value, data: &serde_json::Value, secrets: &mut Vec<String>) -> Result<(), String> {
+        use serde_json::Value;
+        match v {
+            Value::String(s) => {
+                let pieces = placeholders(s)?;
+                if !pieces.iter().any(|p| matches!(p, Piece::Var(_))) {
+                    return Ok(());
+                }
+                let mut lookup = |var: &str| -> Result<Value, String> {
+                    if let Some(name) = var.strip_prefix("secrets.") {
+                        let value = self.secret_value(name).map_err(|e| format!("body: {e}"))?;
+                        secrets.push(value.clone());
+                        return Ok(Value::String(value));
+                    }
+                    Ok(data.pointer(&format!("/{}", var.replace('.', "/"))).cloned().unwrap_or(Value::Null))
+                };
+                if let [Piece::Var(var)] = pieces.as_slice() {
+                    *v = lookup(var)?;
+                    return Ok(());
+                }
+                let mut out = String::new();
+                for p in pieces {
+                    match p {
+                        Piece::Text(t) => out.push_str(&t),
+                        Piece::Var(var) => out.push_str(&match lookup(&var)? {
+                            Value::String(s) => s,
+                            Value::Null => String::new(),
+                            Value::Array(a) => a.iter().map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).collect::<Vec<_>>().join("\n"),
+                            other => other.to_string(),
+                        }),
+                    }
+                }
+                *v = Value::String(out);
+            }
+            Value::Array(a) => {
+                for x in a {
+                    self.fill(x, data, secrets)?;
+                }
+            }
+            Value::Object(m) => {
+                for x in m.values_mut() {
+                    self.fill(x, data, secrets)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn send_email(&self, to: &[String], msg: &Message) -> Result<(), String> {
@@ -366,9 +448,11 @@ impl Notifier {
                 "started_by": run.started_by,
                 "started_at": run.started_at,
                 "finished_at": run.finished_at,
+                "duration_seconds": run.started_at.zip(run.finished_at).map(|(s, f)| f.saturating_sub(s) / 1000),
                 "url": url,
                 "failed_step": failed_step.map(|s| json!({ "name": s.name, "host": s.host_name, "exit_code": s.exit_code })),
                 "error": run.error,
+                "inputs": run.inputs,
             },
             "output_tail": tail,
         });
@@ -395,7 +479,7 @@ fn base64(data: &[u8]) -> String {
 }
 
 /// POST the JSON body, retrying when the receiver is down or busy.
-fn post_webhook(url: &str, msg: &Message, headers: &[(String, String)]) -> Result<(), String> {
+fn post_webhook(url: &str, event: &str, body: &str, headers: &[(String, String)]) -> Result<(), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
         .http_status_as_error(false)
@@ -403,17 +487,16 @@ fn post_webhook(url: &str, msg: &Message, headers: &[(String, String)]) -> Resul
         .user_agent(format!("OpSkills/{}", crate::VERSION))
         .build()
         .into();
-    let body = msg.json.to_string();
     let mut last = String::new();
     for attempt in 0..=RETRY_DELAYS.len() {
         if attempt > 0 {
             std::thread::sleep(RETRY_DELAYS[attempt - 1]);
         }
-        let mut req = agent.post(url).header("Content-Type", "application/json").header("X-OpSkills-Event", msg.event);
+        let mut req = agent.post(url).header("Content-Type", "application/json").header("X-OpSkills-Event", event);
         for (k, v) in headers {
             req = req.header(k.as_str(), v.as_str());
         }
-        match req.send(body.as_str()) {
+        match req.send(body) {
             Ok(res) if res.status().is_success() => return Ok(()),
             Ok(res) => {
                 let code = res.status();

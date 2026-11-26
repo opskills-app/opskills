@@ -720,6 +720,8 @@ struct TestTarget {
     headers: Vec<crate::model::WebhookHeader>,
     #[serde(default)]
     auth: Option<crate::model::WebhookAuth>,
+    #[serde(default)]
+    body: Option<String>,
 }
 
 /// Send a test message to a target, so people can check it before relying on it.
@@ -733,6 +735,7 @@ async fn test_notification(State(st): State<Arc<AppState>>, body: String) -> Api
         webhook: t.webhook,
         headers: t.headers,
         auth: t.auth,
+        body: t.body,
         enabled: true,
     };
     n.validate().map_err(|e| bad(format!("{}{}", e[..1].to_uppercase(), &e[1..])))?;

@@ -54,6 +54,7 @@ function toYaml(rb: Runbook) {
       if (n.webhook) lines.push(`    webhook: ${q(n.webhook.replace(/^(https?:\/\/[^/]+).*$/, "$1/..."))}`);
       if (n.headers?.length) lines.push(`    headers: [${n.headers.map((h) => h.name).join(", ")}]`);
       if (n.auth) lines.push(`    auth: ${n.auth.type} (${n.auth.secret})`);
+      if (n.body) lines.push("    body: custom");
       if (n.email?.length) lines.push(`    email: [${n.email.join(", ")}]`);
       if (!n.enabled) lines.push("    enabled: false");
     }

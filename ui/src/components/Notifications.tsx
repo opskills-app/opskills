@@ -24,7 +24,81 @@ export function cleanNotification(n: Notification): Notification {
   const base = { id: n.id, on: n.on, enabled: n.enabled, slow_after_seconds: n.on.includes("slow") ? n.slow_after_seconds : undefined };
   if (n.webhook === undefined) return { ...base, email: (n.email ?? []).map((e) => e.trim()).filter(Boolean) };
   const headers = (n.headers ?? []).filter((h) => h.name.trim() || h.value.trim()).map((h) => ({ name: h.name.trim(), value: h.value }));
-  return { ...base, webhook: n.webhook.trim(), headers: headers.length ? headers : undefined, auth: n.auth };
+  return { ...base, webhook: n.webhook.trim(), headers: headers.length ? headers : undefined, auth: n.auth, body: n.body?.trim() ? n.body : undefined };
+}
+
+/** A starting point for incident and alerting tools: trigger with a dedup key. */
+const incidentBody = `{
+  "routing_key": "{{ secrets.ALERT_ROUTING_KEY }}",
+  "event_action": "trigger",
+  "dedup_key": "opskills-{{ runbook.id }}",
+  "payload": {
+    "summary": "{{ text }}",
+    "source": "opskills",
+    "severity": "error",
+    "custom_details": {
+      "failed_step": "{{ run.failed_step.name }}",
+      "host": "{{ run.failed_step.host }}",
+      "output": "{{ output_tail }}"
+    }
+  },
+  "links": [{ "href": "{{ run.url }}", "text": "Open the run in OpSkills" }]
+}`;
+
+const bodyVars = "text, event, runbook.id, runbook.name, run.id, run.number, run.status, run.trigger, run.started_by, run.started_at, run.finished_at, run.duration_seconds, run.url, run.error, run.failed_step.name, run.failed_step.host, run.failed_step.exit_code, run.inputs.NAME, output_tail, secrets.NAME";
+
+function BodyEditor({ n, index, onChange }: { n: Notification; index: number; onChange: (n: Notification) => void }) {
+  const custom = n.body !== undefined;
+  let problem: string | null = null;
+  if (custom && n.body!.trim()) {
+    try {
+      const v = JSON.parse(n.body!);
+      if (typeof v !== "object" || v === null) problem = "The body must be a JSON object or array.";
+    } catch (e) {
+      problem = `Not valid JSON yet: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="text-xs font-medium text-muted">Body</p>
+        <div role="radiogroup" aria-label={`Notification ${index + 1} body`} className="inline-flex gap-1 rounded-lg bg-surface-2 p-0.5">
+          {[
+            { on: !custom, label: "Default", pick: () => onChange({ ...n, body: undefined }) },
+            { on: custom, label: "Custom", pick: () => onChange({ ...n, body: n.body ?? "{\n  \"text\": \"{{ text }}\"\n}" }) },
+          ].map((o) => (
+            <button key={o.label} type="button" role="radio" aria-checked={o.on} onClick={o.pick} className={cx("h-7 rounded-md px-2.5 text-xs font-medium", o.on ? "bg-surface text-accent shadow-sm" : "text-muted hover:text-ink")}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+        {custom && (
+          <button type="button" onClick={() => onChange({ ...n, body: incidentBody })} className="text-xs font-medium text-accent hover:underline">
+            Start from an incident example
+          </button>
+        )}
+      </div>
+      {custom ? (
+        <>
+          <textarea
+            value={n.body}
+            onChange={(e) => onChange({ ...n, body: e.target.value })}
+            rows={Math.min(18, Math.max(5, (n.body ?? "").split("\n").length + 1))}
+            spellCheck={false}
+            wrap="off"
+            aria-label={`Notification ${index + 1} body template`}
+            className="scroll-thin mt-2 w-full rounded-xl bg-surface-2 px-4 py-3 font-mono text-xs leading-relaxed outline-none focus:ring-2 focus:ring-accent"
+          />
+          {problem && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{problem}</p>}
+          <p className="mt-1.5 text-xs text-muted">
+            JSON, with placeholders inside strings: {bodyVars}. A string that is only one placeholder keeps its type, so a number stays a number and output_tail stays a list.
+          </p>
+        </>
+      ) : (
+        <p className="mt-1.5 text-xs text-muted">The default body has a text line for chat tools, plus the run's details.</p>
+      )}
+    </div>
+  );
 }
 
 /** Extra headers and sign-in for a webhook, with secrets from the vault. */
@@ -116,7 +190,7 @@ function NotificationCard({ n, index, emailReady, secrets, onChange, onRemove }:
     setTest({ busy: true });
     try {
       const clean = cleanNotification(n);
-      const r = await api.testNotification(byEmail ? { email: splitEmails(emails) } : { webhook: clean.webhook, headers: clean.headers, auth: clean.auth });
+      const r = await api.testNotification(byEmail ? { email: splitEmails(emails) } : { webhook: clean.webhook, headers: clean.headers, auth: clean.auth, body: clean.body });
       setTest({ ok: `Sent to ${r.target}.` });
     } catch (e) {
       setTest({ error: e instanceof Error ? e.message : String(e) });
@@ -129,7 +203,7 @@ function NotificationCard({ n, index, emailReady, secrets, onChange, onRemove }:
         <div role="radiogroup" aria-label={`Notification ${index + 1} kind`} className="inline-flex gap-1 rounded-xl bg-surface-2 p-1">
           {[
             { on: !byEmail, label: "Webhook", icon: WebhookIcon, pick: () => onChange({ ...n, webhook: n.webhook ?? "", email: undefined }) },
-            { on: byEmail, label: "Email", icon: Mail, pick: () => onChange({ ...n, webhook: undefined, headers: undefined, auth: undefined, email: splitEmails(emails) }) },
+            { on: byEmail, label: "Email", icon: Mail, pick: () => onChange({ ...n, webhook: undefined, headers: undefined, auth: undefined, body: undefined, email: splitEmails(emails) }) },
           ].map((o) => (
             <button key={o.label} type="button" role="radio" aria-checked={o.on} onClick={o.pick} className={cx("flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-medium", o.on ? "bg-surface text-accent shadow-sm" : "text-muted hover:text-ink")}>
               <o.icon className="size-3.5" /> {o.label}
@@ -215,6 +289,9 @@ function NotificationCard({ n, index, emailReady, secrets, onChange, onRemove }:
           <p className="mt-1.5 text-xs text-muted">Gets a JSON POST with a text line, which Slack, Mattermost, Google Chat and Discord incoming webhooks show as a message.</p>
           <div className="mt-4">
             <WebhookExtras n={n} index={index} secrets={secrets} onChange={onChange} />
+          </div>
+          <div className="mt-4">
+            <BodyEditor n={n} index={index} onChange={onChange} />
           </div>
         </div>
       )}

@@ -1758,3 +1758,72 @@ async fn webhook_notifications_send_custom_headers_and_sign_in() {
     let del = call(&s.app, "DELETE", "/api/v1/secrets/HOOK_PASS", None, Some(&c), true).await;
     assert_eq!(del.status, StatusCode::CONFLICT, "{}", del.body);
 }
+
+#[tokio::test]
+async fn webhook_notifications_can_send_a_custom_body() {
+    let (base, seen) = receiver().await;
+    let s = server();
+    let c = sign_in(&s).await;
+    add_secret(&s, &c, "ALERT_ROUTING_KEY", "R0UT1NG").await;
+    let rb = |n: Value| json!({"name": "B", "steps": [{"name": "a", "run": "true"}], "notifications": [n]});
+    for bad in [
+        json!({"on": ["failed"], "webhook": base, "body": "{not json"}),
+        json!({"on": ["failed"], "webhook": base, "body": "\"just a string\""}),
+        json!({"on": ["failed"], "webhook": base, "body": "{\"a\": \"{{ run.nope }}\"}"}),
+        json!({"on": ["failed"], "webhook": base, "body": "{\"a\": \"{{ secrets.MISSING }}\"}"}),
+        json!({"on": ["failed"], "email": ["a@example.com"], "body": "{}"}),
+    ] {
+        let r = call(&s.app, "POST", "/api/v1/runbooks", Some(rb(bad.clone())), Some(&c), true).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad} -> {}", r.body);
+    }
+    let template = r#"{
+      "routing_key": "{{ secrets.ALERT_ROUTING_KEY }}",
+      "event_action": "trigger",
+      "dedup_key": "opskills-{{ runbook.id }}",
+      "payload": {
+        "summary": "{{ text }}",
+        "source": "opskills",
+        "severity": "error",
+        "custom_details": {
+          "exit_code": "{{ run.failed_step.exit_code }}",
+          "env": "{{ run.inputs.env }}",
+          "output": "{{ output_tail }}",
+          "output_text": "last lines: {{ output_tail }}",
+          "error": "{{ run.error }}"
+        }
+      }
+    }"#;
+    let made = call(&s.app, "POST", "/api/v1/runbooks", Some(json!({
+        "name": "Payments",
+        "inputs": [{"name": "env", "type": "text", "default": "prod"}],
+        "steps": [{"name": "charge", "run": "echo 'card declined'; exit 4"}],
+        "notifications": [{"on": ["failed"], "webhook": format!("{base}/v2/enqueue"), "body": template}]
+    })), Some(&c), true).await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let rb_id = made.json()["id"].as_str().unwrap().to_string();
+    let run = call(&s.app, "POST", &format!("/api/v1/runbooks/{rb_id}/runs"), None, Some(&c), true).await.json();
+    let id = run["id"].as_str().unwrap().to_string();
+    wait_finished(&s, &c, &id).await;
+    assert_eq!(notices(&s, &c, &id, 1).await[0]["ok"], json!(true));
+    let got = wait_for(|| seen.lock().unwrap().iter().find(|(p, _, _)| p == "/v2/enqueue").cloned(), "the custom body").await;
+    let b = got.2;
+    assert_eq!(b["routing_key"], json!("R0UT1NG"));
+    assert_eq!(b["dedup_key"], json!(format!("opskills-{rb_id}")));
+    assert!(b["payload"]["summary"].as_str().unwrap().starts_with("Payments failed: run #"), "{b}");
+    let d = &b["payload"]["custom_details"];
+    assert_eq!(d["exit_code"], json!(4), "a lone placeholder keeps its type");
+    assert_eq!(d["env"], json!("prod"));
+    assert!(d["output"].as_array().unwrap().iter().any(|l| l == "card declined"), "{d}");
+    assert!(d["output_text"].as_str().unwrap().starts_with("last lines: ") && d["output_text"].as_str().unwrap().contains("card declined\n"), "{d}");
+    assert_eq!(d["error"], Value::Null);
+    assert!(b.get("text").is_none(), "only the custom body is sent");
+
+    // The test button renders the template with example values.
+    let t = call(&s.app, "POST", "/api/v1/notifications/test", Some(json!({"webhook": format!("{base}/test"), "body": "{\"summary\": \"{{ text }}\", \"code\": \"{{ run.failed_step.exit_code }}\"}"})), Some(&c), true).await;
+    assert_eq!(t.status, StatusCode::OK, "{}", t.body);
+    let tb = wait_for(|| seen.lock().unwrap().iter().find(|(p, _, _)| p == "/test").cloned(), "the test body").await.2;
+    assert_eq!(tb["code"], json!(1));
+    assert!(tb["summary"].as_str().unwrap().contains("test notification"));
+    // A secret used in a body can't be deleted.
+    assert_eq!(call(&s.app, "DELETE", "/api/v1/secrets/ALERT_ROUTING_KEY", None, Some(&c), true).await.status, StatusCode::CONFLICT);
+}

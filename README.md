@@ -250,7 +250,7 @@ curl -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" \
 | `POST /hooks/{token}` | Called by other systems: start a run from a JSON body (no sign-in; see [Webhooks](docs/runbooks.md#webhooks)) |
 | `GET`, `PUT`, `DELETE /settings/email` | Email (SMTP) settings: `{"smtp_host", "smtp_port", "security", "username", "password_secret", "from"}`, where `password_secret` names a vault secret. Read-only when set in the config file |
 | `GET /notifications/settings` | Whether email is set up, where (`config`, `settings` or `off`), and the sender |
-| `POST /notifications/test` | Send a test message: `{"webhook": "https://...", "headers": [...], "auth": {...}}` or `{"email": ["a@example.com"]}` |
+| `POST /notifications/test` | Send a test message: `{"webhook": "https://...", "headers": [...], "auth": {...}, "body": "..."}` or `{"email": ["a@example.com"]}` |
 | `GET /runs/{id}/notifications` | The notifications sent about a run and whether each got through |
 | `POST /runbooks/{id}/runs` | Start a run; body `{"inputs": {...}}` when the runbook has inputs |
 | `GET /runs?runbook_id=&limit=`, `GET /runs/{id}` | List runs, newest first, and read one |

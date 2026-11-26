@@ -107,6 +107,8 @@ export interface Notification {
   /** Values may use {{ secrets.NAME }}. */
   headers?: { name: string; value: string }[];
   auth?: WebhookAuth;
+  /** A JSON body to send instead of the default one, with {{ ... }} placeholders. */
+  body?: string;
   enabled: boolean;
 }
 
@@ -379,7 +381,7 @@ export const api = {
   emailSettings: () => request<{ source: EmailSource; settings: EmailSettings | null }>("GET", "/settings/email"),
   saveEmailSettings: (s: EmailSettings) => request<{ source: EmailSource; settings: EmailSettings }>("PUT", "/settings/email", s),
   deleteEmailSettings: () => request<void>("DELETE", "/settings/email"),
-  testNotification: (target: { email?: string[]; webhook?: string; headers?: Notification["headers"]; auth?: WebhookAuth }) => request<{ sent: boolean; target: string }>("POST", "/notifications/test", target),
+  testNotification: (target: { email?: string[]; webhook?: string; headers?: Notification["headers"]; auth?: WebhookAuth; body?: string }) => request<{ sent: boolean; target: string }>("POST", "/notifications/test", target),
   runNotices: (runId: string) => request<Notice[]>("GET", `/runs/${encodeURIComponent(runId)}/notifications`),
   scheduleStatus: (runbookId: string) => request<ScheduleStatus[]>("GET", `/runbooks/${encodeURIComponent(runbookId)}/schedules`),
   previewSchedule: (cron: string, timezone: string) => request<{ next: number[] }>("POST", "/schedules/preview", { cron, timezone }),
