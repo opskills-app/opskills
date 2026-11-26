@@ -1,0 +1,85 @@
+name: Tag releases
+
+# Merges to main: when server/Cargo.toml names a version that has no tag yet and its
+# release notes exist (docs/releases/v<version>.md), tag the merge commit v<version>
+# and start the Release and Docker image workflows on that tag.
+#
+# A tag created with the workflow token doesn't start other workflows by itself
+# (GitHub prevents workflows from triggering each other), so this job starts them.
+# A maintainer can still push a signed tag by hand; this workflow then sees the tag
+# and does nothing. See RELEASING.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - server/Cargo.toml
+      - docs/releases/**
+      - .github/workflows/tag.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag-releases
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # push the tag
+      actions: write # start the release and image workflows
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Decide whether to release
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' server/Cargo.toml | head -1)
+          tag="v$version"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" > /dev/null 2>&1; then
+            echo "$tag already exists; nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ ! -s "docs/releases/$tag.md" ]; then
+            echo "::notice::server/Cargo.toml is at $version but docs/releases/$tag.md is missing, so $tag isn't tagged yet. Add the notes to release it."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ui=$(jq -r .version ui/package.json)
+          if [ "$ui" != "$version" ]; then
+            echo "::error::server/Cargo.toml has $version but ui/package.json has $ui. Fix the version bump before it can be released."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the merge commit
+        if: steps.decide.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "OpSkills $TAG (preview)" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+
+      - name: Start the release and image workflows
+        if: steps.decide.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          gh workflow run release.yml --ref "$TAG"
+          gh workflow run docker.yml --ref "$TAG"
+          {
+            echo "### Tagged $TAG on ${GITHUB_SHA:0:7}"
+            echo "Started the Release and Docker image workflows on it."
+          } >> "$GITHUB_STEP_SUMMARY"
