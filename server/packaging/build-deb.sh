@@ -28,7 +28,7 @@ cat > "$ROOT/DEBIAN/control" <<CONTROL
 Package: opskills
 Version: $VERSION
 Architecture: $ARCH
-Maintainer: OpSkills Maintainers <admin@megahash.net>
+Maintainer: Thomas Kim <admin@megahash.net>
 Installed-Size: $SIZE
 Depends: adduser
 Section: admin
