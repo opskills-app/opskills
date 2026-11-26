@@ -68,7 +68,7 @@ FROM scratch AS packages
 COPY --from=package-build /packages/ /
 
 # 4. Runtime image: Alpine provides /bin/sh and BusyBox tools for runbook steps
-FROM alpine:3.22
+FROM alpine:3.24
 ARG TARGETARCH
 LABEL org.opencontainers.image.title="OpSkills" \
       org.opencontainers.image.description="Runbooks your whole team can run" \
