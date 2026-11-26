@@ -300,6 +300,17 @@ publishes to [Docker Hub](https://hub.docker.com/r/opskills/opskills):
 It needs the repository variable `DOCKERHUB_USERNAME` and the secret
 `DOCKERHUB_TOKEN` (a Docker Hub access token with read and write access).
 
+### Pull requests and merging
+
+`main` is protected by two repository rulesets:
+
+- **Always, for everyone:** no force pushes or deletion, and the `image` check
+  (the build and all tests) must pass before a merge.
+- **Maintainers approve, owners merge:** changes land only through squash-merged
+  pull requests that a member of the organization's maintainers team approves. A
+  new push dismisses earlier approvals, and only organization owners can merge.
+  Owners can merge their own pull requests by bypassing the approval rule.
+
 ### Website
 
 ```bash
