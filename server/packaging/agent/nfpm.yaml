@@ -7,7 +7,7 @@ platform: linux
 version: ${VERSION}
 section: admin
 priority: optional
-maintainer: Thomas Kim <mrthomaskim@users.noreply.github.com>
+maintainer: OpSkills Maintainers <admin@megahash.net>
 vendor: OpSkills
 homepage: https://opskills.app
 license: AGPL-3.0-only

@@ -18,7 +18,7 @@ text:
 You only need to do this once. Your agreement covers all your past and future
 contributions. If you contribute as part of your job, make sure your employer allows it
 (see section 4); if your employer needs a corporate agreement, ask the maintainers in
-your pull request before it is merged.
+your pull request or at admin@megahash.net before it is merged.
 
 ## The agreement
 

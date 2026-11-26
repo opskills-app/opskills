@@ -389,7 +389,7 @@ OpSkills is open source under the [GNU Affero General Public License v3.0 only](
 - Versions up to and including 0.10.0 were released under the Apache License 2.0 and stay
   available under it.
 - The maintainers can also license OpSkills under separate commercial terms, for use
-  without the AGPL's obligations.
+  without the AGPL's obligations. Contact [admin@megahash.net](mailto:admin@megahash.net).
 
 ## Contributing
 
