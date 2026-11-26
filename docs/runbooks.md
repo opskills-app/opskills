@@ -176,6 +176,45 @@ from 0.4.0 keep it after a failed step when a retry or a later step will still r
 there. Older agents remove it after any failed step; upgrade them to keep files
 between those steps.
 
+## Schedules
+
+A runbook can run by itself: repeating on a cron expression, or once at a set time.
+In the editor, use **Add schedule** under the steps.
+
+```json
+"schedules": [
+  {"name": "nightly", "cron": "0 3 * * *", "timezone": "Europe/Berlin", "inputs": {"env": "prod"}},
+  {"name": "after the freeze", "at": 1798761600000}
+]
+```
+
+| Field | What it is |
+|---|---|
+| `cron` | 5 fields: minute, hour, day of month, month, day of week, like `0 9 * * 1-5` for weekdays at 09:00. Names such as `@hourly` and `@daily` work too |
+| `at` | Or a one-time run, in epoch milliseconds (the editor takes a date and time) |
+| `timezone` | The IANA time zone the cron expression is read in, like `UTC`, `Europe/Berlin` or `America/New_York`. Times follow daylight saving: `0 3 * * *` is 03:00 local all year |
+| `inputs` | Values for the runbook's inputs. Secret inputs can't be stored in a schedule, so a runbook with a required secret input can't be scheduled |
+| `name` | Optional label; runs it starts show `schedule <name>` as who started them |
+| `enabled` | Default `true` |
+
+A runbook can have up to 10 schedules. Runs they start have the trigger `schedule`
+and use the runbook's targets, rollout and secrets like any other run.
+
+How the scheduler behaves:
+
+- It checks every few seconds and starts each run once, even across restarts.
+- Times that pass while the server isn't running are skipped, not replayed. If the
+  scheduler falls behind, it starts one run for the latest due time, not one for
+  each missed time.
+- A one-time schedule runs once, then shows as done.
+- If a run can't start (for example, no host matches the targets), the runbook page
+  shows the reason under **Schedules**.
+
+The editor shows the next times as you type. Through the API,
+`GET /api/v1/runbooks/{id}/schedules` lists each schedule's next times, last run
+and last error, and `POST /api/v1/schedules/preview` with `{"cron": ..., "timezone": ...}`
+returns the next five times without saving anything.
+
 ## Running on several hosts
 
 A runbook that runs on hosts runs every step on each host, in order. The `targets`
