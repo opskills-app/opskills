@@ -183,6 +183,175 @@ impl Default for OutputLimit {
     }
 }
 
+/// How a run spreads over its hosts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RolloutMode {
+    /// One host after another.
+    #[default]
+    Sequential,
+    /// Many hosts at once, up to `max_parallel`.
+    Parallel,
+    /// Groups of `batch_size` hosts, one group after another.
+    Batches,
+}
+
+/// What a failed host means for the hosts that haven't started yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostFailure {
+    /// Start no more hosts; hosts already running finish.
+    Stop,
+    /// Keep going with the other hosts; the run still fails.
+    Continue,
+}
+
+/// A number of hosts, or a share of the run's hosts. JSON: `5` or `"25%"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchSize {
+    Hosts(u32),
+    Percent(u32),
+}
+
+impl BatchSize {
+    /// Hosts per batch for a run on `total` hosts, at least 1.
+    pub fn of(self, total: usize) -> usize {
+        match self {
+            BatchSize::Hosts(n) => n as usize,
+            BatchSize::Percent(p) => (total * p as usize).div_ceil(100),
+        }
+        .max(1)
+    }
+}
+
+impl Serialize for BatchSize {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            BatchSize::Hosts(n) => s.serialize_u32(*n),
+            BatchSize::Percent(p) => s.serialize_str(&format!("{p}%")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BatchSize {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Number(u32),
+            Text(String),
+        }
+        let bad = |t: &str| serde::de::Error::custom(format!("{t:?} is not a batch size. Use a number of hosts, like 5, or a percentage, like \"25%\"."));
+        match Raw::deserialize(d)? {
+            Raw::Number(n) => Ok(BatchSize::Hosts(n)),
+            Raw::Text(t) => match t.trim().strip_suffix('%') {
+                Some(p) => p.trim().parse().map(BatchSize::Percent).map_err(|_| bad(&t)),
+                None => t.trim().parse().map(BatchSize::Hosts).map_err(|_| bad(&t)),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rollout {
+    #[serde(default)]
+    pub mode: RolloutMode,
+    /// Parallel mode: the most hosts at once; 0 means all of them.
+    #[serde(default)]
+    pub max_parallel: u32,
+    /// Batches mode: hosts per batch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<BatchSize>,
+    /// Hosts that run first, on their own, before any other host starts.
+    #[serde(default)]
+    pub canary: u32,
+    /// Wait after the canary and between batches. Accepts seconds or a duration like "30s".
+    #[serde(default, deserialize_with = "seconds::deserialize")]
+    pub pause_seconds: u64,
+    /// Unset: stop when the runbook stops at a failed step, continue when it finishes then fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_host_failure: Option<HostFailure>,
+}
+
+/// Hosts that run together, and how many of them at once.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Wave {
+    /// "Canary" or "Batch 2 of 4"; empty when the run is a single wave.
+    pub label: String,
+    pub hosts: std::ops::Range<usize>,
+    pub concurrency: usize,
+}
+
+pub const MAX_ROLLOUT_HOSTS: u32 = 1000;
+
+impl Rollout {
+    fn validate(&self) -> Result<(), String> {
+        if self.max_parallel > MAX_ROLLOUT_HOSTS || self.canary > MAX_ROLLOUT_HOSTS {
+            return Err(format!("Rollout: max_parallel and canary must be at most {MAX_ROLLOUT_HOSTS}."));
+        }
+        if self.pause_seconds > MAX_RETRY_DELAY {
+            return Err("Rollout: the pause must be at most 1 hour.".into());
+        }
+        match (self.mode, self.batch_size) {
+            (RolloutMode::Batches, None) => return Err("Rollout: batches need a batch_size, like 5 or \"25%\".".into()),
+            (RolloutMode::Batches, Some(BatchSize::Hosts(n))) if n == 0 || n > MAX_ROLLOUT_HOSTS => {
+                return Err(format!("Rollout: a batch must be 1 to {MAX_ROLLOUT_HOSTS} hosts."));
+            }
+            (RolloutMode::Batches, Some(BatchSize::Percent(p))) if p == 0 || p > 100 => return Err("Rollout: a batch must be 1% to 100% of the hosts.".into()),
+            (RolloutMode::Batches, _) => {}
+            (_, Some(_)) => return Err("Rollout: batch_size only applies to the batches mode.".into()),
+            (_, None) => {}
+        }
+        if self.mode != RolloutMode::Parallel && self.max_parallel != 0 {
+            return Err("Rollout: max_parallel only applies to the parallel mode.".into());
+        }
+        Ok(())
+    }
+
+    /// Whether a failed host stops the hosts that haven't started.
+    pub fn stops_on_host_failure(&self, steps: FailurePolicy) -> bool {
+        match self.on_host_failure {
+            Some(HostFailure::Stop) => true,
+            Some(HostFailure::Continue) => false,
+            None => steps == FailurePolicy::Stop,
+        }
+    }
+
+    /// The waves a run on `total` hosts goes through, in order: the canary hosts first
+    /// (one at a time in sequential mode, together otherwise), then the rest.
+    pub fn waves(&self, total: usize) -> Vec<Wave> {
+        let mut waves = Vec::new();
+        let canary = (self.canary as usize).min(total);
+        let one_at_a_time = self.mode == RolloutMode::Sequential;
+        if canary > 0 {
+            waves.push(Wave { label: "Canary".into(), hosts: 0..canary, concurrency: if one_at_a_time { 1 } else { canary } });
+        }
+        let rest = canary..total;
+        if !rest.is_empty() {
+            match self.mode {
+                RolloutMode::Sequential => waves.push(Wave { label: String::new(), hosts: rest, concurrency: 1 }),
+                RolloutMode::Parallel => {
+                    let cap = if self.max_parallel == 0 { rest.len() } else { self.max_parallel as usize };
+                    waves.push(Wave { label: String::new(), hosts: rest.clone(), concurrency: cap.min(rest.len()) });
+                }
+                RolloutMode::Batches => {
+                    let size = self.batch_size.unwrap_or(BatchSize::Hosts(1)).of(total);
+                    let starts: Vec<usize> = rest.clone().step_by(size).collect();
+                    for (k, start) in starts.iter().enumerate() {
+                        let end = (start + size).min(total);
+                        waves.push(Wave { label: format!("Batch {} of {}", k + 1, starts.len()), hosts: *start..end, concurrency: end - start });
+                    }
+                }
+            }
+        }
+        if waves.len() == 1 {
+            waves[0].label.clear();
+        }
+        waves
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputKind {
@@ -374,6 +543,8 @@ pub struct Runbook {
     pub on_step_failure: FailurePolicy,
     #[serde(default)]
     pub output_limit: OutputLimit,
+    #[serde(default)]
+    pub rollout: Rollout,
     /// Names of vault secrets exposed to every step as environment variables.
     #[serde(default)]
     pub secrets: Vec<String>,
@@ -402,6 +573,8 @@ pub struct RunbookInput {
     pub on_step_failure: FailurePolicy,
     #[serde(default)]
     pub output_limit: Option<OutputLimit>,
+    #[serde(default)]
+    pub rollout: Rollout,
     #[serde(default)]
     pub secrets: Vec<String>,
     #[serde(default)]
@@ -505,6 +678,7 @@ impl RunbookInput {
             return Err("A runbook can use at most 20 secrets.".into());
         }
         self.secrets = secrets;
+        self.rollout.validate()?;
         if self.steps.is_empty() || self.steps.len() > 50 {
             return Err("A runbook needs 1 to 50 steps.".into());
         }
@@ -611,6 +785,8 @@ pub struct Run {
     pub on_step_failure: FailurePolicy,
     #[serde(default)]
     pub output_limit: OutputLimit,
+    #[serde(default)]
+    pub rollout: Rollout,
     /// Hosts in the order they run.
     #[serde(default)]
     pub hosts: Vec<RunHost>,
@@ -646,6 +822,7 @@ impl Run {
             inputs: inputs.iter().map(|i| (i.name.clone(), if i.secret { MASK.to_string() } else { i.value.clone() })).collect(),
             on_step_failure: runbook.on_step_failure,
             output_limit: runbook.output_limit,
+            rollout: runbook.rollout,
             id: uuid::Uuid::now_v7().to_string(),
             runbook_id: runbook.id.clone(),
             runbook_name: runbook.name.clone(),
@@ -834,6 +1011,7 @@ mod tests {
             steps: steps.into_iter().map(|(n, r)| Step { name: n.into(), run: r.into(), ..Default::default() }).collect(),
             on_step_failure: FailurePolicy::Stop,
             output_limit: None,
+            rollout: Rollout::default(),
             secrets: vec![],
             targets: Targets::default(),
             timeout_seconds: None,
@@ -898,6 +1076,45 @@ mod tests {
         assert_eq!(parsed.timeout_seconds, Some(7200));
         assert_eq!(parsed.steps[0].timeout_seconds, Some(90));
         assert_eq!(parsed.steps[0].retry_delay_seconds, 60);
+    }
+
+    #[test]
+    fn rollouts_plan_their_waves() {
+        let plan = |r: Rollout, n: usize| r.waves(n).into_iter().map(|w| (w.label, w.hosts, w.concurrency)).collect::<Vec<_>>();
+        let seq = Rollout::default();
+        assert_eq!(plan(seq, 3), vec![(String::new(), 0..3, 1)]);
+        assert_eq!(plan(Rollout { canary: 1, ..seq }, 3), vec![("Canary".into(), 0..1, 1), (String::new(), 1..3, 1)]);
+        let par = Rollout { mode: RolloutMode::Parallel, ..seq };
+        assert_eq!(plan(par, 4), vec![(String::new(), 0..4, 4)]);
+        assert_eq!(plan(Rollout { max_parallel: 2, ..par }, 5), vec![(String::new(), 0..5, 2)]);
+        let batches = Rollout { mode: RolloutMode::Batches, batch_size: Some(BatchSize::Percent(40)), canary: 1, ..seq };
+        // 40% of 6 hosts is 3 (rounded up), after one canary host.
+        assert_eq!(plan(batches, 6), vec![("Canary".into(), 0..1, 1), ("Batch 1 of 2".into(), 1..4, 3), ("Batch 2 of 2".into(), 4..6, 2)]);
+        assert_eq!(plan(Rollout { canary: 9, ..batches }, 2), vec![(String::new(), 0..2, 2)], "a canary larger than the run is the whole run");
+        assert!(plan(par, 0).is_empty());
+        assert!(!seq.stops_on_host_failure(FailurePolicy::FinishThenFail));
+        assert!(seq.stops_on_host_failure(FailurePolicy::Stop));
+        assert!(!Rollout { on_host_failure: Some(HostFailure::Continue), ..seq }.stops_on_host_failure(FailurePolicy::Stop));
+    }
+
+    #[test]
+    fn rollouts_are_checked() {
+        let parse = |v: serde_json::Value| serde_json::from_value::<Rollout>(v).map_err(|e| e.to_string()).and_then(|r| r.validate().map(|_| r));
+        assert_eq!(parse(serde_json::json!({"mode": "batches", "batch_size": "25%", "pause_seconds": "1m"})).unwrap().batch_size, Some(BatchSize::Percent(25)));
+        assert_eq!(parse(serde_json::json!({"mode": "batches", "batch_size": 3})).unwrap().batch_size, Some(BatchSize::Hosts(3)));
+        assert_eq!(serde_json::to_value(BatchSize::Percent(25)).unwrap(), serde_json::json!("25%"));
+        for bad in [
+            serde_json::json!({"mode": "batches"}),
+            serde_json::json!({"mode": "batches", "batch_size": 0}),
+            serde_json::json!({"mode": "batches", "batch_size": "120%"}),
+            serde_json::json!({"mode": "batches", "batch_size": "lots"}),
+            serde_json::json!({"mode": "parallel", "batch_size": 2}),
+            serde_json::json!({"mode": "sequential", "max_parallel": 2}),
+            serde_json::json!({"mode": "parallel", "pause_seconds": "2h"}),
+            serde_json::json!({"mode": "everywhere"}),
+        ] {
+            assert!(parse(bad.clone()).is_err(), "{bad}");
+        }
     }
 
     #[test]

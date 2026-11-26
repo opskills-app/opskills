@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowLeft, Copy, FileText, Pencil, Play, Terminal, Trash2, Workflow } from "lucide-react";
-import { api, LOCAL_HOST_ID, MAX_OUTPUT_LINES, runsOnServer, useData, type Host, type Runbook, type Step } from "../api";
+import { api, LOCAL_HOST_ID, MAX_OUTPUT_LINES, runsOnServer, useData, type FailurePolicy, type Host, type Rollout, type Runbook, type Step } from "../api";
 import { inputLabel } from "../components/StartRun";
 import { duration, runDuration, runNumber, timeAgo } from "../format";
 import { Button, Card, CardHeader, cx, ErrorNote, PageHeader, StatusPill, Tag } from "../components/ui";
@@ -32,6 +32,15 @@ function toYaml(rb: Runbook) {
   }
   lines.push(`timeout_seconds: ${rb.timeout_seconds}`);
   if (rb.on_step_failure === "finish_then_fail") lines.push("on_step_failure: finish_then_fail");
+  const ro = rb.rollout;
+  if (ro && (ro.mode !== "sequential" || ro.canary || ro.on_host_failure)) {
+    lines.push("rollout:", `  mode: ${ro.mode}`);
+    if (ro.mode === "parallel" && ro.max_parallel) lines.push(`  max_parallel: ${ro.max_parallel}`);
+    if (ro.mode === "batches") lines.push(`  batch_size: ${JSON.stringify(ro.batch_size)}`);
+    if (ro.canary) lines.push(`  canary: ${ro.canary}`);
+    if (ro.pause_seconds) lines.push(`  pause_seconds: ${ro.pause_seconds}`);
+    if (ro.on_host_failure) lines.push(`  on_host_failure: ${ro.on_host_failure}`);
+  }
   if (rb.output_limit && (rb.output_limit.lines !== MAX_OUTPUT_LINES || rb.output_limit.action !== "truncate")) {
     lines.push("output_limit:", `  lines: ${rb.output_limit.lines}`, `  action: ${rb.output_limit.action}`);
   }
@@ -67,6 +76,24 @@ function toYaml(rb: Runbook) {
     if (s.continue_on_error) lines.push("    continue_on_error: true");
   }
   return lines.join("\n");
+}
+
+/** A rollout in words, like "In batches of 25%, after 1 canary host, 30s apart". */
+export function rolloutText(r: Rollout | undefined) {
+  if (!r) return "One host at a time";
+  const secs = typeof r.pause_seconds === "number" ? r.pause_seconds : 0;
+  const parts = [
+    r.mode === "parallel" ? (r.max_parallel ? `Up to ${r.max_parallel} hosts at once` : "All hosts at once") : r.mode === "batches" ? `In batches of ${r.batch_size}` : "One host at a time",
+  ];
+  if (r.canary) parts.push(`after ${r.canary} canary host${r.canary === 1 ? "" : "s"}`);
+  if (secs && (r.canary || r.mode === "batches")) parts.push(`${duration(secs * 1000)} apart`);
+  return parts.join(", ");
+}
+
+/** What a failed host means for the others, in words. */
+export function hostFailureText(r: Rollout | undefined, steps: FailurePolicy | undefined) {
+  const stop = r?.on_host_failure ? r.on_host_failure === "stop" : (steps ?? "stop") === "stop";
+  return stop ? "Hosts not started yet are skipped" : "The other hosts still run";
 }
 
 /** Short words for a step's non-default options. */
@@ -312,6 +339,18 @@ export function RunbookDetail({ id }: { id: string }) {
                 <dt className="text-muted">Step timeout</dt>
                 <dd>{duration(r.timeout_seconds * 1000)}</dd>
               </div>
+              {!runsOnServer(r.targets) && (
+                <>
+                  <div className="flex justify-between gap-4">
+                    <dt className="text-muted">Rollout</dt>
+                    <dd className="text-right">{rolloutText(r.rollout)}</dd>
+                  </div>
+                  <div className="flex justify-between gap-4">
+                    <dt className="text-muted">If a host fails</dt>
+                    <dd className="text-right">{hostFailureText(r.rollout, r.on_step_failure)}</dd>
+                  </div>
+                </>
+              )}
               <div className="flex justify-between gap-4">
                 <dt className="text-muted">If a step fails</dt>
                 <dd className="text-right">{r.on_step_failure === "finish_then_fail" ? "Finish, then fail" : "Stop the run"}</dd>
@@ -386,7 +425,7 @@ export function RunbookDetail({ id }: { id: string }) {
           <Card className="p-6 text-sm text-muted sm:px-8">
             {runsOnServer(r.targets)
               ? `Steps run one after another on the OpSkills server, as the user the server runs as. ${failureText(r)}`
-              : `Steps run one after another on each host in turn, as root through the OpSkills agent. ${failureText(r)}`}
+              : `On each host, steps run one after another, as root through the OpSkills agent. ${rolloutText(r.rollout)}. ${failureText(r)}`}
           </Card>
         </aside>
       </div>
