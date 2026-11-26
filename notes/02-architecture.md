@@ -138,6 +138,24 @@ Since 0.4.0, runbooks have typed inputs and per-step control:
   sink and the halt flags are shared behind short-lived locks. A failed step stops
   only its own host; `on_host_failure` decides whether hosts that haven't started
   still run.
+- Notifications (since 0.10.0) are rules on the runbook (`notifications`). The
+  executor reads them when a run starts (`Notifier::rules_for`; called runs don't
+  notify), emits `started`, keeps one tokio timer per `slow` rule (aborted when the
+  run ends, and re-checked against the stored run before sending) and emits
+  `succeeded` or `failed` at the end. Delivery runs on blocking threads: webhooks
+  with ureq (10 s timeout, no redirects, two retries on network errors, 5xx and
+  429), with optional headers (values may hold `{{ secrets.NAME }}`) and bearer or
+  basic sign-in from vault secrets, read at send time and scrubbed from errors,
+  and an optional custom `body`: a JSON template checked on save
+  (`model::body_vars`) and filled by walking its string values
+  (`Notifier::render_body`; a lone placeholder keeps its JSON type), so escaping is
+  structural rather than textual;
+  email with lettre. SMTP settings come from the `[email]` config section if set,
+  else from the `settings` table (key `email`, set on the Settings page), whose
+  password is a vault secret named in `password_secret`. Deleting a secret that
+  email or a notification uses is refused. Each result is appended
+  to the run's entry in the `notices` table in one transaction. Webhook URLs are
+  shown and logged by host only, and scrubbed from error text.
 - Inbound webhooks (since 0.9.0) are stored apart from runbooks, in the `webhooks`
   table: the SHA-256 of the URL token's secret (`owh_<id>_<secret>`, compared in
   constant time) and, if signing is on, the HMAC secret sealed with the vault key

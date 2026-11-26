@@ -46,6 +46,10 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/webhooks/{id}", axum::routing::put(update_webhook).delete(delete_webhook))
         .route("/webhooks/{id}/rotate", post(rotate_webhook))
         .route("/hooks/{token}", post(inbound_hook))
+        .route("/notifications/settings", get(notification_settings))
+        .route("/settings/email", get(get_email_settings).put(put_email_settings).delete(delete_email_settings))
+        .route("/notifications/test", post(test_notification))
+        .route("/runs/{id}/notifications", get(run_notices))
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
         .route("/runs/{id}/logs", get(run_logs))
@@ -265,6 +269,13 @@ fn parse_input(st: &AppState, body: &str) -> ApiResult<RunbookInput> {
             return Err(ApiError::new(StatusCode::BAD_REQUEST, format!("The vault has no secret named {name}. Add it in the vault first.")));
         }
     }
+    for (i, n) in input.notifications.iter().enumerate() {
+        for name in n.secret_refs() {
+            if st.store.secret(&name)?.is_none() {
+                return Err(bad(format!("Notification {}: the vault has no secret named {name}. Add it in the vault first.", i + 1)));
+            }
+        }
+    }
     for id in &input.targets.hosts {
         if id != LOCAL_HOST_ID && st.store.stored_host(id)?.is_none() {
             return Err(ApiError::new(StatusCode::BAD_REQUEST, format!("There is no host with id {id}. It may have been removed.")));
@@ -328,6 +339,7 @@ async fn create_runbook(State(st): State<Arc<AppState>>, body: String) -> ApiRes
         output_limit: input.output_limit.unwrap_or_default(),
         rollout: input.rollout,
         schedules: input.schedules,
+        notifications: input.notifications,
         secrets: input.secrets,
         targets: input.targets,
         timeout_seconds: input.timeout_seconds.unwrap_or(DEFAULT_STEP_TIMEOUT),
@@ -353,6 +365,7 @@ async fn update_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>,
         output_limit: input.output_limit.unwrap_or_default(),
         rollout: input.rollout,
         schedules: input.schedules,
+        notifications: input.notifications,
         secrets: input.secrets,
         targets: input.targets,
         timeout_seconds: input.timeout_seconds.unwrap_or(existing.timeout_seconds),
@@ -656,6 +669,97 @@ fn deliver(st: &AppState, stored: &crate::model::StoredWebhook, headers: &axum::
     start_runbook(st, &rb, &given, &format!("webhook {}", hook.name), "webhook")
 }
 
+// Notifications
+
+async fn notification_settings(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(json!({ "email": st.notifier.email_enabled(), "from": st.notifier.email_from(), "source": st.notifier.email_source() }))
+}
+
+/// Email settings: from the config file (read-only here), from this page, or off.
+async fn get_email_settings(State(st): State<Arc<AppState>>) -> ApiResult<Json<serde_json::Value>> {
+    let source = st.notifier.email_source();
+    let settings = match source {
+        crate::notify::EmailSource::Config => st.notifier.config_email(),
+        _ => st.store.email_settings()?.map(|s| json!(s)),
+    };
+    Ok(Json(json!({ "source": source, "settings": settings })))
+}
+
+async fn put_email_settings(State(st): State<Arc<AppState>>, body: String) -> ApiResult<Json<serde_json::Value>> {
+    if st.notifier.email_source() == crate::notify::EmailSource::Config {
+        return Err(ApiError::new(StatusCode::CONFLICT, "Email is set in the server config file. Change it there, or remove it there to manage it here."));
+    }
+    let mut s: crate::model::EmailSettings = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid email settings: {e}")))?;
+    s.validate().map_err(bad)?;
+    if let Some(name) = &s.password_secret
+        && st.store.secret(name)?.is_none()
+    {
+        return Err(bad(format!("The vault has no secret named {name}. Add the password to the vault first.")));
+    }
+    st.store.put_email_settings(Some(&s))?;
+    tracing::info!(smtp_host = %s.smtp_host, "email settings saved");
+    Ok(Json(json!({ "source": "settings", "settings": s })))
+}
+
+async fn delete_email_settings(State(st): State<Arc<AppState>>) -> ApiResult<StatusCode> {
+    if st.notifier.email_source() == crate::notify::EmailSource::Config {
+        return Err(ApiError::new(StatusCode::CONFLICT, "Email is set in the server config file. Remove it there."));
+    }
+    st.store.put_email_settings(None)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestTarget {
+    #[serde(default)]
+    email: Vec<String>,
+    #[serde(default)]
+    webhook: Option<String>,
+    #[serde(default)]
+    headers: Vec<crate::model::WebhookHeader>,
+    #[serde(default)]
+    auth: Option<crate::model::WebhookAuth>,
+    #[serde(default)]
+    body: Option<String>,
+}
+
+/// Send a test message to a target, so people can check it before relying on it.
+async fn test_notification(State(st): State<Arc<AppState>>, body: String) -> ApiResult<Json<serde_json::Value>> {
+    let t: TestTarget = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid target: {e}")))?;
+    let mut n = crate::model::Notification {
+        id: String::new(),
+        on: vec![crate::model::NotifyEvent::Started],
+        slow_after_seconds: None,
+        email: t.email,
+        webhook: t.webhook,
+        headers: t.headers,
+        auth: t.auth,
+        body: t.body,
+        enabled: true,
+    };
+    n.validate().map_err(|e| bad(format!("{}{}", e[..1].to_uppercase(), &e[1..])))?;
+    if n.webhook.is_none() && !st.notifier.email_enabled() {
+        return Err(ApiError::new(StatusCode::CONFLICT, "Email isn't set up on this server yet. Set it up under Settings > Email."));
+    }
+    for name in n.secret_refs() {
+        if st.store.secret(&name)?.is_none() {
+            return Err(bad(format!("The vault has no secret named {name}.")));
+        }
+    }
+    let notifier = st.notifier.clone();
+    let target = n.target_label();
+    match tokio::task::spawn_blocking(move || notifier.send_test(&n)).await.map_err(|e| anyhow::anyhow!("test send: {e}"))? {
+        Ok(()) => Ok(Json(json!({ "sent": true, "target": target }))),
+        Err(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, format!("Sending to {target} failed: {e}"))),
+    }
+}
+
+async fn run_notices(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<Json<Vec<crate::notify::Notice>>> {
+    st.store.run(&id)?.ok_or_else(|| ApiError::not_found("Run"))?;
+    Ok(Json(st.store.notices(&id)?))
+}
+
 // Schedules
 
 /// What the scheduler knows about each of a runbook's schedules.
@@ -914,7 +1018,16 @@ async fn update_secret(State(st): State<Arc<AppState>>, Path(name): Path<String>
 }
 
 async fn delete_secret(State(st): State<Arc<AppState>>, Path(name): Path<String>) -> ApiResult<StatusCode> {
-    let users: Vec<String> = st.store.runbooks()?.into_iter().filter(|r| r.secrets.contains(&name)).map(|r| r.name).collect();
+    if st.store.email_settings()?.is_some_and(|e| e.password_secret.as_deref() == Some(name.as_str())) {
+        return Err(ApiError::new(StatusCode::CONFLICT, format!("{name} is the email password. Change it under Settings > Email first.")));
+    }
+    let users: Vec<String> = st
+        .store
+        .runbooks()?
+        .into_iter()
+        .filter(|r| r.secrets.contains(&name) || r.notifications.iter().any(|n| n.secret_refs().contains(&name)))
+        .map(|r| r.name)
+        .collect();
     if !users.is_empty() {
         return Err(ApiError::new(StatusCode::CONFLICT, format!("{name} is used by: {}. Remove it from those runbooks first.", users.join(", "))));
     }

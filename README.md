@@ -9,11 +9,12 @@ with live output, approvals and a full audit trail.
 
 Website: [opskills.app](https://opskills.app)
 
-> **Status:** v0.9.0 preview. Sign in, keep secrets in an encrypted vault, enroll
+> **Status:** v0.10.0 preview. Sign in, keep secrets in an encrypted vault, enroll
 > your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks with
 > inputs, retries, file copies and calls to other runbooks, and run them on the
 > server or on your hosts, by hand, on a schedule, from a webhook or with an API
-> token, with output streaming live to your browser. Notifications and approvals are next
+> token, with output streaming live to your browser, and hear how runs went by email
+> or in chat. Approvals are next
 > (members and roles on the Settings page are still sample data).
 
 ## Install
@@ -32,7 +33,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.9.0
+  opskills/opskills:0.10.0
 docker logs opskills 2>&1 | grep 'Admin password'
 ```
 
@@ -44,13 +45,13 @@ use the included [`compose.yaml`](compose.yaml): `docker compose up -d`.
 ### Debian and Ubuntu
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.9.0/opskills_0.9.0_amd64.deb
-sudo apt install ./opskills_0.9.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.10.0/opskills_0.10.0_amd64.deb
+sudo apt install ./opskills_0.10.0_amd64.deb
 sudo systemctl start opskills
 sudo journalctl -u opskills | grep 'Admin password'
 ```
 
-Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.9.0_arm64.deb`
+Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.10.0_arm64.deb`
 on ARM servers (`dpkg --print-architecture` tells you which). All downloads and
 checksums are on the [releases page](https://github.com/opskills-app/opskills/releases/latest).
 The package installs a sandboxed systemd service that runs as the `opskills`
@@ -84,6 +85,8 @@ These files, and the database `opskills.redb`, are readable only by the server.
    download the agent package, and paste the commands it shows on the machine.
    Then pick hosts, host tags or a filter like `tags:web !name:db-*` under
    **Run on** in a runbook, and choose a rollout.
+6. **Automate it**: add a schedule, a webhook for CI or GitHub, or an API token,
+   and a notification so people hear when a run fails or runs long.
 
 How steps run:
 
@@ -130,8 +133,8 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   the exact commands:
 
   ```bash
-  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.9.0_amd64.deb
-  sudo apt install ./opskills-agent_0.9.0_amd64.deb
+  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.10.0_amd64.deb
+  sudo apt install ./opskills-agent_0.10.0_amd64.deb
   sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
   sudo systemctl enable --now opskills-agent
   ```
@@ -245,6 +248,10 @@ curl -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" \
 | `PUT`, `DELETE /webhooks/{id}` | Change and delete a webhook; turning signing on returns a new secret once |
 | `POST /webhooks/{id}/rotate` | Give a webhook a new URL; the old one stops working |
 | `POST /hooks/{token}` | Called by other systems: start a run from a JSON body (no sign-in; see [Webhooks](docs/runbooks.md#webhooks)) |
+| `GET`, `PUT`, `DELETE /settings/email` | Email (SMTP) settings: `{"smtp_host", "smtp_port", "security", "username", "password_secret", "from"}`, where `password_secret` names a vault secret. Read-only when set in the config file |
+| `GET /notifications/settings` | Whether email is set up, where (`config`, `settings` or `off`), and the sender |
+| `POST /notifications/test` | Send a test message: `{"webhook": "https://...", "headers": [...], "auth": {...}, "body": "..."}` or `{"email": ["a@example.com"]}` |
+| `GET /runs/{id}/notifications` | The notifications sent about a run and whether each got through |
 | `POST /runbooks/{id}/runs` | Start a run; body `{"inputs": {...}}` when the runbook has inputs |
 | `GET /runs?runbook_id=&limit=`, `GET /runs/{id}` | List runs, newest first, and read one |
 | `GET /runs/{id}/logs?after=` | Output lines after a sequence number |
@@ -268,7 +275,6 @@ Errors are JSON with `title`, `status` and a readable `detail`.
 ## Roadmap
 
 - **Runbooks as code**: YAML files you can keep in Git and review like any other change.
-- **Notifications**: tell people by email or webhook when runs start, succeed, fail or run long.
 - **Approval gates**: pause a run until the right person signs off.
 - **One small binary**: written in Rust, no runtime dependencies, secure defaults on first start.
 

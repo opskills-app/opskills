@@ -26,6 +26,7 @@ import { stepOptions } from "./RunbookDetail";
 import { when } from "../format";
 import { templates } from "../templates";
 import { go } from "../router";
+import { cleanNotification, NotificationsEditor } from "../components/Notifications";
 
 const blank: RunbookInput = {
   name: "",
@@ -844,6 +845,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
           output_limit: rb.output_limit,
           rollout: rb.rollout ?? defaultRollout,
           schedules: rb.schedules ?? [],
+          notifications: rb.notifications ?? [],
           secrets: rb.secrets ?? [],
           targets: rb.targets ?? { hosts: [], tags: [] },
           timeout_seconds: rb.timeout_seconds,
@@ -895,6 +897,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
       inputs: (input.inputs ?? []).map(cleanInput),
       steps: input.steps.map(cleanStep),
       schedules: (input.schedules ?? []).map(cleanSchedule),
+      notifications: (input.notifications ?? []).map(cleanNotification),
       rollout: onHosts ? cleanRollout(input.rollout) : { ...defaultRollout },
       timeout_seconds: typeof input.timeout_seconds === "string" ? (durationValue(input.timeout_seconds) ?? undefined) : input.timeout_seconds,
     };
@@ -1024,6 +1027,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
             <Plus className="size-4" /> Add step
           </button>
           <SchedulesEditor schedules={input.schedules ?? []} inputs={input.inputs ?? []} onChange={(schedules) => setInput((s) => ({ ...s, schedules }))} />
+          <NotificationsEditor notifications={input.notifications ?? []} onChange={(notifications) => setInput((s) => ({ ...s, notifications }))} />
         </div>
 
         <aside className="space-y-4">

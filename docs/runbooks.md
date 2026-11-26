@@ -266,6 +266,117 @@ didn't. The last 20 calls are kept and returned by
 `webhook` and show `webhook <name>` as who started them. A runbook can have up to
 20 webhooks, and deleting the runbook deletes them.
 
+## Notifications
+
+Tell people about a runbook's runs, by email or in a chat channel. In the editor,
+use **Add notification** under the steps, pick when (**Started**, **Succeeded**,
+**Failed**, **Running long** with a number of minutes) and where, then **Send a
+test** to check it before saving.
+
+```json
+"notifications": [
+  {"on": ["failed", "slow"], "slow_after_seconds": 1800, "webhook": "https://hooks.slack.com/services/..."},
+  {"on": ["failed"], "email": ["oncall@example.com"]}
+]
+```
+
+| Field | What it is |
+|---|---|
+| `on` | Any of `started`, `succeeded`, `failed` and `slow` |
+| `slow_after_seconds` | With `slow`: how long a run may take before it counts as slow. Sent once per run, while it's still running |
+| `webhook` | A URL that gets a JSON `POST` |
+| `headers` | Extra headers for the webhook, up to 10: `[{"name": "X-Api-Key", "value": "{{ secrets.ACME_API_KEY }}"}]` |
+| `body` | A custom JSON body for the webhook, as a string (see below) |
+| `auth` | Sign the webhook call in: `{"type": "bearer", "secret": "HOOK_TOKEN"}` or `{"type": "basic", "username": "ops", "secret": "HOOK_PASSWORD"}` |
+| `email` | Or up to 20 addresses; email must be set up first ([how](install.md#sending-email)) |
+| `enabled` | Default `true` |
+
+A runbook can have up to 10. Runs that a call step starts don't send their own
+notifications; the run that called them does. Cancelled runs send nothing.
+
+**Webhooks** get a JSON body with a one-line `text`, which Slack, Mattermost and
+Google Chat incoming webhooks show as a message (and the same line as `content`,
+which Discord shows), plus the details for anything else:
+
+```json
+{
+  "event": "failed",
+  "text": "Nightly backup failed: run #2fb870, step \"upload\" on db-1, after 12 seconds. https://ops.example.com/#/runs/...",
+  "runbook": {"id": "...", "name": "Nightly backup"},
+  "run": {"id": "...", "number": "2fb870", "status": "failed", "trigger": "schedule", "started_by": "schedule nightly",
+          "started_at": 1795000000000, "finished_at": 1795000012000, "url": "https://ops.example.com/#/runs/...",
+          "failed_step": {"name": "upload", "host": "db-1", "exit_code": 2}, "error": null},
+  "output_tail": ["bucket not found", "Step failed with exit code 2."]
+}
+```
+
+**Headers and sign-in.** For receivers that need a key or a token, add headers
+and pick a sign-in. A header value can include a vault secret as
+`{{ secrets.NAME }}`; **Bearer token** sends `Authorization: Bearer <secret>`, and
+**User name and password** sends basic sign-in with the secret as the password.
+Only the secret's name is saved with the runbook; its value is read from the vault
+when the message goes out, and kept out of any recorded error. A secret in use
+can't be deleted from the vault. `Host`, `Content-Type`, `Content-Length`,
+`Connection`, `Transfer-Encoding` and `X-OpSkills-Event` are set by OpSkills.
+
+**Custom body.** Some receivers want their own format, like an alerting service's events API.
+Under **Body**, pick **Custom** and write the JSON to send. Any string in it can
+use placeholders, which take the same fields as the default body:
+
+| Placeholder | Value |
+|---|---|
+| `{{ text }}`, `{{ event }}` | The one-line message, and `started`, `succeeded`, `failed` or `slow` |
+| `{{ runbook.id }}`, `{{ runbook.name }}` | The runbook |
+| `{{ run.id }}`, `{{ run.number }}`, `{{ run.status }}`, `{{ run.trigger }}`, `{{ run.started_by }}`, `{{ run.url }}`, `{{ run.error }}` | The run |
+| `{{ run.started_at }}`, `{{ run.finished_at }}`, `{{ run.duration_seconds }}` | Epoch milliseconds, and seconds |
+| `{{ run.failed_step.name }}`, `{{ run.failed_step.host }}`, `{{ run.failed_step.exit_code }}` | The step that failed |
+| `{{ run.inputs.NAME }}` | An input value (secret inputs are masked) |
+| `{{ output_tail }}` | The last 20 output lines of a failed run |
+| `{{ secrets.NAME }}` | A vault secret, read when the message goes out |
+
+A string that is exactly one placeholder takes the value as it is, so
+`"{{ run.failed_step.exit_code }}"` becomes a number and `"{{ output_tail }}"` a
+list. Placeholders inside longer text are written in (a list as lines, a missing
+value as nothing). Values are always escaped, so the result is valid JSON. The body
+is checked when you save: it must be a JSON object or array, at most 16 KB, using
+only these placeholders. **Send a test** fills it with example values.
+
+For example, to open an alert in Acme, a made-up alerting service, when a run
+fails, and close it when the runbook next succeeds, use two webhook notifications
+to Acme's events URL (say `https://events.acme.example/v2/enqueue`), with its key
+in the vault as `ACME_ROUTING_KEY`. The first, on **Failed**, can start from
+**Start from the Acme example** in the editor:
+
+```json
+{
+  "routing_key": "{{ secrets.ACME_ROUTING_KEY }}",
+  "event_action": "trigger",
+  "dedup_key": "opskills-{{ runbook.id }}",
+  "payload": {"summary": "{{ text }}", "source": "opskills", "severity": "error",
+              "custom_details": {"failed_step": "{{ run.failed_step.name }}", "output": "{{ output_tail }}"}},
+  "links": [{"href": "{{ run.url }}", "text": "Open the run in OpSkills"}]
+}
+```
+
+The second, on **Succeeded**, sends the same key and dedup key with the action
+that resolves, like
+`{"routing_key": "{{ secrets.ACME_ROUTING_KEY }}", "event_action": "resolve", "dedup_key": "opskills-{{ runbook.id }}"}`.
+For a real service, use the URL and field names its API documents. Set `server.public_url`
+so `run.url` has a value.
+
+The header `X-OpSkills-Event` names the event. `output_tail` holds the last 20
+output lines of a failed run (secret values are already masked) and is empty
+otherwise. Links need `server.public_url` set. A receiver that is down or answers
+`5xx` or `429` is tried twice more; any other answer outside `2xx` counts as failed.
+
+**Emails** have the same line as the subject and first line, then the runbook,
+who started it, how long it took, the inputs (secret ones masked) and, for
+failures, the last output lines.
+
+Sending never holds up a run. The run page lists each notification it sent and
+whether it got through, with the reason if it didn't. Webhook URLs are often
+secret themselves (as Slack's are), so only their host is shown there and in logs.
+
 ## Running on several hosts
 
 A runbook that runs on hosts runs every step on each host, in order. The `targets`

@@ -1,16 +1,16 @@
 # Install and run OpSkills
 
-This guide walks through running OpSkills **v0.9.0** with Docker or with the
+This guide walks through running OpSkills **v0.10.0** with Docker or with the
 Debian package, running your first runbook, and everyday tasks: logs,
 configuration, upgrades, backups and removal.
 
-> **About the v0.9.0 preview.** You sign in, keep secrets in an encrypted vault,
+> **About the v0.10.0 preview.** You sign in, keep secrets in an encrypted vault,
 > write runbooks (with inputs, retries, file copies and calls to other runbooks)
 > and run them, with output streaming live. Each step is a shell
 > command that runs on the OpSkills server itself, or on Linux hosts you enroll
 > with the OpSkills agent ([docs/hosts.md](hosts.md)). Runs can also start on a
-> schedule, from a webhook or from scripts with an API token. Notifications and
-> approvals come later;
+> schedule, from a webhook or from scripts with an API token. Runs can notify people
+> by email or webhook. Approvals come later;
 > members and roles on the Settings page are still sample data. Because runbooks run commands,
 > the steps below keep OpSkills reachable from your own machine only.
 
@@ -39,7 +39,7 @@ fails, start Docker Desktop (or `sudo systemctl start docker` on Linux).
 ### Step 2. Download the image
 
 ```bash
-docker pull opskills/opskills:0.9.0
+docker pull opskills/opskills:0.10.0
 ```
 
 ### Step 3. Start OpSkills
@@ -49,7 +49,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.9.0
+  opskills/opskills:0.10.0
 ```
 
 What each part does:
@@ -163,8 +163,8 @@ This prints `amd64` (Intel/AMD) or `arm64` (ARM). The commands below use
 ### Step 2. Download the package and its checksums
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.9.0/opskills_0.9.0_amd64.deb
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.9.0/SHA256SUMS
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.10.0/opskills_0.10.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.10.0/SHA256SUMS
 ```
 
 ### Step 3. Verify the download
@@ -173,13 +173,13 @@ curl -LO https://github.com/opskills-app/opskills/releases/download/v0.9.0/SHA25
 sha256sum --check --ignore-missing SHA256SUMS
 ```
 
-You should see `opskills_0.9.0_amd64.deb: OK`. If it says `FAILED`, delete the
+You should see `opskills_0.10.0_amd64.deb: OK`. If it says `FAILED`, delete the
 file and download it again.
 
 ### Step 4. Install
 
 ```bash
-sudo apt install ./opskills_0.9.0_amd64.deb
+sudo apt install ./opskills_0.10.0_amd64.deb
 ```
 
 The `./` matters: it tells apt to install this file rather than search online.
@@ -321,12 +321,55 @@ Any setting can be overridden with an environment variable named
 | `auth.session_hours` | `OPSKILLS_AUTH__SESSION_HOURS` | `8` (how long a sign-in lasts) |
 | `runs.max_concurrent` | `OPSKILLS_RUNS__MAX_CONCURRENT` | `4` (runs at the same time; others wait) |
 | `hosts.packages_dir` | `OPSKILLS_HOSTS__PACKAGES_DIR` | `/usr/share/opskills/packages` (agent packages offered for download) |
+| `email.smtp_host` | `OPSKILLS_EMAIL__SMTP_HOST` | not set (email notifications off) |
+| `email.smtp_port` | `OPSKILLS_EMAIL__SMTP_PORT` | `587` |
+| `email.security` | `OPSKILLS_EMAIL__SECURITY` | `starttls` (or `tls`, or `none` for a relay on your own network) |
+| `email.username`, `email.password` | `OPSKILLS_EMAIL__USERNAME`, `OPSKILLS_EMAIL__PASSWORD` | not set (no sign-in) |
+| `email.from` | `OPSKILLS_EMAIL__FROM` | not set; required with `smtp_host`, like `OpSkills <opskills@example.com>` |
 
 The data directory holds these files, each readable only by the server:
 `server-id`, `master.key` (the vault's encryption key), `admin.hash` (the admin
 password, stored as an Argon2id hash) and `opskills.redb` (runbooks, runs, their
 output, sessions, hosts and the encrypted vault). Back up the whole directory: without
 `master.key`, vault secrets can't be decrypted.
+
+### Sending email
+
+Email notifications go through an SMTP server you already use: your mail
+provider's, a relay, or the SMTP endpoint of a service like Amazon SES, SendGrid,
+Mailgun or Postmark.
+
+The easy way is **Settings > Email** in OpSkills: enter the server, port, security
+and sender, and pick the password from the vault (add it there first, for example
+as `SMTP_PASSWORD`; the settings only store its name). **Send a test** checks it.
+
+Or set it in the config file, which takes priority over the Settings page (the
+page then shows it read-only). Add an `[email]` section:
+
+```toml
+[email]
+smtp_host = "smtp.example.com"
+smtp_port = 587
+security = "starttls"
+username = "opskills@example.com"
+password = "app-password"
+from = "OpSkills <opskills@example.com>"
+```
+
+Or, with Docker, the matching environment variables:
+
+```bash
+-e OPSKILLS_EMAIL__SMTP_HOST=smtp.example.com \
+-e OPSKILLS_EMAIL__USERNAME=opskills@example.com \
+-e OPSKILLS_EMAIL__PASSWORD=app-password \
+-e OPSKILLS_EMAIL__FROM='OpSkills <opskills@example.com>'
+```
+
+Use `security = "tls"` with port 465. `opskills config` shows the settings without
+the password. The package's config file can be read only by root and the `opskills`
+user; runbook steps on the server run as that user, so anyone who can edit runbooks
+could read the password, as they could the vault key. Either way, give OpSkills its
+own mailbox or app password. After changing the config file, restart OpSkills.
 
 ## Troubleshooting
 

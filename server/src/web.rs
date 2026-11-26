@@ -35,6 +35,7 @@ pub struct AppState {
     pub executor: Arc<Executor>,
     pub hub: Arc<Hub>,
     pub vault: Arc<Vault>,
+    pub notifier: Arc<crate::notify::Notifier>,
 }
 
 impl AppState {
@@ -59,7 +60,8 @@ pub fn build_state(cfg: Config, fs: &firststart::State) -> Result<Arc<AppState>>
     std::fs::create_dir_all(&work_root).context("creating the work directory")?;
     let vault = Arc::new(Vault::from_key_hex(&fs.master_key).context("loading the vault key")?);
     let hub = Hub::new();
-    let executor = Executor::new(store.clone(), hub.clone(), vault.clone(), work_root, cfg.runs.max_concurrent);
+    let notifier = crate::notify::Notifier::new(&cfg, store.clone(), vault.clone());
+    let executor = Executor::new(store.clone(), hub.clone(), vault.clone(), notifier.clone(), work_root, cfg.runs.max_concurrent);
     Ok(Arc::new(AppState {
         cfg,
         server_id: fs.server_id.clone(),
@@ -69,6 +71,7 @@ pub fn build_state(cfg: Config, fs: &firststart::State) -> Result<Arc<AppState>>
         executor,
         hub,
         vault,
+        notifier,
     }))
 }
 

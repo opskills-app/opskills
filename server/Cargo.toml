@@ -1,6 +1,6 @@
 [package]
 name = "opskills"
-version = "0.9.0"
+version = "0.10.0"
 description = "Runbooks your whole team can run: self-hosted job and runbook automation"
 license = "Apache-2.0"
 repository = "https://github.com/opskills-app/opskills"
@@ -20,6 +20,7 @@ croner = "=4.0.3"
 futures-util = "0.3.34"
 hex = "0.4.3"
 hmac = "0.13.0"
+lettre = { version = "=0.11.23", default-features = false, features = ["builder", "smtp-transport", "rustls", "ring", "webpki-roots"] }
 libc = "0.2.191"
 redb = "5.0.0"
 regex = { version = "1.13.2", default-features = false, features = ["std", "unicode-perl"] }
