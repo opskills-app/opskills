@@ -1,5 +1,21 @@
 OpSkills
 Copyright 2026 The OpSkills Authors
 
-This product is licensed under the Apache License, Version 2.0.
-See the LICENSE file for details.
+OpSkills is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License, version 3 only, as published by
+the Free Software Foundation. See the LICENSE file for the full text.
+
+OpSkills is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+If you run a modified version of OpSkills for other people over a network, the
+license requires you to offer them the source code of your version. The
+"Source code" link in the app points to this project's source; change
+SOURCE_URL in server/src/main.rs to point to yours.
+
+Versions up to and including 0.10.0 were released under the Apache License,
+Version 2.0, and remain available under those terms.
+
+The OpSkills maintainers can also license OpSkills under separate commercial
+terms, for use without the AGPL's obligations.

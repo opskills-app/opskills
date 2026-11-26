@@ -400,7 +400,7 @@ export const api = {
   updateSecret: (name: string, s: { kind?: SecretKind; description?: string; value?: string }) =>
     request<Secret>("PUT", `/secrets/${encodeURIComponent(name)}`, s),
   deleteSecret: (name: string) => request<void>("DELETE", `/secrets/${encodeURIComponent(name)}`),
-  system: () => request<{ version: string; public_url: string | null }>("GET", "/system"),
+  system: () => request<{ version: string; public_url: string | null; license: string; source_url: string }>("GET", "/system"),
   hosts: (filter?: string) => request<Host[]>("GET", filter ? `/hosts?filter=${encodeURIComponent(filter)}` : "/hosts"),
   updateHost: (id: string, h: { name?: string; tags?: string[] }) => request<Host>("PUT", `/hosts/${encodeURIComponent(id)}`, h),
   deleteHost: (id: string) => request<void>("DELETE", `/hosts/${encodeURIComponent(id)}`),

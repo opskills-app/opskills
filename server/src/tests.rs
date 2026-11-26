@@ -106,7 +106,11 @@ async fn wait_finished(s: &TestServer, cookie: &str, run: &str) -> Value {
 async fn sign_in_csrf_and_sign_out() {
     let s = server();
     assert_eq!(call(&s.app, "GET", "/api/v1/runbooks", None, None, false).await.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(call(&s.app, "GET", "/api/v1/system", None, None, false).await.status, StatusCode::OK);
+    let system = call(&s.app, "GET", "/api/v1/system", None, None, false).await;
+    assert_eq!(system.status, StatusCode::OK);
+    let system = system.json();
+    assert_eq!(system["license"], "AGPL-3.0-only");
+    assert_eq!(system["source_url"], format!("https://github.com/opskills-app/opskills/tree/v{}", crate::VERSION));
     let no_csrf = call(&s.app, "POST", "/api/v1/auth/login", Some(json!({"username": "admin", "password": s.password})), None, false).await;
     assert_eq!(no_csrf.status, StatusCode::FORBIDDEN);
     let wrong = call(&s.app, "POST", "/api/v1/auth/login", Some(json!({"username": "admin", "password": "nope"})), None, true).await;

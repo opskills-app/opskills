@@ -9,7 +9,7 @@ with live output, approvals and a full audit trail.
 
 Website: [opskills.app](https://opskills.app)
 
-> **Status:** v0.10.0 preview. Sign in, keep secrets in an encrypted vault, enroll
+> **Status:** v0.11.0 preview. Sign in, keep secrets in an encrypted vault, enroll
 > your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks with
 > inputs, retries, file copies and calls to other runbooks, and run them on the
 > server or on your hosts, by hand, on a schedule, from a webhook or with an API
@@ -33,7 +33,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.10.0
+  opskills/opskills:0.11.0
 docker logs opskills 2>&1 | grep 'Admin password'
 ```
 
@@ -45,13 +45,13 @@ use the included [`compose.yaml`](compose.yaml): `docker compose up -d`.
 ### Debian and Ubuntu
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.10.0/opskills_0.10.0_amd64.deb
-sudo apt install ./opskills_0.10.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.11.0/opskills_0.11.0_amd64.deb
+sudo apt install ./opskills_0.11.0_amd64.deb
 sudo systemctl start opskills
 sudo journalctl -u opskills | grep 'Admin password'
 ```
 
-Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.10.0_arm64.deb`
+Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.11.0_arm64.deb`
 on ARM servers (`dpkg --print-architecture` tells you which). All downloads and
 checksums are on the [releases page](https://github.com/opskills-app/opskills/releases/latest).
 The package installs a sandboxed systemd service that runs as the `opskills`
@@ -133,8 +133,8 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   the exact commands:
 
   ```bash
-  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.10.0_amd64.deb
-  sudo apt install ./opskills-agent_0.10.0_amd64.deb
+  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.11.0_amd64.deb
+  sudo apt install ./opskills-agent_0.11.0_amd64.deb
   sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
   sudo systemctl enable --now opskills-agent
   ```
@@ -378,4 +378,21 @@ npm run deploy     # deploy to Cloudflare (requires `npx wrangler login`)
 
 ## License
 
-OpSkills is open source under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE).
+OpSkills is open source under the [GNU Affero General Public License v3.0 only](LICENSE)
+(`AGPL-3.0-only`). See [NOTICE](NOTICE).
+
+- Running OpSkills for your own team, changed or not, needs nothing more than the license
+  already gives you. Your runbooks, scripts and API integrations are yours and aren't
+  covered by it.
+- If you run a **modified** version for other people over a network, you must offer them
+  the source code of your version. The app's **Source code** link helps with that.
+- Versions up to and including 0.10.0 were released under the Apache License 2.0 and stay
+  available under it.
+- The maintainers can also license OpSkills under separate commercial terms, for use
+  without the AGPL's obligations.
+
+## Contributing
+
+Contributions are welcome. Before your first pull request is merged, you'll be asked to
+agree to the [Contributor License Agreement](CLA.md). It lets the project keep offering
+OpSkills under the AGPL and under commercial terms; you keep the copyright to your work.

@@ -74,7 +74,7 @@ LABEL org.opencontainers.image.title="OpSkills" \
       org.opencontainers.image.description="Runbooks your whole team can run" \
       org.opencontainers.image.url="https://opskills.app" \
       org.opencontainers.image.source="https://github.com/opskills-app/opskills" \
-      org.opencontainers.image.licenses="Apache-2.0"
+      org.opencontainers.image.licenses="AGPL-3.0-only"
 RUN addgroup -S -g 65532 opskills \
  && adduser -S -D -H -u 65532 -G opskills -h /var/lib/opskills -s /sbin/nologin opskills \
  && install -d -o opskills -g opskills -m 0750 /var/lib/opskills
