@@ -46,6 +46,9 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/webhooks/{id}", axum::routing::put(update_webhook).delete(delete_webhook))
         .route("/webhooks/{id}/rotate", post(rotate_webhook))
         .route("/hooks/{token}", post(inbound_hook))
+        .route("/notifications/settings", get(notification_settings))
+        .route("/notifications/test", post(test_notification))
+        .route("/runs/{id}/notifications", get(run_notices))
         .route("/runs", get(list_runs))
         .route("/runs/{id}", get(get_run))
         .route("/runs/{id}/logs", get(run_logs))
@@ -328,6 +331,7 @@ async fn create_runbook(State(st): State<Arc<AppState>>, body: String) -> ApiRes
         output_limit: input.output_limit.unwrap_or_default(),
         rollout: input.rollout,
         schedules: input.schedules,
+        notifications: input.notifications,
         secrets: input.secrets,
         targets: input.targets,
         timeout_seconds: input.timeout_seconds.unwrap_or(DEFAULT_STEP_TIMEOUT),
@@ -353,6 +357,7 @@ async fn update_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>,
         output_limit: input.output_limit.unwrap_or_default(),
         rollout: input.rollout,
         schedules: input.schedules,
+        notifications: input.notifications,
         secrets: input.secrets,
         targets: input.targets,
         timeout_seconds: input.timeout_seconds.unwrap_or(existing.timeout_seconds),
@@ -654,6 +659,42 @@ fn deliver(st: &AppState, stored: &crate::model::StoredWebhook, headers: &axum::
         .filter_map(|(name, path)| crate::model::json_path(&doc, path).map(|v| (name.clone(), serde_json::Value::String(v))))
         .collect();
     start_runbook(st, &rb, &given, &format!("webhook {}", hook.name), "webhook")
+}
+
+// Notifications
+
+async fn notification_settings(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(json!({ "email": st.notifier.email_enabled(), "from": st.notifier.email_from() }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestTarget {
+    #[serde(default)]
+    email: Vec<String>,
+    #[serde(default)]
+    webhook: Option<String>,
+}
+
+/// Send a test message to a target, so people can check it before relying on it.
+async fn test_notification(State(st): State<Arc<AppState>>, body: String) -> ApiResult<Json<serde_json::Value>> {
+    let t: TestTarget = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid target: {e}")))?;
+    let mut n = crate::model::Notification { id: String::new(), on: vec![crate::model::NotifyEvent::Started], slow_after_seconds: None, email: t.email, webhook: t.webhook, enabled: true };
+    n.validate().map_err(|e| bad(format!("{}{}", e[..1].to_uppercase(), &e[1..])))?;
+    if n.webhook.is_none() && !st.notifier.email_enabled() {
+        return Err(ApiError::new(StatusCode::CONFLICT, "Email isn't set up on this server. Add an [email] section to the server config (see the docs)."));
+    }
+    let notifier = st.notifier.clone();
+    let target = n.target_label();
+    match tokio::task::spawn_blocking(move || notifier.send_test(&n)).await.map_err(|e| anyhow::anyhow!("test send: {e}"))? {
+        Ok(()) => Ok(Json(json!({ "sent": true, "target": target }))),
+        Err(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, format!("Sending to {target} failed: {e}"))),
+    }
+}
+
+async fn run_notices(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<Json<Vec<crate::notify::Notice>>> {
+    st.store.run(&id)?.ok_or_else(|| ApiError::not_found("Run"))?;
+    Ok(Json(st.store.notices(&id)?))
 }
 
 // Schedules

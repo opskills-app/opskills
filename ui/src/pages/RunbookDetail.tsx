@@ -46,6 +46,16 @@ function toYaml(rb: Runbook) {
   if (rb.output_limit && (rb.output_limit.lines !== MAX_OUTPUT_LINES || rb.output_limit.action !== "truncate")) {
     lines.push("output_limit:", `  lines: ${rb.output_limit.lines}`, `  action: ${rb.output_limit.action}`);
   }
+  if (rb.notifications?.length) {
+    lines.push("notifications:");
+    for (const n of rb.notifications) {
+      lines.push(`  - on: [${n.on.join(", ")}]`);
+      if (n.slow_after_seconds) lines.push(`    slow_after_seconds: ${n.slow_after_seconds}`);
+      if (n.webhook) lines.push(`    webhook: ${q(n.webhook.replace(/^(https?:\/\/[^/]+).*$/, "$1/..."))}`);
+      if (n.email?.length) lines.push(`    email: [${n.email.join(", ")}]`);
+      if (!n.enabled) lines.push("    enabled: false");
+    }
+  }
   if (rb.schedules?.length) {
     lines.push("schedules:");
     for (const s of rb.schedules) {

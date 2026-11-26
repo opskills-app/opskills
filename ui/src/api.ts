@@ -95,6 +95,27 @@ export interface Schedule {
   inputs: Record<string, string>;
 }
 
+export type NotifyEvent = "started" | "succeeded" | "failed" | "slow";
+
+/** Tell people about runs: by email, or with a JSON POST to a webhook URL. */
+export interface Notification {
+  id: string;
+  on: NotifyEvent[];
+  slow_after_seconds?: number;
+  email?: string[];
+  webhook?: string;
+  enabled: boolean;
+}
+
+/** How one notification about a run went. */
+export interface Notice {
+  at: number;
+  event: NotifyEvent;
+  target: string;
+  ok: boolean;
+  error?: string;
+}
+
 export interface ScheduleStatus {
   id: string;
   next: number[];
@@ -130,6 +151,7 @@ export interface Runbook {
   output_limit: OutputLimit;
   rollout: Rollout;
   schedules: Schedule[];
+  notifications?: Notification[];
   secrets: string[];
   targets: Targets;
   timeout_seconds: number;
@@ -147,6 +169,7 @@ export interface RunbookInput {
   output_limit?: OutputLimit;
   rollout?: Rollout;
   schedules?: Schedule[];
+  notifications?: Notification[];
   secrets: string[];
   targets: Targets;
   /** Seconds, or a duration string like "10m". */
@@ -335,6 +358,9 @@ export const api = {
   updateWebhook: (id: string, w: WebhookInput) => request<{ webhook: Webhook; signing_secret: string | null }>("PUT", `/webhooks/${encodeURIComponent(id)}`, w),
   rotateWebhook: (id: string) => request<{ token: string }>("POST", `/webhooks/${encodeURIComponent(id)}/rotate`),
   deleteWebhook: (id: string) => request<void>("DELETE", `/webhooks/${encodeURIComponent(id)}`),
+  notificationSettings: () => request<{ email: boolean; from: string | null }>("GET", "/notifications/settings"),
+  testNotification: (target: { email?: string[]; webhook?: string }) => request<{ sent: boolean; target: string }>("POST", "/notifications/test", target),
+  runNotices: (runId: string) => request<Notice[]>("GET", `/runs/${encodeURIComponent(runId)}/notifications`),
   scheduleStatus: (runbookId: string) => request<ScheduleStatus[]>("GET", `/runbooks/${encodeURIComponent(runbookId)}/schedules`),
   previewSchedule: (cron: string, timezone: string) => request<{ next: number[] }>("POST", "/schedules/preview", { cron, timezone }),
   runs: (opts: { runbookId?: string; limit?: number } = {}) => {

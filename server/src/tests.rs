@@ -251,6 +251,7 @@ async fn interrupted_runs_are_marked_failed() {
             output_limit: crate::model::OutputLimit::default(),
             rollout: crate::model::Rollout::default(),
             schedules: vec![],
+            notifications: vec![],
             secrets: vec![],
             targets: crate::model::Targets::default(),
             timeout_seconds: 60,
@@ -1387,4 +1388,240 @@ async fn signed_webhooks_check_the_body_signature() {
     // The secret is never listed.
     let list = call(&s.app, "GET", &format!("/api/v1/runbooks/{rb}/webhooks"), None, Some(&c), false).await.body;
     assert!(!list.contains(&secret) && !list.contains("signing_ciphertext"), "{list}");
+}
+
+// Notifications
+
+/// A local HTTP receiver that records each POST. `/flaky` answers 503 once, then 200;
+/// `/gone` always answers 404.
+async fn receiver() -> (String, std::sync::Arc<std::sync::Mutex<Vec<(String, String, Value)>>>) {
+    use std::sync::{Arc, Mutex};
+    type Seen = Arc<Mutex<Vec<(String, String, Value)>>>;
+    let seen: Seen = Arc::new(Mutex::new(vec![]));
+    let flaky = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (s2, f2) = (seen.clone(), flaky.clone());
+    let app = Router::new().fallback(move |uri: axum::http::Uri, headers: axum::http::HeaderMap, body: String| {
+        let (seen, flaky) = (s2.clone(), f2.clone());
+        async move {
+            let path = uri.path().to_string();
+            if path == "/gone" {
+                return StatusCode::NOT_FOUND;
+            }
+            if path == "/flaky" && !flaky.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return StatusCode::SERVICE_UNAVAILABLE;
+            }
+            let event = headers.get("x-opskills-event").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            seen.lock().unwrap().push((path, event, serde_json::from_str(&body).unwrap_or(Value::Null)));
+            StatusCode::OK
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), seen)
+}
+
+async fn wait_for<T>(mut f: impl FnMut() -> Option<T>, what: &str) -> T {
+    for _ in 0..300 {
+        if let Some(v) = f() {
+            return v;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+async fn notices(s: &TestServer, c: &str, run: &str, n: usize) -> Vec<Value> {
+    for _ in 0..300 {
+        let list = call(&s.app, "GET", &format!("/api/v1/runs/{run}/notifications"), None, Some(c), false).await.json();
+        if list.as_array().unwrap().len() >= n {
+            return list.as_array().unwrap().clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("timed out waiting for {n} notices on {run}");
+}
+
+#[tokio::test]
+async fn notification_rules_are_checked() {
+    let s = server();
+    let c = sign_in(&s).await;
+    let rb = |n: Value| json!({"name": "N", "steps": [{"name": "a", "run": "true"}], "notifications": [n]});
+    for bad in [
+        json!({"on": [], "webhook": "https://hooks.example.com/x"}),
+        json!({"on": ["failed"], "email": ["not-an-address"]}),
+        json!({"on": ["failed"], "email": ["a@example.com"], "webhook": "https://hooks.example.com/x"}),
+        json!({"on": ["failed"]}),
+        json!({"on": ["failed"], "webhook": "ftp://example.com/x"}),
+        json!({"on": ["slow"], "webhook": "https://hooks.example.com/x"}),
+        json!({"on": ["exploded"], "webhook": "https://hooks.example.com/x"}),
+    ] {
+        let r = call(&s.app, "POST", "/api/v1/runbooks", Some(rb(bad.clone())), Some(&c), true).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad} -> {}", r.body);
+    }
+    let ok = call(&s.app, "POST", "/api/v1/runbooks", Some(rb(json!({"on": ["failed", "slow", "failed"], "slow_after_seconds": 600, "email": [" ops@example.com "]}))), Some(&c), true).await;
+    assert_eq!(ok.status, StatusCode::CREATED, "{}", ok.body);
+    let n = &ok.json()["notifications"][0];
+    assert_eq!((n["on"].clone(), n["email"][0].as_str(), n["id"].as_str().unwrap().len()), (json!(["failed", "slow"]), Some("ops@example.com"), 12));
+    // No SMTP server configured: email can't be tested, and the editor is told so.
+    let settings = call(&s.app, "GET", "/api/v1/notifications/settings", None, Some(&c), false).await.json();
+    assert_eq!(settings["email"], json!(false));
+    let t = call(&s.app, "POST", "/api/v1/notifications/test", Some(json!({"email": ["ops@example.com"]})), Some(&c), true).await;
+    assert_eq!(t.status, StatusCode::CONFLICT, "{}", t.body);
+}
+
+#[tokio::test]
+async fn webhook_notifications_report_starts_failures_and_retries() {
+    let (base, seen) = receiver().await;
+    let s = server();
+    let c = sign_in(&s).await;
+    let rb = create(&s, &c, json!({
+        "name": "Migrate",
+        "steps": [{"name": "prepare", "run": "echo preparing"}, {"name": "migrate", "run": "echo 'table locked' >&2; exit 3"}],
+        "notifications": [
+            {"on": ["started", "failed", "succeeded"], "webhook": format!("{base}/chat/T000/B000/secretpart")},
+            {"on": ["failed"], "webhook": format!("{base}/flaky")},
+            {"on": ["failed"], "webhook": format!("{base}/gone")},
+            {"on": ["failed"], "webhook": format!("{base}/off"), "enabled": false}
+        ]
+    }))
+    .await;
+    let run = call(&s.app, "POST", &format!("/api/v1/runbooks/{rb}/runs"), None, Some(&c), true).await.json();
+    let id = run["id"].as_str().unwrap().to_string();
+    wait_finished(&s, &c, &id).await;
+    let list = notices(&s, &c, &id, 4).await;
+    let got = wait_for(|| { let v = seen.lock().unwrap().clone(); (v.len() >= 3).then_some(v) }, "3 webhook calls").await;
+    let main: Vec<&(String, String, Value)> = got.iter().filter(|(p, _, _)| p.starts_with("/chat")).collect();
+    assert_eq!(main.iter().map(|(_, e, _)| e.as_str()).collect::<Vec<_>>(), vec!["started", "failed"]);
+    let failed = &main[1].2;
+    let text = failed["text"].as_str().unwrap();
+    assert!(text.starts_with("Migrate failed: run #") && text.contains("step \"migrate\" on OpSkills server"), "{text}");
+    assert_eq!(failed["content"], failed["text"]);
+    assert_eq!(failed["run"]["failed_step"]["exit_code"], json!(3));
+    assert!(failed["output_tail"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().ends_with("table locked")), "{failed}");
+    assert!(main[0].2["text"].as_str().unwrap().contains("started by admin"));
+    // The flaky receiver got it on the second try; the 404 one was not retried.
+    assert_eq!(got.iter().filter(|(p, _, _)| p == "/flaky").count(), 1);
+    assert!(!got.iter().any(|(p, _, _)| p == "/off"));
+    let by_target = |t: &str| list.iter().filter(|n| n["target"].as_str() == Some(t)).cloned().collect::<Vec<_>>();
+    let host = format!("webhook {}", base.trim_start_matches("http://").split(':').next().unwrap());
+    assert!(by_target(&host).iter().filter(|n| n["ok"] == json!(true)).count() >= 3, "{list:?}");
+    let gone = list.iter().find(|n| n["ok"] == json!(false)).expect("the 404 is recorded");
+    assert!(gone["error"].as_str().unwrap().contains("404"), "{gone}");
+    // Webhook URLs are often secret: only the host is ever shown.
+    assert!(!serde_json::to_string(&list).unwrap().contains("secretpart"));
+}
+
+#[tokio::test]
+async fn slow_runs_notify_once_and_fast_ones_do_not() {
+    let (base, seen) = receiver().await;
+    let s = server();
+    let c = sign_in(&s).await;
+    let rb = create(&s, &c, json!({
+        "name": "Backup",
+        "inputs": [{"name": "nap", "type": "text", "default": "0"}],
+        "steps": [{"name": "copy", "run": "sleep {{ inputs.nap }}"}],
+        "notifications": [{"on": ["slow", "succeeded"], "slow_after_seconds": 1, "webhook": format!("{base}/slow")}]
+    }))
+    .await;
+    let fast = call(&s.app, "POST", &format!("/api/v1/runbooks/{rb}/runs"), None, Some(&c), true).await.json();
+    let fast_id = fast["id"].as_str().unwrap().to_string();
+    wait_finished(&s, &c, &fast_id).await;
+    notices(&s, &c, &fast_id, 1).await;
+    let slow = call(&s.app, "POST", &format!("/api/v1/runbooks/{rb}/runs"), Some(json!({"inputs": {"nap": "2"}})), Some(&c), true).await.json();
+    let slow_id = slow["id"].as_str().unwrap().to_string();
+    wait_finished(&s, &c, &slow_id).await;
+    let list = notices(&s, &c, &slow_id, 2).await;
+    let events: Vec<&str> = list.iter().map(|n| n["event"].as_str().unwrap()).collect();
+    assert_eq!(events, vec!["slow", "succeeded"]);
+    // Give a stray timer from the fast run time to fire, then check it didn't.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let got = seen.lock().unwrap().clone();
+    let slow_calls: Vec<&Value> = got.iter().filter(|(_, e, _)| e == "slow").map(|(_, _, b)| b).collect();
+    assert_eq!(slow_calls.len(), 1, "{got:?}");
+    assert!(slow_calls[0]["text"].as_str().unwrap().starts_with("Backup is still running after 1 second"), "{:?}", slow_calls[0]);
+    assert_eq!(slow_calls[0]["run"]["id"].as_str(), Some(slow_id.as_str()));
+}
+
+/// A tiny SMTP server that accepts every message and keeps its text.
+async fn fake_smtp() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let mail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let m = mail.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((sock, _)) = listener.accept().await else { return };
+            let m = m.clone();
+            tokio::spawn(async move {
+                let (r, mut w) = sock.into_split();
+                let mut lines = BufReader::new(r).lines();
+                w.write_all(b"220 test ESMTP\r\n").await.unwrap();
+                let (mut in_data, mut msg) = (false, String::new());
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if in_data {
+                        if line == "." {
+                            in_data = false;
+                            m.lock().unwrap().push(std::mem::take(&mut msg));
+                            w.write_all(b"250 queued\r\n").await.unwrap();
+                        } else {
+                            msg.push_str(&line);
+                            msg.push('\n');
+                        }
+                        continue;
+                    }
+                    let cmd = line.to_ascii_uppercase();
+                    let reply: &[u8] = if cmd.starts_with("DATA") {
+                        in_data = true;
+                        b"354 go ahead\r\n"
+                    } else if cmd.starts_with("QUIT") {
+                        let _ = w.write_all(b"221 bye\r\n").await;
+                        return;
+                    } else {
+                        b"250 ok\r\n"
+                    };
+                    w.write_all(reply).await.unwrap();
+                }
+            });
+        }
+    });
+    (port, mail)
+}
+
+#[tokio::test]
+async fn email_notifications_go_through_the_smtp_server() {
+    let (port, mail) = fake_smtp().await;
+    let s = server_with(|cfg| {
+        cfg.email.smtp_host = Some("127.0.0.1".into());
+        cfg.email.smtp_port = port;
+        cfg.email.security = "none".into();
+        cfg.email.from = Some("OpSkills <ops@example.com>".into());
+        cfg.server.public_url = Some("https://ops.example.com/".into());
+    });
+    let c = sign_in(&s).await;
+    let settings = call(&s.app, "GET", "/api/v1/notifications/settings", None, Some(&c), false).await.json();
+    assert_eq!((settings["email"].clone(), settings["from"].as_str()), (json!(true), Some("OpSkills <ops@example.com>")));
+    let t = call(&s.app, "POST", "/api/v1/notifications/test", Some(json!({"email": ["oncall@example.com"]})), Some(&c), true).await;
+    assert_eq!(t.status, StatusCode::OK, "{}", t.body);
+    let rb = create(&s, &c, json!({
+        "name": "Rotate certs",
+        "inputs": [{"name": "env", "type": "text", "default": "prod"}],
+        "steps": [{"name": "rotate", "run": "echo rotated"}],
+        "notifications": [{"on": ["succeeded"], "email": ["oncall@example.com", "lead@example.com"]}]
+    }))
+    .await;
+    let run = call(&s.app, "POST", &format!("/api/v1/runbooks/{rb}/runs"), None, Some(&c), true).await.json();
+    let id = run["id"].as_str().unwrap().to_string();
+    wait_finished(&s, &c, &id).await;
+    let list = notices(&s, &c, &id, 1).await;
+    assert_eq!((list[0]["ok"].clone(), list[0]["target"].as_str()), (json!(true), Some("oncall@example.com, lead@example.com")), "{list:?}");
+    let got = mail.lock().unwrap().clone();
+    assert_eq!(got.len(), 2);
+    assert!(got[0].contains("Subject: [OpSkills] Test notification"));
+    // The body is quoted-printable: undo soft line breaks and the encoded "=".
+    let m = &got[1].replace("=\n", "").replace("=3D", "=");
+    assert!(m.contains("Subject: [OpSkills] Rotate certs succeeded (run #"), "{m}");
+    assert!(m.contains("To: oncall@example.com, lead@example.com") || m.contains("To: oncall@example.com,"), "{m}");
+    assert!(m.contains(&format!("https://ops.example.com/#/runs/{id}")) && m.contains("env = prod"), "{m}");
 }

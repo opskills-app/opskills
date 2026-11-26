@@ -69,6 +69,108 @@ fn yes() -> bool {
 
 pub const MAX_SCHEDULES: usize = 10;
 
+/// When a notification is sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotifyEvent {
+    Started,
+    Succeeded,
+    Failed,
+    /// Still running after `slow_after_seconds`; sent once per run.
+    Slow,
+}
+
+impl NotifyEvent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotifyEvent::Started => "started",
+            NotifyEvent::Succeeded => "succeeded",
+            NotifyEvent::Failed => "failed",
+            NotifyEvent::Slow => "slow",
+        }
+    }
+}
+
+/// Tell people about this runbook's runs, by email or with a webhook call.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Notification {
+    #[serde(default)]
+    pub id: String,
+    pub on: Vec<NotifyEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_after_seconds: Option<u64>,
+    /// Email recipients; needs an SMTP server in the server config.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub email: Vec<String>,
+    /// Or a URL that gets a JSON POST (Slack and similar incoming webhooks work).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<String>,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+
+pub const MAX_NOTIFICATIONS: usize = 10;
+
+impl Notification {
+    pub fn validate(&mut self) -> Result<(), String> {
+        if self.id.is_empty() {
+            self.id = hex::encode(crate::firststart::random_bytes::<6>());
+        }
+        self.on.sort_unstable();
+        self.on.dedup();
+        if self.on.is_empty() {
+            return Err("pick when to notify: started, succeeded, failed or slow.".into());
+        }
+        if self.on.contains(&NotifyEvent::Slow) {
+            match self.slow_after_seconds {
+                Some(s) if (1..=7 * 86_400).contains(&s) => {}
+                _ => return Err("\"slow\" needs slow_after_seconds, from 1 second to 7 days.".into()),
+            }
+        } else {
+            self.slow_after_seconds = None;
+        }
+        self.email = self.email.iter().map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).collect();
+        self.email.dedup();
+        self.webhook = self.webhook.take().map(|w| w.trim().to_string()).filter(|w| !w.is_empty());
+        match (self.email.is_empty(), &self.webhook) {
+            (false, None) => {
+                if self.email.len() > 20 {
+                    return Err("send to at most 20 email addresses.".into());
+                }
+                for e in &self.email {
+                    e.parse::<lettre::Address>().map_err(|_| format!("{e:?} is not an email address."))?;
+                }
+            }
+            (true, Some(url)) => check_webhook_url(url)?,
+            _ => return Err("send either to email addresses or to a webhook URL.".into()),
+        }
+        Ok(())
+    }
+
+    /// Who gets it, for logs and the run page. A webhook shows only its host, since
+    /// the rest of the URL is often the secret (as with Slack).
+    pub fn target_label(&self) -> String {
+        match &self.webhook {
+            Some(url) => format!("webhook {}", webhook_host(url)),
+            None => self.email.join(", "),
+        }
+    }
+}
+
+pub fn check_webhook_url(url: &str) -> Result<(), String> {
+    let uri: axum::http::Uri = url.parse().map_err(|_| format!("{url:?} is not a URL."))?;
+    let ok_scheme = matches!(uri.scheme_str(), Some("https" | "http"));
+    if !ok_scheme || uri.host().is_none_or(str::is_empty) || url.len() > 2000 {
+        return Err("a webhook URL starts with https:// (or http://) and has a host.".into());
+    }
+    Ok(())
+}
+
+pub fn webhook_host(url: &str) -> String {
+    url.parse::<axum::http::Uri>().ok().and_then(|u| u.host().map(str::to_string)).unwrap_or_else(|| "?".into())
+}
+
 impl Schedule {
     fn validate(&mut self, defs: &[InputDef]) -> Result<(), String> {
         self.name = self.name.trim().to_string();
@@ -622,6 +724,8 @@ pub struct Runbook {
     pub rollout: Rollout,
     #[serde(default)]
     pub schedules: Vec<Schedule>,
+    #[serde(default)]
+    pub notifications: Vec<Notification>,
     /// Names of vault secrets exposed to every step as environment variables.
     #[serde(default)]
     pub secrets: Vec<String>,
@@ -654,6 +758,8 @@ pub struct RunbookInput {
     pub rollout: Rollout,
     #[serde(default)]
     pub schedules: Vec<Schedule>,
+    #[serde(default)]
+    pub notifications: Vec<Notification>,
     #[serde(default)]
     pub secrets: Vec<String>,
     #[serde(default)]
@@ -783,6 +889,12 @@ impl RunbookInput {
         ids.dedup();
         if ids.len() != self.schedules.len() {
             return Err("Two schedules have the same id.".into());
+        }
+        if self.notifications.len() > MAX_NOTIFICATIONS {
+            return Err(format!("A runbook can have at most {MAX_NOTIFICATIONS} notifications."));
+        }
+        for (i, n) in self.notifications.iter_mut().enumerate() {
+            n.validate().map_err(|e| format!("Notification {}: {e}", i + 1))?;
         }
         if self.steps.is_empty() || self.steps.len() > 50 {
             return Err("A runbook needs 1 to 50 steps.".into());
@@ -1232,6 +1344,7 @@ mod tests {
             output_limit: None,
             rollout: Rollout::default(),
             schedules: vec![],
+            notifications: vec![],
             secrets: vec![],
             targets: Targets::default(),
             timeout_seconds: None,

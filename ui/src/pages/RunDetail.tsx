@@ -3,6 +3,7 @@ import { ArrowDownToLine, ArrowLeft, ArrowUpRight, Ban, Check, CircleStop, Loade
 import { api, isActive, type LogLine, type Run, type Runbook, type StepResult } from "../api";
 import { clock, duration, runDuration, runNumber, timeAgo } from "../format";
 import { Button, Card, CardHeader, cx, ErrorNote, StatusPill } from "../components/ui";
+import { RunNotices } from "../components/Notifications";
 import { StartRunDialog } from "../components/StartRun";
 import { go } from "../router";
 import { useRunNow } from "./Runbooks";
@@ -282,45 +283,48 @@ export function RunDetail({ id }: { id: string }) {
       </Card>
 
       <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[300px_minmax(0,1fr)]">
-        <Card>
-          <CardHeader title="Steps" hint="Click a step to filter the output" />
-          <ul className="space-y-1 px-3 pb-4 sm:px-5">
-            {run.steps.map((s, i) => {
-              const took = s.started_at ? (s.finished_at ?? now) - s.started_at : null;
-              const firstOfHost = i % perHost === 0;
-              return (
-                <li key={i}>
-                  {firstOfHost && (multi || s.host_id !== "local") && (
-                    <div className={cx("flex items-center gap-2 px-3 pb-1 text-xs font-semibold text-muted", i > 0 && "mt-3")}>
-                      <Server className="size-3.5" /> {s.host_name}
-                    </div>
-                  )}
-                  <button
-                    onClick={() => setStepFilter((f) => (f === i ? null : i))}
-                    className={cx("flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm", stepFilter === i ? "bg-accent-soft" : "hover:bg-surface-2")}
-                  >
-                    <StepIcon s={s.status} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium">{s.name}</span>
-                      <span className="block truncate font-mono text-[11px] text-muted">{s.copy ? `copy to ${s.copy.to}` : s.call ? "calls a runbook" : s.run.split("\n")[0]}</span>
-                    </span>
-                    <span className="text-right text-xs text-muted tabular-nums">
-                      {took !== null && <span className="block">{duration(took)}</span>}
-                      {s.exit_code !== null && <span className="block">exit {s.exit_code}</span>}
-                      {(s.attempts ?? 0) > 1 && <span className="block">{s.attempts} tries</span>}
-                      {s.status === "failed" && s.continue_on_error && <span className="block">continued</span>}
-                    </span>
-                  </button>
-                  {s.child_run_id && (
-                    <a href={`#/runs/${s.child_run_id}`} className="ml-[42px] inline-flex items-center gap-1 pb-1 text-[11px] font-medium text-accent hover:underline">
-                      Open called run #{runNumber(s.child_run_id)} <ArrowUpRight className="size-3" />
-                    </a>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </Card>
+        <div className="space-y-4">
+          <Card>
+            <CardHeader title="Steps" hint="Click a step to filter the output" />
+            <ul className="space-y-1 px-3 pb-4 sm:px-5">
+              {run.steps.map((s, i) => {
+                const took = s.started_at ? (s.finished_at ?? now) - s.started_at : null;
+                const firstOfHost = i % perHost === 0;
+                return (
+                  <li key={i}>
+                    {firstOfHost && (multi || s.host_id !== "local") && (
+                      <div className={cx("flex items-center gap-2 px-3 pb-1 text-xs font-semibold text-muted", i > 0 && "mt-3")}>
+                        <Server className="size-3.5" /> {s.host_name}
+                      </div>
+                    )}
+                    <button
+                      onClick={() => setStepFilter((f) => (f === i ? null : i))}
+                      className={cx("flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm", stepFilter === i ? "bg-accent-soft" : "hover:bg-surface-2")}
+                    >
+                      <StepIcon s={s.status} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium">{s.name}</span>
+                        <span className="block truncate font-mono text-[11px] text-muted">{s.copy ? `copy to ${s.copy.to}` : s.call ? "calls a runbook" : s.run.split("\n")[0]}</span>
+                      </span>
+                      <span className="text-right text-xs text-muted tabular-nums">
+                        {took !== null && <span className="block">{duration(took)}</span>}
+                        {s.exit_code !== null && <span className="block">exit {s.exit_code}</span>}
+                        {(s.attempts ?? 0) > 1 && <span className="block">{s.attempts} tries</span>}
+                        {s.status === "failed" && s.continue_on_error && <span className="block">continued</span>}
+                      </span>
+                    </button>
+                    {s.child_run_id && (
+                      <a href={`#/runs/${s.child_run_id}`} className="ml-[42px] inline-flex items-center gap-1 pb-1 text-[11px] font-medium text-accent hover:underline">
+                        Open called run #{runNumber(s.child_run_id)} <ArrowUpRight className="size-3" />
+                      </a>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </Card>
+          <RunNotices runId={run.id} active={active} />
+        </div>
 
         <div className="flex min-h-[460px] flex-col overflow-hidden rounded-[22px] bg-term text-term-ink shadow-soft">
           <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3">

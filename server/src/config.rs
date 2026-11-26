@@ -16,6 +16,36 @@ pub struct Config {
     pub auth: Auth,
     pub runs: Runs,
     pub hosts: Hosts,
+    pub email: Email,
+}
+
+/// The SMTP server notifications are sent through. Email is off until `smtp_host` is set.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Email {
+    pub smtp_host: Option<String>,
+    pub smtp_port: u16,
+    /// "starttls" (default, usually port 587), "tls" (port 465), or "none" (only for
+    /// a relay on the same machine or network).
+    pub security: String,
+    pub username: Option<String>,
+    /// Never written out by `opskills config`.
+    #[serde(skip_serializing)]
+    pub password: Option<String>,
+    /// Sender, like "OpSkills <opskills@example.com>".
+    pub from: Option<String>,
+}
+
+impl Default for Email {
+    fn default() -> Self {
+        Self { smtp_host: None, smtp_port: 587, security: "starttls".into(), username: None, password: None, from: None }
+    }
+}
+
+impl Email {
+    pub fn enabled(&self) -> bool {
+        self.smtp_host.as_deref().is_some_and(|h| !h.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -150,6 +180,25 @@ fn apply_env(cfg: &mut Config, get: impl Fn(&str) -> Option<String>) -> Result<(
     if let Some(v) = get("OPSKILLS_RUNS__MAX_CONCURRENT") {
         cfg.runs.max_concurrent = v.parse().context("OPSKILLS_RUNS__MAX_CONCURRENT must be a whole number")?;
     }
+    let some = |v: String| Some(v).filter(|s| !s.is_empty());
+    if let Some(v) = get("OPSKILLS_EMAIL__SMTP_HOST") {
+        cfg.email.smtp_host = some(v);
+    }
+    if let Some(v) = get("OPSKILLS_EMAIL__SMTP_PORT") {
+        cfg.email.smtp_port = v.parse().context("OPSKILLS_EMAIL__SMTP_PORT must be a port number")?;
+    }
+    if let Some(v) = get("OPSKILLS_EMAIL__SECURITY") {
+        cfg.email.security = v;
+    }
+    if let Some(v) = get("OPSKILLS_EMAIL__USERNAME") {
+        cfg.email.username = some(v);
+    }
+    if let Some(v) = get("OPSKILLS_EMAIL__PASSWORD") {
+        cfg.email.password = some(v);
+    }
+    if let Some(v) = get("OPSKILLS_EMAIL__FROM") {
+        cfg.email.from = some(v);
+    }
     Ok(())
 }
 
@@ -165,6 +214,17 @@ fn validate(cfg: &Config) -> Result<()> {
     );
     anyhow::ensure!((1..=720).contains(&cfg.auth.session_hours), "auth.session_hours must be 1 to 720");
     anyhow::ensure!((1..=64).contains(&cfg.runs.max_concurrent), "runs.max_concurrent must be 1 to 64");
+    let e = &cfg.email;
+    anyhow::ensure!(
+        ["starttls", "tls", "none"].contains(&e.security.as_str()),
+        "email.security must be \"starttls\", \"tls\" or \"none\", got {:?}",
+        e.security
+    );
+    if e.enabled() {
+        let from = e.from.as_deref().context("email.from is required when email.smtp_host is set, like \"OpSkills <opskills@example.com>\"")?;
+        from.parse::<lettre::message::Mailbox>().map_err(|err| anyhow::anyhow!("email.from {from:?} is not an address: {err}"))?;
+        anyhow::ensure!(e.username.is_some() == e.password.is_some(), "set both email.username and email.password, or neither");
+    }
     Ok(())
 }
 
@@ -202,6 +262,30 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.server.listen, "0.0.0.0:7000");
         assert_eq!(cfg.logs.format, "pretty");
+    }
+
+    #[test]
+    fn email_settings_are_checked_and_the_password_is_never_printed() {
+        let mut cfg = Config::default();
+        apply_env(&mut cfg, |k| match k {
+            "OPSKILLS_EMAIL__SMTP_HOST" => Some("smtp.example.com".into()),
+            "OPSKILLS_EMAIL__USERNAME" => Some("ops".into()),
+            "OPSKILLS_EMAIL__PASSWORD" => Some("hunter2-smtp".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(validate(&cfg).is_err(), "from is required");
+        cfg.email.from = Some("OpSkills <ops@example.com>".into());
+        validate(&cfg).unwrap();
+        assert!(cfg.email.enabled());
+        let printed = cfg.to_toml();
+        assert!(printed.contains("smtp.example.com") && !printed.contains("hunter2-smtp"), "{printed}");
+        cfg.email.security = "ssl".into();
+        assert!(validate(&cfg).is_err());
+        cfg.email.security = "tls".into();
+        cfg.email.password = None;
+        assert!(validate(&cfg).is_err(), "username without password");
+        assert!(!Config::default().email.enabled());
     }
 
     #[test]

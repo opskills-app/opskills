@@ -21,6 +21,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Semaphore, broadcast, mpsc, watch};
 
+use crate::model::NotifyEvent;
+use crate::notify::Notifier;
 use crate::hub::{AgentMsg, CONTACT_TIMEOUT, End, Hub, Job, JobEnd, PICKUP_TIMEOUT};
 use crate::model::{
     CallStep, CopyStep, FailurePolicy, InputValue, LOCAL_HOST_ID, LOCAL_HOST_NAME, LimitAction, LogLine, MAX_CALL_DEPTH, Run, RunHost, Runbook, Status, now_ms, resolve_inputs,
@@ -142,11 +144,20 @@ pub struct Executor {
     work_root: PathBuf,
     limit: Arc<Semaphore>,
     live: Mutex<HashMap<String, Arc<Live>>>,
+    notifier: Arc<Notifier>,
 }
 
 impl Executor {
-    pub fn new(store: Arc<Store>, hub: Arc<Hub>, vault: Arc<Vault>, work_root: PathBuf, max_concurrent: usize) -> Arc<Self> {
-        Arc::new(Executor { store, hub, vault, work_root, limit: Arc::new(Semaphore::new(max_concurrent.max(1))), live: Mutex::new(HashMap::new()) })
+    pub fn new(store: Arc<Store>, hub: Arc<Hub>, vault: Arc<Vault>, notifier: Arc<Notifier>, work_root: PathBuf, max_concurrent: usize) -> Arc<Self> {
+        Arc::new(Executor {
+            store,
+            hub,
+            vault,
+            work_root,
+            limit: Arc::new(Semaphore::new(max_concurrent.max(1))),
+            live: Mutex::new(HashMap::new()),
+            notifier,
+        })
     }
 
     /// Check input values against `rb` and decrypt the secrets it lists. The result
@@ -238,6 +249,9 @@ impl Executor {
         run.started_at = Some(now_ms());
         self.publish(&live, &run);
         tracing::info!(run_id = %run.id, runbook = %run.runbook_name, "run started");
+        let rules = self.notifier.rules_for(&run);
+        self.notifier.emit(&rules, &run, NotifyEvent::Started);
+        let slow_timers = self.notifier.slow_timers(&rules, &run);
 
         let hosts = if run.hosts.is_empty() { vec![RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into() }] } else { run.hosts.clone() };
         let per_host = run.steps.len() / hosts.len();
@@ -295,6 +309,12 @@ impl Executor {
         run.log_lines = sink.count;
         self.publish(&live, &run);
         tracing::info!(run_id = %run.id, status = ?run.status, "run finished");
+        drop(slow_timers);
+        match run.status {
+            Status::Succeeded => self.notifier.emit(&rules, &run, NotifyEvent::Succeeded),
+            Status::Failed => self.notifier.emit(&rules, &run, NotifyEvent::Failed),
+            _ => {}
+        }
         drop(permit);
     }
 

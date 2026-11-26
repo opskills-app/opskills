@@ -266,6 +266,60 @@ didn't. The last 20 calls are kept and returned by
 `webhook` and show `webhook <name>` as who started them. A runbook can have up to
 20 webhooks, and deleting the runbook deletes them.
 
+## Notifications
+
+Tell people about a runbook's runs, by email or in a chat channel. In the editor,
+use **Add notification** under the steps, pick when (**Started**, **Succeeded**,
+**Failed**, **Running long** with a number of minutes) and where, then **Send a
+test** to check it before saving.
+
+```json
+"notifications": [
+  {"on": ["failed", "slow"], "slow_after_seconds": 1800, "webhook": "https://hooks.slack.com/services/..."},
+  {"on": ["failed"], "email": ["oncall@example.com"]}
+]
+```
+
+| Field | What it is |
+|---|---|
+| `on` | Any of `started`, `succeeded`, `failed` and `slow` |
+| `slow_after_seconds` | With `slow`: how long a run may take before it counts as slow. Sent once per run, while it's still running |
+| `webhook` | A URL that gets a JSON `POST` |
+| `email` | Or up to 20 addresses; the server needs an SMTP server ([setup](install.md#sending-email)) |
+| `enabled` | Default `true` |
+
+A runbook can have up to 10. Runs that a call step starts don't send their own
+notifications; the run that called them does. Cancelled runs send nothing.
+
+**Webhooks** get a JSON body with a one-line `text`, which Slack, Mattermost and
+Google Chat incoming webhooks show as a message (and the same line as `content`,
+which Discord shows), plus the details for anything else:
+
+```json
+{
+  "event": "failed",
+  "text": "Nightly backup failed: run #2fb870, step \"upload\" on db-1, after 12 seconds. https://ops.example.com/#/runs/...",
+  "runbook": {"id": "...", "name": "Nightly backup"},
+  "run": {"id": "...", "number": "2fb870", "status": "failed", "trigger": "schedule", "started_by": "schedule nightly",
+          "started_at": 1795000000000, "finished_at": 1795000012000, "url": "https://ops.example.com/#/runs/...",
+          "failed_step": {"name": "upload", "host": "db-1", "exit_code": 2}, "error": null},
+  "output_tail": ["bucket not found", "Step failed with exit code 2."]
+}
+```
+
+The header `X-OpSkills-Event` names the event. `output_tail` holds the last 20
+output lines of a failed run (secret values are already masked) and is empty
+otherwise. Links need `server.public_url` set. A receiver that is down or answers
+`5xx` or `429` is tried twice more; any other answer outside `2xx` counts as failed.
+
+**Emails** have the same line as the subject and first line, then the runbook,
+who started it, how long it took, the inputs (secret ones masked) and, for
+failures, the last output lines.
+
+Sending never holds up a run. The run page lists each notification it sent and
+whether it got through, with the reason if it didn't. Webhook URLs are often
+secret themselves (as Slack's are), so only their host is shown there and in logs.
+
 ## Running on several hosts
 
 A runbook that runs on hosts runs every step on each host, in order. The `targets`
