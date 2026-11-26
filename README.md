@@ -9,11 +9,11 @@ with live output, approvals and a full audit trail.
 
 Website: [opskills.app](https://opskills.app)
 
-> **Status:** v0.8.0 preview. Sign in, keep secrets in an encrypted vault, enroll
+> **Status:** v0.9.0 preview. Sign in, keep secrets in an encrypted vault, enroll
 > your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks with
 > inputs, retries, file copies and calls to other runbooks, and run them on the
-> server or on your hosts, by hand, on a schedule or with an API token, with output
-> streaming live to your browser. Webhooks, notifications and approvals are next
+> server or on your hosts, by hand, on a schedule, from a webhook or with an API
+> token, with output streaming live to your browser. Notifications and approvals are next
 > (members and roles on the Settings page are still sample data).
 
 ## Install
@@ -32,7 +32,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.8.0
+  opskills/opskills:0.9.0
 docker logs opskills 2>&1 | grep 'Admin password'
 ```
 
@@ -44,13 +44,13 @@ use the included [`compose.yaml`](compose.yaml): `docker compose up -d`.
 ### Debian and Ubuntu
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.8.0/opskills_0.8.0_amd64.deb
-sudo apt install ./opskills_0.8.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.9.0/opskills_0.9.0_amd64.deb
+sudo apt install ./opskills_0.9.0_amd64.deb
 sudo systemctl start opskills
 sudo journalctl -u opskills | grep 'Admin password'
 ```
 
-Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.8.0_arm64.deb`
+Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.9.0_arm64.deb`
 on ARM servers (`dpkg --print-architecture` tells you which). All downloads and
 checksums are on the [releases page](https://github.com/opskills-app/opskills/releases/latest).
 The package installs a sandboxed systemd service that runs as the `opskills`
@@ -130,8 +130,8 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   the exact commands:
 
   ```bash
-  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.8.0_amd64.deb
-  sudo apt install ./opskills-agent_0.8.0_amd64.deb
+  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.9.0_amd64.deb
+  sudo apt install ./opskills-agent_0.9.0_amd64.deb
   sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
   sudo systemctl enable --now opskills-agent
   ```
@@ -241,6 +241,10 @@ curl -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" \
 | `GET`, `PUT`, `DELETE /runbooks/{id}` | Read, replace and delete a runbook |
 | `GET /runbooks/{id}/schedules` | Each schedule's next times, last run and last error |
 | `POST /schedules/preview` | The next times a cron expression fires in a time zone: `{"cron": "0 3 * * *", "timezone": "UTC"}` |
+| `GET`, `POST /runbooks/{id}/webhooks` | List a runbook's webhooks with recent deliveries, and create one (the URL, and signing secret if any, are returned once) |
+| `PUT`, `DELETE /webhooks/{id}` | Change and delete a webhook; turning signing on returns a new secret once |
+| `POST /webhooks/{id}/rotate` | Give a webhook a new URL; the old one stops working |
+| `POST /hooks/{token}` | Called by other systems: start a run from a JSON body (no sign-in; see [Webhooks](docs/runbooks.md#webhooks)) |
 | `POST /runbooks/{id}/runs` | Start a run; body `{"inputs": {...}}` when the runbook has inputs |
 | `GET /runs?runbook_id=&limit=`, `GET /runs/{id}` | List runs, newest first, and read one |
 | `GET /runs/{id}/logs?after=` | Output lines after a sequence number |
@@ -264,7 +268,7 @@ Errors are JSON with `title`, `status` and a readable `detail`.
 ## Roadmap
 
 - **Runbooks as code**: YAML files you can keep in Git and review like any other change.
-- **Webhooks and notifications**: start runs when another system calls in, and tell people how runs went.
+- **Notifications**: tell people by email or webhook when runs start, succeed, fail or run long.
 - **Approval gates**: pause a run until the right person signs off.
 - **One small binary**: written in Rust, no runtime dependencies, secure defaults on first start.
 

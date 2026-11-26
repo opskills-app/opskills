@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowLeft, Copy, FileText, Pencil, Play, Terminal, Trash2, Workflow } from "lucide-react";
 import { api, LOCAL_HOST_ID, MAX_OUTPUT_LINES, runsOnServer, useData, type FailurePolicy, type Host, type Rollout, type Runbook, type Step } from "../api";
 import { inputLabel } from "../components/StartRun";
+import { WebhooksCard } from "../components/Webhooks";
 import { duration, fromNow, runDuration, runNumber, timeAgo, when } from "../format";
 import { Button, Card, CardHeader, cx, ErrorNote, PageHeader, StatusPill, Tag } from "../components/ui";
 import { useRunNow } from "./Runbooks";
@@ -467,6 +468,7 @@ export function RunbookDetail({ id }: { id: string }) {
             </dl>
           </Card>
           <SchedulesCard rb={r} />
+          <WebhooksCard rb={r} />
           {history[0] && (
             <Card>
               <CardHeader title="Last run" />

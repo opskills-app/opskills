@@ -334,7 +334,7 @@
 
   <main id="top">
     <div class="wrap hero">
-      <a class="pill" href="#install"><span class="dot"></span>v0.8.0: scheduled runs, on repeat or once</a>
+      <a class="pill" href="#install"><span class="dot"></span>v0.9.0: webhooks start runs from CI and GitHub</a>
       <h1>Runbooks your whole team <span>can run.</span></h1>
       <p class="lede">OpSkills turns the procedures you repeat into safe, self-service runbooks. Write the steps once, then anyone on your team can run them and watch the output live. Every run is kept.</p>
       <div class="cta-row">
@@ -390,7 +390,7 @@
           <article class="card feature"><span class="bubble mint"><svg aria-hidden="true"><use href="#i-layers"/></svg></span><h3>Safe rollouts</h3><span class="avail now">Available now</span><p>Run hosts one by one, in parallel or in batches, canary first, and stop starting hosts when one fails.</p></article>
           <article class="card feature"><span class="bubble amber"><svg aria-hidden="true"><use href="#i-hand"/></svg></span><h3>Approval gates</h3><span class="avail soon">Coming soon</span><p>Pause a run until the right person signs off, then continue exactly where it stopped.</p></article>
           <article class="card feature"><span class="bubble pink"><svg aria-hidden="true"><use href="#i-key"/></svg></span><h3>Built-in vault</h3><span class="avail now">Available now</span><p>SSH keys, passwords and tokens encrypted at rest, never shown again, and masked in every log.</p></article>
-          <article class="card feature"><span class="bubble violet"><svg aria-hidden="true"><use href="#i-clock"/></svg></span><h3>Schedules</h3><span class="avail now">Available now</span><p>Run on a cron schedule in any time zone, or once at a set time. Webhooks from your pipelines are next.</p></article>
+          <article class="card feature"><span class="bubble violet"><svg aria-hidden="true"><use href="#i-clock"/></svg></span><h3>Schedules and webhooks</h3><span class="avail now">Available now</span><p>Run on a cron schedule in any time zone, once at a set time, or when your CI or GitHub calls a signed webhook.</p></article>
         </div>
       </div>
     </section>
@@ -460,7 +460,7 @@
 
         <div class="section-head" id="install" style="margin-top: 88px; scroll-margin-top: 90px">
           <div class="eyebrow">Install</div>
-          <h2>Run the v0.8.0 preview in minutes</h2>
+          <h2>Run the v0.9.0 preview in minutes</h2>
           <p>Pick Docker for any computer, or the Debian package for a Linux server. Both support amd64 and arm64.</p>
         </div>
 
@@ -486,7 +486,7 @@
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.8.0</pre></div>
+  opskills/opskills:0.9.0</pre></div>
               </div>
             </li>
             <li>
@@ -517,8 +517,8 @@
                 <h3>Download and verify</h3>
                 <p>For Debian 12+ or Ubuntu 22.04+. Run <code>dpkg --print-architecture</code> and use <code>arm64</code> instead of <code>amd64</code> if that's what it prints.</p>
                 <div class="code"><div class="bar"><span>Terminal</span><button class="copy" type="button" data-copy="b1">Copy</button></div>
-<pre id="b1">curl -LO https://github.com/opskills-app/opskills/releases/download/v0.8.0/opskills_0.8.0_amd64.deb
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.8.0/SHA256SUMS
+<pre id="b1">curl -LO https://github.com/opskills-app/opskills/releases/download/v0.9.0/opskills_0.9.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.9.0/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS</pre></div>
               </div>
             </li>
@@ -528,7 +528,7 @@ sha256sum --check --ignore-missing SHA256SUMS</pre></div>
                 <h3>Install and start the service</h3>
                 <p>Installs a sandboxed systemd service that runs as its own <code>opskills</code> user.</p>
                 <div class="code"><div class="bar"><span>Terminal</span><button class="copy" type="button" data-copy="b2">Copy</button></div>
-<pre id="b2">sudo apt install ./opskills_0.8.0_amd64.deb
+<pre id="b2">sudo apt install ./opskills_0.9.0_amd64.deb
 sudo systemctl start opskills</pre></div>
               </div>
             </li>
@@ -557,7 +557,7 @@ sudo systemctl start opskills</pre></div>
 
         <div class="final">
           <h2>Runbooks your whole team can run</h2>
-          <p>The v0.8.0 preview runs real runbooks with inputs, retries and live output, on the OpSkills server or rolled out safely across every host you enroll. Webhooks and approvals are next.</p>
+          <p>The v0.9.0 preview runs real runbooks with inputs, retries and live output, on the OpSkills server or rolled out safely across every host you enroll. Notifications and approvals are next.</p>
           <div class="cta-row">
             <a class="btn btn-white" href="#install">Install the preview</a>
             <a class="btn btn-ghost-white" href="https://github.com/opskills-app/opskills"><svg aria-hidden="true"><use href="#i-github"/></svg>View on GitHub</a>

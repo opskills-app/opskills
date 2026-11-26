@@ -238,6 +238,26 @@ export interface Run {
   retry_of?: string;
 }
 
+/** An inbound webhook: a secret URL that starts a run of one runbook. */
+export interface Webhook {
+  id: string;
+  runbook_id: string;
+  name: string;
+  enabled: boolean;
+  /** Runbook input name to a dotted path in the JSON body. */
+  inputs: Record<string, string>;
+  signed: boolean;
+  created_at: number;
+  deliveries: { at: number; status: number; run_id: string | null; error: string | null }[];
+}
+
+export interface WebhookInput {
+  name: string;
+  enabled: boolean;
+  inputs: Record<string, string>;
+  signed: boolean;
+}
+
 /** An API token for automation. Its value is shown only once, when it's created. */
 export interface ApiToken {
   id: string;
@@ -309,6 +329,12 @@ export const api = {
   deleteRunbook: (id: string) => request<void>("DELETE", `/runbooks/${encodeURIComponent(id)}`),
   startRun: (runbookId: string, inputs?: Record<string, string>) =>
     request<Run>("POST", `/runbooks/${encodeURIComponent(runbookId)}/runs`, inputs ? { inputs } : undefined),
+  webhooks: (runbookId: string) => request<Webhook[]>("GET", `/runbooks/${encodeURIComponent(runbookId)}/webhooks`),
+  createWebhook: (runbookId: string, w: WebhookInput) =>
+    request<{ webhook: Webhook; token: string; signing_secret: string | null }>("POST", `/runbooks/${encodeURIComponent(runbookId)}/webhooks`, w),
+  updateWebhook: (id: string, w: WebhookInput) => request<{ webhook: Webhook; signing_secret: string | null }>("PUT", `/webhooks/${encodeURIComponent(id)}`, w),
+  rotateWebhook: (id: string) => request<{ token: string }>("POST", `/webhooks/${encodeURIComponent(id)}/rotate`),
+  deleteWebhook: (id: string) => request<void>("DELETE", `/webhooks/${encodeURIComponent(id)}`),
   scheduleStatus: (runbookId: string) => request<ScheduleStatus[]>("GET", `/runbooks/${encodeURIComponent(runbookId)}/schedules`),
   previewSchedule: (cron: string, timezone: string) => request<{ next: number[] }>("POST", "/schedules/preview", { cron, timezone }),
   runs: (opts: { runbookId?: string; limit?: number } = {}) => {
