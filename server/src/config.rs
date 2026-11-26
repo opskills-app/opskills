@@ -15,6 +15,7 @@ pub struct Config {
     pub logs: Logs,
     pub auth: Auth,
     pub runs: Runs,
+    pub hosts: Hosts,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -54,6 +55,20 @@ pub struct Auth {
 pub struct Runs {
     /// How many runs may execute at the same time; others wait in the queue.
     pub max_concurrent: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Hosts {
+    /// Folder with the agent packages offered for download. Missing packages are
+    /// downloaded from the project's GitHub release instead.
+    pub packages_dir: PathBuf,
+}
+
+impl Default for Hosts {
+    fn default() -> Self {
+        Self { packages_dir: PathBuf::from("/usr/share/opskills/packages") }
+    }
 }
 
 impl Default for Auth {
@@ -128,6 +143,9 @@ fn apply_env(cfg: &mut Config, get: impl Fn(&str) -> Option<String>) -> Result<(
     }
     if let Some(v) = get("OPSKILLS_AUTH__SESSION_HOURS") {
         cfg.auth.session_hours = v.parse().context("OPSKILLS_AUTH__SESSION_HOURS must be a whole number")?;
+    }
+    if let Some(v) = get("OPSKILLS_HOSTS__PACKAGES_DIR") {
+        cfg.hosts.packages_dir = PathBuf::from(v);
     }
     if let Some(v) = get("OPSKILLS_RUNS__MAX_CONCURRENT") {
         cfg.runs.max_concurrent = v.parse().context("OPSKILLS_RUNS__MAX_CONCURRENT must be a whole number")?;

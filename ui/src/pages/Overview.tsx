@@ -139,7 +139,7 @@ export function Overview() {
             </>
           }
         >
-          Runbooks turn the procedures you repeat into steps anyone on your team can run. Each step is a shell command that runs on this OpSkills server, and you watch its output live.
+          Runbooks turn the procedures you repeat into steps anyone on your team can run. Each step is a shell command that runs on the OpSkills server or on your hosts, and you watch its output live.
         </EmptyState>
       </Card>
     );

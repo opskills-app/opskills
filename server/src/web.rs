@@ -16,6 +16,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
 use crate::executor::Executor;
+use crate::hub::Hub;
 use crate::store::Store;
 use crate::vault::Vault;
 use crate::{api, firststart};
@@ -32,6 +33,7 @@ pub struct AppState {
     pub started_unix: u64,
     pub store: Arc<Store>,
     pub executor: Arc<Executor>,
+    pub hub: Arc<Hub>,
     pub vault: Vault,
 }
 
@@ -56,7 +58,8 @@ pub fn build_state(cfg: Config, fs: &firststart::State) -> Result<Arc<AppState>>
     let _ = std::fs::remove_dir_all(&work_root);
     std::fs::create_dir_all(&work_root).context("creating the work directory")?;
     let vault = Vault::from_key_hex(&fs.master_key).context("loading the vault key")?;
-    let executor = Executor::new(store.clone(), work_root, cfg.runs.max_concurrent);
+    let hub = Hub::new();
+    let executor = Executor::new(store.clone(), hub.clone(), work_root, cfg.runs.max_concurrent);
     Ok(Arc::new(AppState {
         cfg,
         server_id: fs.server_id.clone(),
@@ -64,6 +67,7 @@ pub fn build_state(cfg: Config, fs: &firststart::State) -> Result<Arc<AppState>>
         started_unix: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         store,
         executor,
+        hub,
         vault,
     }))
 }
@@ -83,6 +87,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readyz))
+        .route("/downloads/{file}", get(download))
         .nest("/api/v1", api::router(state.clone()))
         .fallback(static_file)
         .with_state(state)
@@ -112,6 +117,32 @@ async fn readyz(State(st): State<Arc<AppState>>) -> Response {
     match tokio::fs::metadata(&st.cfg.data.dir).await {
         Ok(m) if m.is_dir() => (StatusCode::OK, "ready").into_response(),
         _ => (StatusCode::SERVICE_UNAVAILABLE, "data directory unavailable").into_response(),
+    }
+}
+
+/// Agent packages: served from the packages folder when present, else from the GitHub release.
+async fn download(State(st): State<Arc<AppState>>, axum::extract::Path(file): axum::extract::Path<String>) -> Response {
+    let Some(pkg) = api::packages(&st).into_iter().find(|p| p.file == file) else {
+        return (StatusCode::NOT_FOUND, "No such package for this OpSkills version.").into_response();
+    };
+    if !pkg.bundled {
+        return axum::response::Redirect::temporary(&api::release_url(&pkg.file)).into_response();
+    }
+    match tokio::fs::read(st.cfg.hosts.packages_dir.join(&pkg.file)).await {
+        Ok(bytes) => {
+            let mime = if pkg.format == "deb" { "application/vnd.debian.binary-package" } else { "application/x-rpm" };
+            let disposition = format!("attachment; filename=\"{}\"", pkg.file);
+            let mut res = (StatusCode::OK, bytes).into_response();
+            let h = res.headers_mut();
+            h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
+            if let Ok(v) = HeaderValue::from_str(&disposition) {
+                h.insert(header::CONTENT_DISPOSITION, v);
+            }
+            h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+            res
+        }
+        Err(_) => axum::response::Redirect::temporary(&api::release_url(&pkg.file)).into_response(),
     }
 }
 

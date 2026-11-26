@@ -85,6 +85,9 @@ export function RunsPage() {
                 <span className="min-w-0">
                   <span className="block truncate font-medium hover:text-accent">{r.runbook_name}</span>
                   <span className="font-mono text-xs text-muted">#{runNumber(r.id)}</span>
+                  {r.hosts?.length > 0 && !(r.hosts.length === 1 && r.hosts[0].id === "local") && (
+                    <span className="text-xs text-muted"> · {r.hosts.length === 1 ? r.hosts[0].name : `${r.hosts.length} hosts`}</span>
+                  )}
                 </span>
                 <span className="hidden min-w-0 items-center gap-2 lg:flex">
                   <Avatar name={r.started_by} size="size-7" />

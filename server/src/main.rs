@@ -1,10 +1,12 @@
 //! OpSkills server: serves the web app and the HTTP API from a single binary.
 
+mod agent;
 mod api;
 mod auth;
 mod config;
 mod executor;
 mod firststart;
+mod hub;
 mod model;
 mod store;
 mod vault;
@@ -43,6 +45,11 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // Installed as opskills-agent, the same binary is the agent for enrolled hosts.
+    let invoked_as = std::env::args_os().next().map(PathBuf::from);
+    if invoked_as.as_deref().and_then(|p| p.file_name()).is_some_and(|n| n == "opskills-agent") {
+        return agent::main();
+    }
     let cli = Cli::parse();
     let cfg = match config::load(cli.config.as_deref()) {
         Ok(cfg) => cfg,

@@ -43,6 +43,9 @@ pub struct Runbook {
     /// Names of vault secrets exposed to every step as environment variables.
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Where the steps run. Empty means the OpSkills server itself.
+    #[serde(default)]
+    pub targets: Targets,
     /// Maximum time for each step, in seconds.
     pub timeout_seconds: u64,
     pub created_at: u64,
@@ -62,7 +65,40 @@ pub struct RunbookInput {
     #[serde(default)]
     pub secrets: Vec<String>,
     #[serde(default)]
+    pub targets: Targets,
+    #[serde(default)]
     pub timeout_seconds: Option<u64>,
+}
+
+/// Hosts a runbook runs on: specific hosts by id, plus every host with one of the tags.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Targets {
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+impl Targets {
+    pub fn is_server(&self) -> bool {
+        self.hosts.is_empty() && self.tags.is_empty()
+    }
+}
+
+pub const LOCAL_HOST_ID: &str = "local";
+pub const LOCAL_HOST_NAME: &str = "OpSkills server";
+
+/// Normalize a tag, or explain why it's not valid.
+pub fn normalize_tag(tag: &str) -> Result<Option<String>, String> {
+    let t = tag.trim().to_lowercase();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    if t.len() > 40 || !t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) {
+        return Err(format!("Tag {t:?} must be up to 40 letters, digits, dashes, dots or underscores."));
+    }
+    Ok(Some(t))
 }
 
 pub const DEFAULT_STEP_TIMEOUT: u64 = 600;
@@ -80,16 +116,22 @@ impl RunbookInput {
         }
         let mut tags = Vec::new();
         for tag in &self.tags {
-            let t = tag.trim().to_lowercase();
-            if t.is_empty() {
-                continue;
-            }
-            if t.len() > 40 || !t.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) {
-                return Err(format!("Tag {t:?} must be up to 40 letters, digits, dashes, dots or underscores."));
-            }
-            if !tags.contains(&t) {
-                tags.push(t);
-            }
+            if let Some(t) = normalize_tag(tag)?
+                && !tags.contains(&t) {
+                    tags.push(t);
+                }
+        }
+        let mut target_tags = Vec::new();
+        for tag in &self.targets.tags {
+            if let Some(t) = normalize_tag(tag)?
+                && !target_tags.contains(&t) {
+                    target_tags.push(t);
+                }
+        }
+        self.targets.tags = target_tags;
+        self.targets.hosts.dedup();
+        if self.targets.hosts.len() > 200 || self.targets.tags.len() > 20 {
+            return Err("A runbook can target at most 200 hosts and 20 tags.".into());
         }
         if tags.len() > 20 {
             return Err("A runbook can have at most 20 tags.".into());
@@ -133,6 +175,10 @@ impl RunbookInput {
 pub struct StepResult {
     pub name: String,
     pub run: String,
+    #[serde(default = "local_id")]
+    pub host_id: String,
+    #[serde(default = "local_name")]
+    pub host_name: String,
     pub status: Status,
     pub exit_code: Option<i32>,
     pub started_at: Option<u64>,
@@ -153,13 +199,31 @@ pub struct Run {
     pub timeout_seconds: u64,
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Hosts in the order they run.
+    #[serde(default)]
+    pub hosts: Vec<RunHost>,
     pub steps: Vec<StepResult>,
     pub error: Option<String>,
     pub log_lines: u64,
 }
 
+fn local_id() -> String {
+    LOCAL_HOST_ID.into()
+}
+
+fn local_name() -> String {
+    LOCAL_HOST_NAME.into()
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunHost {
+    pub id: String,
+    pub name: String,
+}
+
 impl Run {
-    pub fn new(runbook: &Runbook, started_by: &str) -> Self {
+    /// A queued run of `runbook` on `hosts`, one after another; each host runs every step.
+    pub fn new(runbook: &Runbook, started_by: &str, hosts: Vec<RunHost>) -> Self {
         Run {
             id: uuid::Uuid::now_v7().to_string(),
             runbook_id: runbook.id.clone(),
@@ -172,15 +236,55 @@ impl Run {
             finished_at: None,
             timeout_seconds: runbook.timeout_seconds,
             secrets: runbook.secrets.clone(),
-            steps: runbook
-                .steps
+            steps: hosts
                 .iter()
-                .map(|s| StepResult { name: s.name.clone(), run: s.run.clone(), status: Status::Pending, exit_code: None, started_at: None, finished_at: None })
+                .flat_map(|h| {
+                    runbook.steps.iter().map(move |s| StepResult {
+                        name: s.name.clone(),
+                        run: s.run.clone(),
+                        host_id: h.id.clone(),
+                        host_name: h.name.clone(),
+                        status: Status::Pending,
+                        exit_code: None,
+                        started_at: None,
+                        finished_at: None,
+                    })
+                })
                 .collect(),
+            hosts,
             error: None,
             log_lines: 0,
         }
     }
+}
+
+/// A machine with the OpSkills agent, enrolled with this server.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Host {
+    pub id: String,
+    pub name: String,
+    pub hostname: String,
+    pub os: String,
+    pub arch: String,
+    pub agent_version: String,
+    pub tags: Vec<String>,
+    pub enrolled_at: u64,
+    pub last_seen: u64,
+}
+
+/// What the store keeps: the host plus the SHA-256 of its agent secret.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StoredHost {
+    #[serde(flatten)]
+    pub host: Host,
+    pub secret_hash: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EnrollmentToken {
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub created_by: String,
 }
 
 /// Metadata of a vault secret. The value is never part of this type.
@@ -261,6 +365,9 @@ pub struct LogLine {
     pub ts: u64,
     /// Index of the step this line belongs to.
     pub step: usize,
+    /// Name of the host the line came from.
+    #[serde(default)]
+    pub host: String,
     /// "stdout", "stderr" or "system".
     pub stream: String,
     pub line: String,
@@ -277,6 +384,7 @@ mod tests {
             tags: vec![" Web ".into(), "web".into(), "".into()],
             steps: steps.into_iter().map(|(n, r)| Step { name: n.into(), run: r.into() }).collect(),
             secrets: vec![],
+            targets: Targets::default(),
             timeout_seconds: None,
         }
     }

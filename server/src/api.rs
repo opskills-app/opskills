@@ -19,8 +19,9 @@ use tokio_stream::wrappers::BroadcastStream;
 
 use crate::auth;
 use crate::executor::Event;
+use crate::hub::{AgentInfo, JobEnd, OutLine, POLL_WAIT};
 use crate::model::{
-    DEFAULT_STEP_TIMEOUT, Run, Runbook, RunbookInput, Secret, SecretInput, SecretUpdate, StoredSecret, now_ms, validate_secret_description, validate_secret_kind,
+    DEFAULT_STEP_TIMEOUT, EnrollmentToken, Host, LOCAL_HOST_ID, LOCAL_HOST_NAME, Run, RunHost, Runbook, RunbookInput, Secret, StoredHost, normalize_tag, SecretInput, SecretUpdate, StoredSecret, now_ms, validate_secret_description, validate_secret_kind,
     validate_secret_name, validate_secret_value,
 };
 use crate::vault::Sealed;
@@ -43,6 +44,15 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/runs/{id}/cancel", post(cancel_run))
         .route("/secrets", get(list_secrets).post(create_secret))
         .route("/secrets/{name}", axum::routing::put(update_secret).delete(delete_secret))
+        .route("/hosts", get(list_hosts))
+        .route("/hosts/packages", get(host_packages))
+        .route("/hosts/enrollment-tokens", post(create_enrollment_token))
+        .route("/hosts/{id}", axum::routing::put(update_host).delete(delete_host))
+        .route("/agent/enroll", post(agent_enroll))
+        .route("/agent/poll", post(agent_poll))
+        .route("/agent/whoami", get(agent_whoami))
+        .route("/agent/jobs/{id}/output", post(agent_output))
+        .route("/agent/jobs/{id}/finish", post(agent_finish))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "No such API endpoint.") })
         .layer(middleware::from_fn_with_state(state, guard))
 }
@@ -86,6 +96,10 @@ pub struct CurrentUser(pub String);
 
 async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
+    if path.starts_with("/agent/") || path.starts_with("/api/v1/agent/") {
+        // Agents authenticate with their own credential in each handler; no cookies.
+        return next.run(req).await;
+    }
     let safe = matches!(*req.method(), Method::GET | Method::HEAD);
     if !safe && req.headers().get(auth::CSRF_HEADER).and_then(|v| v.to_str().ok()) != Some("1") {
         return ApiError::new(StatusCode::FORBIDDEN, "Missing the X-OpSkills-Request header.").into_response();
@@ -179,6 +193,11 @@ fn parse_input(st: &AppState, body: &str) -> ApiResult<RunbookInput> {
             return Err(ApiError::new(StatusCode::BAD_REQUEST, format!("The vault has no secret named {name}. Add it in the vault first.")));
         }
     }
+    for id in &input.targets.hosts {
+        if id != LOCAL_HOST_ID && st.store.stored_host(id)?.is_none() {
+            return Err(ApiError::new(StatusCode::BAD_REQUEST, format!("There is no host with id {id}. It may have been removed.")));
+        }
+    }
     Ok(input)
 }
 
@@ -192,6 +211,7 @@ async fn create_runbook(State(st): State<Arc<AppState>>, body: String) -> ApiRes
         tags: input.tags,
         steps: input.steps,
         secrets: input.secrets,
+        targets: input.targets,
         timeout_seconds: input.timeout_seconds.unwrap_or(DEFAULT_STEP_TIMEOUT),
         created_at: now,
         updated_at: now,
@@ -210,6 +230,7 @@ async fn update_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>,
         tags: input.tags,
         steps: input.steps,
         secrets: input.secrets,
+        targets: input.targets,
         timeout_seconds: input.timeout_seconds.unwrap_or(existing.timeout_seconds),
         updated_at: now_ms(),
         ..existing
@@ -235,8 +256,30 @@ async fn start_run(State(st): State<Arc<AppState>>, Extension(user): Extension<C
         let value = st.vault.open(name, &Sealed { nonce: stored.nonce, ciphertext: stored.ciphertext })?;
         env.push((name.clone(), String::from_utf8_lossy(&value).into_owned()));
     }
-    let run = st.executor.start(Run::new(&rb, &user.0), env)?;
+    let hosts = run_hosts(&st, &rb)?;
+    let run = st.executor.start(Run::new(&rb, &user.0, hosts), env)?;
     Ok((StatusCode::CREATED, Json(run)).into_response())
+}
+
+/// The hosts a run of `rb` goes to, in order: the server first if targeted, then hosts by name.
+fn run_hosts(st: &AppState, rb: &Runbook) -> ApiResult<Vec<RunHost>> {
+    let local = RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into() };
+    if rb.targets.is_server() {
+        return Ok(vec![local]);
+    }
+    let mut out = Vec::new();
+    if rb.targets.hosts.iter().any(|h| h == LOCAL_HOST_ID) {
+        out.push(local);
+    }
+    for h in st.store.hosts()? {
+        if rb.targets.hosts.contains(&h.id) || h.tags.iter().any(|t| rb.targets.tags.contains(t)) {
+            out.push(RunHost { id: h.id, name: h.name });
+        }
+    }
+    if out.is_empty() {
+        return Err(ApiError::new(StatusCode::CONFLICT, "No hosts match this runbook's targets. Enroll a host or edit the runbook."));
+    }
+    Ok(out)
 }
 
 #[derive(Deserialize)]
@@ -398,4 +441,282 @@ async fn delete_secret(State(st): State<Arc<AppState>>, Path(name): Path<String>
     } else {
         Err(ApiError::not_found("Secret"))
     }
+}
+
+// Hosts
+
+#[derive(serde::Serialize)]
+struct HostView {
+    #[serde(flatten)]
+    host: Host,
+    online: bool,
+    /// The OpSkills server itself: always there, can't be edited or removed.
+    builtin: bool,
+    used_by: Vec<serde_json::Value>,
+}
+
+fn targets_host(rb: &Runbook, host: &Host) -> bool {
+    if host.id == LOCAL_HOST_ID {
+        return rb.targets.is_server() || rb.targets.hosts.iter().any(|h| h == LOCAL_HOST_ID);
+    }
+    rb.targets.hosts.contains(&host.id) || host.tags.iter().any(|t| rb.targets.tags.contains(t))
+}
+
+fn local_host(st: &AppState) -> Host {
+    let info = crate::agent::machine_info();
+    let started = st.started_unix * 1000;
+    Host {
+        id: LOCAL_HOST_ID.into(),
+        name: LOCAL_HOST_NAME.into(),
+        hostname: info.hostname,
+        os: info.os,
+        arch: info.arch,
+        agent_version: crate::VERSION.into(),
+        tags: vec![],
+        enrolled_at: started,
+        last_seen: now_ms(),
+    }
+}
+
+fn host_views(st: &AppState) -> ApiResult<Vec<HostView>> {
+    let runbooks = st.store.runbooks()?;
+    let used = |h: &Host| runbooks.iter().filter(|r| targets_host(r, h)).map(|r| json!({ "id": r.id, "name": r.name })).collect();
+    let local = local_host(st);
+    let mut list = vec![HostView { used_by: used(&local), host: local, online: true, builtin: true }];
+    for mut h in st.store.hosts()? {
+        h.last_seen = h.last_seen.max(st.hub.last_seen(&h.id).unwrap_or(0));
+        list.push(HostView { online: st.hub.is_online(&h.id, h.last_seen), used_by: used(&h), host: h, builtin: false });
+    }
+    Ok(list)
+}
+
+async fn list_hosts(State(st): State<Arc<AppState>>) -> ApiResult<Json<Vec<HostView>>> {
+    Ok(Json(host_views(&st)?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostUpdate {
+    name: Option<String>,
+    tags: Option<Vec<String>>,
+}
+
+fn validate_host_name(name: &str) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
+        return Err("A host name needs 1 to 80 characters.".into());
+    }
+    if name.eq_ignore_ascii_case(LOCAL_HOST_NAME) {
+        return Err(format!("{LOCAL_HOST_NAME} is reserved for the server itself."));
+    }
+    Ok(name)
+}
+
+fn clean_tags(tags: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in tags {
+        if let Some(t) = normalize_tag(t)?
+            && !out.contains(&t) {
+                out.push(t);
+            }
+    }
+    if out.len() > 20 {
+        return Err("A host can have at most 20 tags.".into());
+    }
+    Ok(out)
+}
+
+async fn update_host(State(st): State<Arc<AppState>>, Path(id): Path<String>, body: String) -> ApiResult<Json<HostView>> {
+    if id == LOCAL_HOST_ID {
+        return Err(ApiError::new(StatusCode::CONFLICT, "The OpSkills server can't be renamed or tagged."));
+    }
+    let mut stored = st.store.stored_host(&id)?.ok_or_else(|| ApiError::not_found("Host"))?;
+    let update: HostUpdate = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid update: {e}")))?;
+    if let Some(name) = update.name {
+        let name = validate_host_name(&name).map_err(bad)?;
+        if st.store.hosts()?.iter().any(|h| h.id != id && h.name.eq_ignore_ascii_case(&name)) {
+            return Err(ApiError::new(StatusCode::CONFLICT, format!("Another host is already called {name}.")));
+        }
+        stored.host.name = name;
+    }
+    if let Some(tags) = update.tags {
+        stored.host.tags = clean_tags(&tags).map_err(bad)?;
+    }
+    st.store.put_host(&stored)?;
+    host_views(&st)?.into_iter().find(|v| v.host.id == id).map(Json).ok_or_else(|| ApiError::not_found("Host"))
+}
+
+async fn delete_host(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    if id == LOCAL_HOST_ID {
+        return Err(ApiError::new(StatusCode::CONFLICT, "The OpSkills server can't be removed."));
+    }
+    let users: Vec<String> = st.store.runbooks()?.into_iter().filter(|r| r.targets.hosts.contains(&id)).map(|r| r.name).collect();
+    if !users.is_empty() {
+        return Err(ApiError::new(StatusCode::CONFLICT, format!("This host is a target of: {}. Remove it from those runbooks first.", users.join(", "))));
+    }
+    if st.store.delete_host(&id)? {
+        st.hub.forget(&id);
+        tracing::info!(host_id = %id, "host removed");
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found("Host"))
+    }
+}
+
+const ENROLLMENT_HOURS: u64 = 24;
+
+async fn create_enrollment_token(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>) -> ApiResult<Response> {
+    st.store.purge_expired_enrollment_tokens()?;
+    let token = auth::new_token();
+    let now = now_ms();
+    let t = EnrollmentToken { created_at: now, expires_at: now + ENROLLMENT_HOURS * 3_600_000, created_by: user.0 };
+    st.store.put_enrollment_token(&auth::token_hash(&token), &t)?;
+    tracing::info!("enrollment token created");
+    Ok((StatusCode::CREATED, Json(json!({ "token": token, "expires_at": t.expires_at }))).into_response())
+}
+
+/// One agent package: where the server offers it and where it comes from.
+#[derive(serde::Serialize)]
+pub struct Package {
+    pub format: &'static str,
+    pub arch: &'static str,
+    pub file: String,
+    /// Served from this server's packages folder (else redirected to the GitHub release).
+    pub bundled: bool,
+}
+
+pub fn packages(st: &AppState) -> Vec<Package> {
+    let v = crate::VERSION;
+    let mut out = Vec::new();
+    for (arch, rpm_arch) in [("amd64", "x86_64"), ("arm64", "aarch64")] {
+        for (format, file) in [("deb", format!("opskills-agent_{v}_{arch}.deb")), ("rpm", format!("opskills-agent-{v}-1.{rpm_arch}.rpm"))] {
+            let bundled = st.cfg.hosts.packages_dir.join(&file).is_file();
+            out.push(Package { format, arch, file, bundled });
+        }
+    }
+    out
+}
+
+pub fn release_url(file: &str) -> String {
+    format!("https://github.com/opskills-app/opskills/releases/download/v{}/{file}", crate::VERSION)
+}
+
+async fn host_packages(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(json!({ "version": crate::VERSION, "packages": packages(&st) }))
+}
+
+// Agent endpoints. Each agent sends `Authorization: Bearer <host id>.<secret>`.
+
+fn agent_host(st: &AppState, headers: &axum::http::HeaderMap) -> ApiResult<StoredHost> {
+    let unauthorized = || ApiError::new(StatusCode::UNAUTHORIZED, "This host is not enrolled. Enroll it again with a new token.");
+    let value = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).ok_or_else(unauthorized)?;
+    let (id, secret) = value.strip_prefix("Bearer ").and_then(|c| c.split_once('.')).ok_or_else(unauthorized)?;
+    let host = st.store.stored_host(id)?.ok_or_else(unauthorized)?;
+    if !auth::constant_time_eq(auth::token_hash(secret).as_bytes(), host.secret_hash.as_bytes()) {
+        return Err(unauthorized());
+    }
+    Ok(host)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnrollInput {
+    token: String,
+    info: AgentInfo,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+static FAILED_ENROLLMENTS: AtomicU64 = AtomicU64::new(0);
+
+async fn agent_enroll(State(st): State<Arc<AppState>>, body: String) -> ApiResult<Response> {
+    let input: EnrollInput = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid enrollment: {e}")))?;
+    let info = input.info.clean();
+    let name = validate_host_name(input.name.as_deref().filter(|n| !n.trim().is_empty()).unwrap_or(&info.hostname)).map_err(bad)?;
+    let tags = clean_tags(&input.tags).map_err(bad)?;
+    if !st.store.take_enrollment_token(&auth::token_hash(input.token.trim()))? {
+        let fails = FAILED_ENROLLMENTS.fetch_add(1, Ordering::Relaxed).min(9) + 1;
+        tokio::time::sleep(Duration::from_millis(500 * fails)).await;
+        tracing::warn!(hostname = %info.hostname, "enrollment with an invalid token");
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "This enrollment token is not valid: it was already used or has expired. Create a new one on the Hosts page.",
+        ));
+    }
+    FAILED_ENROLLMENTS.store(0, Ordering::Relaxed);
+    // Keep names unique: web-1, web-1 (2), ...
+    let taken: Vec<String> = st.store.hosts()?.into_iter().map(|h| h.name.to_lowercase()).collect();
+    let mut unique = name.clone();
+    let mut n = 2;
+    while taken.contains(&unique.to_lowercase()) {
+        unique = format!("{name} ({n})");
+        n += 1;
+    }
+    let secret = auth::new_token();
+    let now = now_ms();
+    let host = Host {
+        id: uuid::Uuid::now_v7().to_string(),
+        name: unique,
+        hostname: info.hostname,
+        os: info.os,
+        arch: info.arch,
+        agent_version: info.version,
+        tags,
+        enrolled_at: now,
+        last_seen: now,
+    };
+    st.store.put_host(&StoredHost { host: host.clone(), secret_hash: auth::token_hash(&secret) })?;
+    st.hub.touch(&host.id);
+    tracing::info!(host_id = %host.id, name = %host.name, "host enrolled");
+    Ok((StatusCode::CREATED, Json(json!({ "host_id": host.id, "name": host.name, "secret": secret }))).into_response())
+}
+
+/// Lets an agent check its credential without taking a step.
+async fn agent_whoami(State(st): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> ApiResult<Json<serde_json::Value>> {
+    let host = agent_host(&st, &headers)?;
+    Ok(Json(json!({ "host_id": host.host.id, "name": host.host.name, "server_version": crate::VERSION })))
+}
+
+async fn agent_poll(State(st): State<Arc<AppState>>, headers: axum::http::HeaderMap, body: String) -> ApiResult<Response> {
+    let mut stored = agent_host(&st, &headers)?;
+    let info: AgentInfo = serde_json::from_str::<AgentInfo>(&body).map_err(|e| bad(format!("Invalid poll: {e}")))?.clean();
+    let h = &mut stored.host;
+    let changed = h.hostname != info.hostname || h.os != info.os || h.arch != info.arch || h.agent_version != info.version;
+    let now = now_ms();
+    if changed || now.saturating_sub(h.last_seen) > 30_000 {
+        h.hostname = info.hostname;
+        h.os = info.os;
+        h.arch = info.arch;
+        h.agent_version = info.version;
+        h.last_seen = now;
+        st.store.put_host(&stored)?;
+    }
+    match st.hub.next_job(&stored.host.id, POLL_WAIT).await {
+        Some(job) => Ok(Json(job).into_response()),
+        None => Ok(StatusCode::NO_CONTENT.into_response()),
+    }
+}
+
+#[derive(Deserialize)]
+struct OutputBatch {
+    lines: Vec<OutLine>,
+}
+
+async fn agent_output(State(st): State<Arc<AppState>>, headers: axum::http::HeaderMap, Path(id): Path<String>, body: String) -> ApiResult<Json<serde_json::Value>> {
+    let host = agent_host(&st, &headers)?;
+    let batch: OutputBatch = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid output: {e}")))?;
+    let lines = batch.lines.into_iter().take(5000).collect();
+    match st.hub.output(&host.host.id, &id, lines) {
+        Some(cancel) => Ok(Json(json!({ "cancel": cancel }))),
+        None => Err(ApiError::new(StatusCode::NOT_FOUND, "This step is no longer running on the server; stop it.")),
+    }
+}
+
+async fn agent_finish(State(st): State<Arc<AppState>>, headers: axum::http::HeaderMap, Path(id): Path<String>, body: String) -> ApiResult<StatusCode> {
+    let host = agent_host(&st, &headers)?;
+    let end: JobEnd = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid result: {e}")))?;
+    st.hub.finish(&host.host.id, &id, end);
+    Ok(StatusCode::NO_CONTENT)
 }

@@ -340,7 +340,7 @@ export function EmptyState({ icon: Icon, title, children, action }: { icon: type
 }
 
 /** Centered dialog with a dimmed backdrop. Closes on Escape or a backdrop click. */
-export function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode }) {
+export function Modal({ title, onClose, children, footer, wide }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -348,7 +348,7 @@ export function Modal({ title, onClose, children, footer }: { title: string; onC
   }, [onClose]);
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 px-4 py-[8vh] backdrop-blur-[2px]" onMouseDown={onClose}>
-      <div role="dialog" aria-modal="true" aria-label={title} className="w-full max-w-lg rounded-[24px] bg-surface p-6 shadow-2xl sm:p-8" onMouseDown={(e) => e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label={title} className={cx("w-full rounded-[24px] bg-surface p-6 shadow-2xl sm:p-8", wide ? "max-w-2xl" : "max-w-lg")} onMouseDown={(e) => e.stopPropagation()}>
         <h2 className="text-[20px] font-semibold tracking-tight">{title}</h2>
         <div className="mt-5">{children}</div>
         {footer && <div className="mt-6 flex flex-wrap justify-end gap-3">{footer}</div>}

@@ -95,11 +95,12 @@ Plugins are separate executables that speak JSON over stdin and stdout, so they 
 
 ## Storage
 
-v0.2.0 stores runbooks, runs, run output and sessions in one embedded database
-file, `opskills.redb`, using redb (a pure-Rust key-value store). Values are JSON
-documents; run IDs are UUID v7, so key order is creation order. Choosing a
-pure-Rust store keeps the release build free of C code, so static binaries for
-amd64 and arm64 cross-compile with Rust's bundled linker alone.
+v0.3.0 stores runbooks, runs, run output, sessions, hosts and enrollment tokens in
+one embedded database file, `opskills.redb`, using redb (a pure-Rust key-value
+store). Values are JSON documents; run IDs are UUID v7, so key order is creation
+order. The agent's HTTPS client (rustls) brings in some C and assembly through its
+crypto library, so release builds cross-compile with cargo-zigbuild, which uses
+Zig as the C compiler and linker for both musl targets.
 
 Vault secrets are stored in the same file, encrypted with AES-256-GCM under the
 server's `master.key`, a fresh random nonce per value and the secret name as
@@ -115,6 +116,43 @@ PostgreSQL, needed for clustering) can replace it without touching the API.
 - Per-host step results are stored as they finish. Log lines are stored with host, step and timestamp, and streamed to viewers over SSE.
 - Cancellation sends a signal to the running step on each host, then marks the run cancelled.
 - History cleanup runs daily, keeping at least `min_runs_to_keep` per runbook and deleting runs older than `retention_days`.
+
+## Hosts and the agent
+
+The agent is the server binary installed as `opskills-agent`; `main` switches on
+the program name. Agents only make outgoing requests, to `/api/v1/agent/*`, with
+`Authorization: Bearer <host id>.<secret>`. The server stores the SHA-256 of the
+secret and compares in constant time.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /agent/enroll` | Trade a one-time enrollment token (24 h) for a host id and secret |
+| `POST /agent/poll` | Report machine facts, then long-poll up to 25 s for the next step |
+| `POST /agent/jobs/{id}/output` | Send output lines (or an empty heartbeat); the reply says whether to cancel |
+| `POST /agent/jobs/{id}/finish` | Report how the step ended: exited with a code, timed out, cancelled, or not run |
+| `GET /agent/whoami` | Check the credential without taking work (used by `enroll` and `status`) |
+
+On the server, a hub keeps a queue of steps per host and a slot per step in
+flight. The executor walks a run's hosts in order; for a host other than the
+server it queues the step and follows it:
+
+- A step counts as started only when the agent checks in about it (the agent does
+  this as soon as it starts the step). A poll from an agent that just died can take
+  a step and lose it; such a step fails after 45 s as not picked up.
+- While a step runs, the agent posts output at least once a second. Silence for
+  30 s fails the step as lost contact.
+- Cancel sets a flag the agent sees in its next output reply. The agent stops the
+  step's process group (TERM, then KILL after 5 s) and reports it.
+- The server still masks secret values in all output it receives.
+
+The agent runs each step with the same code the server uses for local steps
+(`executor::run_command`): `/bin/sh -c`, a cleared environment, its own process
+group, timeouts. Work folders are `/var/lib/opskills-agent/work/<run id>`,
+removed after the run's last step on that host or after a failing step.
+
+Hosts are online while their agent is polling or was in touch in the last minute.
+Removing a host deletes its credential; the agent's next request gets 401 and the
+agent exits with code 78, which the systemd unit does not restart.
 
 ## Clustering (later)
 

@@ -10,6 +10,7 @@ export const templates: { key: string; label: string; input: RunbookInput }[] = 
       description: "A first runbook: prints a greeting, the host and the time.",
       tags: ["example"],
       secrets: [],
+      targets: { hosts: [], tags: [] },
       steps: [
         { name: "Say hello", run: 'echo "Hello from $(hostname)"' },
         { name: "Show the time", run: "date" },
@@ -25,6 +26,7 @@ export const templates: { key: string; label: string; input: RunbookInput }[] = 
       description: "Shows free space and free inodes on every mounted filesystem.",
       tags: ["maintenance"],
       secrets: [],
+      targets: { hosts: [], tags: [] },
       steps: [
         { name: "Disk usage", run: "df -h" },
         { name: "Inode usage", run: "df -i" },
@@ -37,9 +39,10 @@ export const templates: { key: string; label: string; input: RunbookInput }[] = 
     label: "System health",
     input: {
       name: "System health",
-      description: "Load average, memory and the busiest processes on the OpSkills server. Uses uptime, free and ps (the procps package on Debian and Ubuntu).",
+      description: "Load average, memory and the busiest processes. Uses uptime, free and ps (the procps package on Debian and Ubuntu).",
       tags: ["checks"],
       secrets: [],
+      targets: { hosts: [], tags: [] },
       steps: [
         { name: "Uptime and load", run: "uptime" },
         { name: "Memory", run: "free -m" },

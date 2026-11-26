@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{LogLine, Run, Runbook, Secret, Status, StoredSecret, now_ms};
+use crate::model::{EnrollmentToken, Host, LogLine, Run, Runbook, Secret, Status, StoredHost, StoredSecret, now_ms};
 
 const RUNBOOKS: TableDefinition<&str, &str> = TableDefinition::new("runbooks");
 const RUNS: TableDefinition<&str, &str> = TableDefinition::new("runs");
@@ -17,6 +17,10 @@ const RUNS: TableDefinition<&str, &str> = TableDefinition::new("runs");
 const LOGS: TableDefinition<&str, &str> = TableDefinition::new("logs");
 /// Key: secret name. Value: metadata plus the AES-256-GCM ciphertext, never plaintext.
 const SECRETS: TableDefinition<&str, &str> = TableDefinition::new("secrets");
+/// Key: host id. Value: host plus the hash of its agent secret.
+const HOSTS: TableDefinition<&str, &str> = TableDefinition::new("hosts");
+/// Key: SHA-256 of the enrollment token, hex.
+const ENROLLMENT: TableDefinition<&str, &str> = TableDefinition::new("enrollment_tokens");
 /// Key: SHA-256 of the session token, hex.
 const SESSIONS: TableDefinition<&str, &str> = TableDefinition::new("sessions");
 
@@ -46,6 +50,8 @@ impl Store {
             w.open_table(LOGS)?;
             w.open_table(SESSIONS)?;
             w.open_table(SECRETS)?;
+            w.open_table(HOSTS)?;
+            w.open_table(ENROLLMENT)?;
         }
         w.commit()?;
         Ok(Store { db })
@@ -97,7 +103,7 @@ impl Store {
 
     pub fn runbooks(&self) -> Result<Vec<Runbook>> {
         let mut list: Vec<Runbook> = self.values(RUNBOOKS)?.iter().filter_map(|s| serde_json::from_str(s).ok()).collect();
-        list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        list.sort_by_key(|a| a.name.to_lowercase());
         Ok(list)
     }
 
@@ -125,14 +131,13 @@ impl Store {
         let mut out = Vec::new();
         for item in t.iter()?.rev() {
             let (_, v) = item?;
-            if let Ok(run) = serde_json::from_str::<Run>(v.value()) {
-                if runbook_id.is_none_or(|id| run.runbook_id == id) {
+            if let Ok(run) = serde_json::from_str::<Run>(v.value())
+                && runbook_id.is_none_or(|id| run.runbook_id == id) {
                     out.push(run);
                     if out.len() >= limit {
                         break;
                     }
                 }
-            }
         }
         Ok(out)
     }
@@ -217,6 +222,61 @@ impl Store {
 
     pub fn delete_secret(&self, name: &str) -> Result<bool> {
         self.remove(SECRETS, name)
+    }
+
+    // Hosts
+
+    pub fn put_host(&self, h: &StoredHost) -> Result<()> {
+        self.put(HOSTS, &h.host.id, &serde_json::to_string(h)?)
+    }
+
+    pub fn stored_host(&self, id: &str) -> Result<Option<StoredHost>> {
+        Ok(match self.get(HOSTS, id)? {
+            Some(s) => Some(serde_json::from_str(&s)?),
+            None => None,
+        })
+    }
+
+    /// Every host, by name.
+    pub fn hosts(&self) -> Result<Vec<Host>> {
+        let mut list: Vec<Host> = self.values(HOSTS)?.iter().filter_map(|s| serde_json::from_str::<StoredHost>(s).ok()).map(|h| h.host).collect();
+        list.sort_by_key(|a| a.name.to_lowercase());
+        Ok(list)
+    }
+
+    pub fn delete_host(&self, id: &str) -> Result<bool> {
+        self.remove(HOSTS, id)
+    }
+
+    pub fn put_enrollment_token(&self, token_hash: &str, t: &EnrollmentToken) -> Result<()> {
+        self.put(ENROLLMENT, token_hash, &serde_json::to_string(t)?)
+    }
+
+    /// Use up an enrollment token: true if it existed and had not expired. Either way it's gone.
+    pub fn take_enrollment_token(&self, token_hash: &str) -> Result<bool> {
+        let w = self.db.begin_write()?;
+        let valid = {
+            let mut t = w.open_table(ENROLLMENT)?;
+            let removed = t.remove(token_hash)?.map(|v| v.value().to_string());
+            match removed {
+                Some(s) => serde_json::from_str::<EnrollmentToken>(&s).map(|e| e.expires_at > now_ms()).unwrap_or(false),
+                None => false,
+            }
+        };
+        w.commit()?;
+        Ok(valid)
+    }
+
+    /// Drop expired enrollment tokens.
+    pub fn purge_expired_enrollment_tokens(&self) -> Result<()> {
+        let now = now_ms();
+        let w = self.db.begin_write()?;
+        {
+            let mut t = w.open_table(ENROLLMENT)?;
+            t.retain(|_, v| serde_json::from_str::<EnrollmentToken>(v).map(|e| e.expires_at > now).unwrap_or(false))?;
+        }
+        w.commit()?;
+        Ok(())
     }
 
     // Sessions

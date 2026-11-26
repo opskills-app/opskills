@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownToLine, ArrowLeft, Ban, Check, CircleStop, Loader2, RotateCcw, Search, X } from "lucide-react";
+import { ArrowDownToLine, ArrowLeft, Ban, Check, CircleStop, Loader2, RotateCcw, Search, Server, X } from "lucide-react";
 import { api, isActive, type LogLine, type Run, type StepResult } from "../api";
 import { clock, duration, runDuration, runNumber, timeAgo } from "../format";
 import { Button, Card, CardHeader, cx, ErrorNote, StatusPill } from "../components/ui";
@@ -120,6 +120,11 @@ export function RunDetail({ id }: { id: string }) {
   }
 
   const done = run.steps.filter((s) => s.status === "succeeded").length;
+  const hostCount = Math.max(1, run.hosts?.length ?? 1);
+  const multi = hostCount > 1;
+  const perHost = Math.max(1, run.steps.length / hostCount);
+  const stepNo = (i: number) => (i % perHost) + 1;
+  const hostNames = (run.hosts ?? []).map((h) => h.name);
   const lastExit = [...run.steps].reverse().find((s) => s.exit_code !== null)?.exit_code;
 
   return (
@@ -136,6 +141,7 @@ export function RunDetail({ id }: { id: string }) {
           </div>
           <p className="mt-1 text-sm text-muted">
             {run.trigger === "manual" ? "Started" : `Triggered by ${run.trigger},`} by {run.started_by} {timeAgo(run.created_at, now)}
+            {hostNames.length > 0 && <> · on {hostNames.length > 3 ? `${hostNames.length} hosts` : hostNames.join(", ")}</>}
             {run.secrets?.length > 0 && <> · secrets: <span className="font-mono text-xs">{run.secrets.map((n) => "$" + n).join(", ")}</span> (masked in output)</>}
           </p>
         </div>
@@ -179,7 +185,7 @@ export function RunDetail({ id }: { id: string }) {
               <div className={cx("h-1 rounded-full", barTone[s.status])} />
               <div className="mt-2 flex items-center gap-1.5 text-xs">
                 <StepIcon s={s.status} />
-                <span className={cx("truncate font-medium", (s.status === "pending" || s.status === "skipped") && "text-muted")}>{s.name}</span>
+                <span className={cx("truncate font-medium", (s.status === "pending" || s.status === "skipped") && "text-muted")}>{multi ? `${s.host_name}: ${s.name}` : s.name}</span>
               </div>
             </li>
           ))}
@@ -192,8 +198,14 @@ export function RunDetail({ id }: { id: string }) {
           <ul className="space-y-1 px-3 pb-4 sm:px-5">
             {run.steps.map((s, i) => {
               const took = s.started_at ? (s.finished_at ?? now) - s.started_at : null;
+              const firstOfHost = i % perHost === 0;
               return (
                 <li key={i}>
+                  {firstOfHost && (multi || s.host_id !== "local") && (
+                    <div className={cx("flex items-center gap-2 px-3 pb-1 text-xs font-semibold text-muted", i > 0 && "mt-3")}>
+                      <Server className="size-3.5" /> {s.host_name}
+                    </div>
+                  )}
                   <button
                     onClick={() => setStepFilter((f) => (f === i ? null : i))}
                     className={cx("flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm", stepFilter === i ? "bg-accent-soft" : "hover:bg-surface-2")}
@@ -223,7 +235,7 @@ export function RunDetail({ id }: { id: string }) {
             </span>
             {stepFilter !== null && (
               <button onClick={() => setStepFilter(null)} className="rounded bg-white/15 px-2 py-0.5 font-mono text-[11px] text-white">
-                step {stepFilter + 1} ×
+                {multi && `${run.steps[stepFilter]?.host_name} `}step {stepNo(stepFilter)} ×
               </button>
             )}
             <div className="flex-1" />
@@ -241,9 +253,14 @@ export function RunDetail({ id }: { id: string }) {
           </div>
           <div ref={logRef} className="scroll-thin max-h-[640px] flex-1 overflow-y-auto py-2 font-mono text-[12.5px] leading-6">
             {shown.map((l) => (
-              <div key={l.seq} className="grid grid-cols-[64px_44px_minmax(0,1fr)] gap-3 px-4 hover:bg-white/[0.04]">
+              <div key={l.seq} className={cx("grid gap-3 px-4 hover:bg-white/[0.04]", multi ? "grid-cols-[64px_minmax(0,88px)_28px_minmax(0,1fr)]" : "grid-cols-[64px_44px_minmax(0,1fr)]")}>
                 <span className="text-white/30 tabular-nums">{clock(l.ts)}</span>
-                <span className="text-white/35">#{l.step + 1}</span>
+                {multi && (
+                  <span className="truncate text-sky-300/70" title={l.host}>
+                    {l.host}
+                  </span>
+                )}
+                <span className="text-white/35">#{stepNo(l.step)}</span>
                 <span className={cx("break-words whitespace-pre-wrap", l.stream === "stderr" && "text-amber-300", l.stream === "system" && "text-violet-300")}>{l.line || " "}</span>
               </div>
             ))}

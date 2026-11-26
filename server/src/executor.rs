@@ -1,4 +1,6 @@
-//! Runs runbooks: each step is a shell command on this machine, run in order.
+//! Runs runbooks: each step is a shell command, run in order on each of the run's
+//! hosts in turn. Steps for the OpSkills server run here; steps for enrolled hosts go
+//! to their agents through the hub.
 //!
 //! Output is broadcast live to subscribers and written to the store in batches.
 
@@ -13,14 +15,15 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Semaphore, broadcast, mpsc, watch};
 
-use crate::model::{LogLine, Run, Status, now_ms};
+use crate::hub::{AgentMsg, CONTACT_TIMEOUT, End, Hub, Job, JobEnd, PICKUP_TIMEOUT};
+use crate::model::{LOCAL_HOST_ID, LOCAL_HOST_NAME, LogLine, Run, RunHost, Status, now_ms};
 use crate::store::Store;
 
 const MAX_LINE_CHARS: usize = 4000;
 const MAX_LINES_PER_RUN: u64 = 20_000;
 const FLUSH_EVERY: Duration = Duration::from_millis(250);
 const KILL_GRACE: Duration = Duration::from_secs(5);
-const SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+pub const SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -41,14 +44,15 @@ pub type SecretEnv = Vec<(String, String)>;
 
 pub struct Executor {
     store: Arc<Store>,
+    hub: Arc<Hub>,
     work_root: PathBuf,
     limit: Arc<Semaphore>,
     live: Mutex<HashMap<String, Arc<Live>>>,
 }
 
 impl Executor {
-    pub fn new(store: Arc<Store>, work_root: PathBuf, max_concurrent: usize) -> Arc<Self> {
-        Arc::new(Executor { store, work_root, limit: Arc::new(Semaphore::new(max_concurrent.max(1))), live: Mutex::new(HashMap::new()) })
+    pub fn new(store: Arc<Store>, hub: Arc<Hub>, work_root: PathBuf, max_concurrent: usize) -> Arc<Self> {
+        Arc::new(Executor { store, hub, work_root, limit: Arc::new(Semaphore::new(max_concurrent.max(1))), live: Mutex::new(HashMap::new()) })
     }
 
     /// Subscribe to a live run. Returns the lines so far and a receiver for what follows,
@@ -117,59 +121,86 @@ impl Executor {
         self.publish(&live, &run);
         tracing::info!(run_id = %run.id, runbook = %run.runbook_name, "run started");
 
-        let workdir = self.work_root.join(&run.id);
-        if let Err(err) = std::fs::create_dir_all(&workdir) {
-            run.status = Status::Failed;
-            run.error = Some(format!("Could not create the working directory: {err}"));
-        }
-
         let timeout = Duration::from_secs(run.timeout_seconds.max(1));
+        let hosts = if run.hosts.is_empty() { vec![RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into() }] } else { run.hosts.clone() };
+        let per_host = run.steps.len() / hosts.len();
         let mut outcome = Status::Succeeded;
-        for i in 0..run.steps.len() {
-            if run.status == Status::Failed || outcome != Status::Succeeded {
-                run.steps[i].status = Status::Skipped;
-                continue;
-            }
-            run.steps[i].status = Status::Running;
-            run.steps[i].started_at = Some(now_ms());
-            run.log_lines = sink.count;
-            self.publish(&live, &run);
-            sink.system(i, &format!("Step {}: {}", i + 1, run.steps[i].name));
+        for (h, host) in hosts.iter().enumerate() {
+            let range = h * per_host..(h + 1) * per_host;
+            sink.host = host.name.clone();
+            let local = host.id == LOCAL_HOST_ID;
+            let workdir = self.work_root.join(&run.id);
+            if local && outcome == Status::Succeeded
+                && let Err(err) = std::fs::create_dir_all(&workdir) {
+                    sink.system(range.start, &format!("Could not create the working directory: {err}"));
+                    outcome = Status::Failed;
+                }
+            for i in range.clone() {
+                if outcome != Status::Succeeded {
+                    run.steps[i].status = Status::Skipped;
+                    continue;
+                }
+                let number = i - range.start + 1;
+                run.steps[i].status = Status::Running;
+                run.steps[i].started_at = Some(now_ms());
+                run.log_lines = sink.count;
+                self.publish(&live, &run);
+                if hosts.len() > 1 && number == 1 {
+                    sink.system(i, &format!("Host {} of {}: {}", h + 1, hosts.len(), host.name));
+                }
+                sink.system(i, &format!("Step {number}: {}", run.steps[i].name));
 
-            let command = run.steps[i].run.clone();
-            let result = run_step(&command, &workdir, &run.id, i, &secrets, timeout, &mut cancel_rx, &mut sink).await;
-            let step = &mut run.steps[i];
-            step.finished_at = Some(now_ms());
-            step.exit_code = result.exit_code;
-            step.status = match result.end {
-                StepEnd::Exited if result.exit_code == Some(0) => Status::Succeeded,
-                StepEnd::Exited => Status::Failed,
-                StepEnd::TimedOut => Status::Failed,
-                StepEnd::Cancelled => Status::Cancelled,
-                StepEnd::SpawnFailed => Status::Failed,
-            };
-            match result.end {
-                StepEnd::Exited if result.exit_code != Some(0) => {
-                    sink.system(i, &format!("Step failed with exit code {}.", result.exit_code.unwrap_or(-1)));
-                    outcome = Status::Failed;
+                let command = run.steps[i].run.clone();
+                let result = if local {
+                    let mut env = base_env(&workdir, &run.id, number);
+                    env.extend(secrets.iter().cloned());
+                    run_command(&command, &workdir, &env, timeout, &mut cancel_rx, |stream, line| sink.push(i, stream, &line)).await
+                } else {
+                    let job = Job {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        run_id: run.id.clone(),
+                        step: number,
+                        command,
+                        env: secrets.clone(),
+                        timeout_seconds: timeout.as_secs(),
+                        last: i + 1 == range.end,
+                    };
+                    self.run_remote(&host.id, job, timeout, &mut cancel_rx, &mut sink, i).await
+                };
+                let step = &mut run.steps[i];
+                step.finished_at = Some(now_ms());
+                step.exit_code = result.exit_code;
+                step.status = match result.end {
+                    End::Exited if result.exit_code == Some(0) => Status::Succeeded,
+                    End::Cancelled => Status::Cancelled,
+                    _ => Status::Failed,
+                };
+                match result.end {
+                    End::Exited if result.exit_code != Some(0) => {
+                        sink.system(i, &format!("Step failed with exit code {}.", result.exit_code.unwrap_or(-1)));
+                        outcome = Status::Failed;
+                    }
+                    End::TimedOut => {
+                        sink.system(i, &format!("Step timed out after {} seconds and was stopped.", timeout.as_secs()));
+                        outcome = Status::Failed;
+                    }
+                    End::Cancelled => {
+                        sink.system(i, "Run cancelled.");
+                        outcome = Status::Cancelled;
+                    }
+                    End::NotRun => {
+                        sink.system(i, result.error.as_deref().unwrap_or("The step could not start."));
+                        outcome = Status::Failed;
+                    }
+                    End::Exited => {}
                 }
-                StepEnd::TimedOut => {
-                    sink.system(i, &format!("Step timed out after {} seconds and was stopped.", timeout.as_secs()));
-                    outcome = Status::Failed;
-                }
-                StepEnd::Cancelled => {
-                    sink.system(i, "Run cancelled.");
-                    outcome = Status::Cancelled;
-                }
-                StepEnd::SpawnFailed => outcome = Status::Failed,
-                StepEnd::Exited => {}
+            }
+            if local {
+                let _ = std::fs::remove_dir_all(&workdir);
             }
         }
 
-        let _ = std::fs::remove_dir_all(&workdir);
-        if run.status != Status::Failed {
-            run.status = outcome;
-        }
+        run.status = outcome;
         run.finished_at = Some(now_ms());
         sink.flush();
         run.log_lines = sink.count;
@@ -179,7 +210,81 @@ impl Executor {
     }
 }
 
-async fn wait_cancel(rx: &mut watch::Receiver<bool>) {
+impl Executor {
+    /// Hand a step to the agent on `host_id` and follow it until it ends.
+    async fn run_remote(&self, host_id: &str, job: Job, timeout: Duration, cancel_rx: &mut watch::Receiver<bool>, sink: &mut Sink<'_>, step: usize) -> JobEnd {
+        let job_id = job.id.clone();
+        let (slot, mut rx) = self.hub.dispatch(host_id, job);
+        let queued = Instant::now();
+        // Picked: a poll took the step. Acked: the agent has since been in touch about it,
+        // so it really runs (a poll from an agent that just died can take a step and lose it).
+        let mut picked = false;
+        let mut acked: Option<Instant> = None;
+        let mut contact = Instant::now();
+        let mut cancelled_at: Option<Instant> = None;
+        let mut tick = tokio::time::interval(Duration::from_millis(500));
+        let end = loop {
+            tokio::select! {
+                // Messages first, so a cancel never overtakes the news that the step was picked up.
+                biased;
+                msg = rx.recv() => match msg {
+                    Some(AgentMsg::Picked) => picked = true,
+                    Some(AgentMsg::Output(lines)) => {
+                        contact = Instant::now();
+                        acked.get_or_insert(contact);
+                        for l in lines {
+                            let stream = if l.stream == "stderr" { "stderr" } else { "stdout" };
+                            sink.push(step, stream, &l.line);
+                        }
+                    }
+                    Some(AgentMsg::Finished(end)) => break end,
+                    Some(AgentMsg::Heartbeat) => {
+                        contact = Instant::now();
+                        acked.get_or_insert(contact);
+                    }
+                    None => break JobEnd::not_run("Lost contact with the agent on this host."),
+                },
+                _ = wait_cancel(cancel_rx), if cancelled_at.is_none() => {
+                    slot.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                    if !picked {
+                        break JobEnd { end: End::Cancelled, exit_code: None, error: None };
+                    }
+                    cancelled_at = Some(Instant::now());
+                }
+                _ = tick.tick() => {
+                    let now = Instant::now();
+                    match acked {
+                        None if now - queued > PICKUP_TIMEOUT => break JobEnd::not_run(
+                            "The host didn't pick up the step. Check that it is online and that the opskills-agent service is running on it.",
+                        ),
+                        Some(_) if now - contact > CONTACT_TIMEOUT => break JobEnd::not_run("Lost contact with the agent on this host."),
+                        Some(p) if now - p > timeout + Duration::from_secs(30) => break JobEnd { end: End::TimedOut, exit_code: None, error: None },
+                        _ => {}
+                    }
+                    if cancelled_at.is_some_and(|c| now - c > Duration::from_secs(20)) {
+                        break JobEnd { end: End::Cancelled, exit_code: None, error: None };
+                    }
+                }
+            }
+        };
+        slot.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.hub.release(&job_id);
+        end
+    }
+}
+
+/// Environment every step starts from, before secrets are added.
+pub fn base_env(workdir: &std::path::Path, run_id: &str, step: usize) -> Vec<(String, String)> {
+    vec![
+        ("PATH".into(), SAFE_PATH.into()),
+        ("HOME".into(), workdir.display().to_string()),
+        ("LANG".into(), "C.UTF-8".into()),
+        ("OPSKILLS_RUN_ID".into(), run_id.into()),
+        ("OPSKILLS_STEP".into(), step.to_string()),
+    ]
+}
+
+pub async fn wait_cancel(rx: &mut watch::Receiver<bool>) {
     loop {
         if *rx.borrow() {
             return;
@@ -197,6 +302,8 @@ struct Sink<'a> {
     store: &'a Store,
     pending: Vec<LogLine>,
     count: u64,
+    /// Name of the host the current step runs on.
+    host: String,
     last_flush: Instant,
     truncated: bool,
     /// Secret values to hide in output, longest first.
@@ -222,7 +329,7 @@ fn mask_list(secrets: &SecretEnv) -> Vec<String> {
 
 impl<'a> Sink<'a> {
     fn new(run_id: &'a str, live: &'a Live, store: &'a Store, secrets: &SecretEnv) -> Self {
-        Sink { run_id, live, store, pending: Vec::new(), count: 0, last_flush: Instant::now(), truncated: false, masks: mask_list(secrets) }
+        Sink { run_id, live, store, pending: Vec::new(), count: 0, host: LOCAL_HOST_NAME.into(), last_flush: Instant::now(), truncated: false, masks: mask_list(secrets) }
     }
 
     fn mask(&self, text: &str) -> String {
@@ -254,7 +361,7 @@ impl<'a> Sink<'a> {
 
     fn emit(&mut self, step: usize, stream: &str, text: &str) {
         self.count += 1;
-        let line = LogLine { seq: self.count, ts: now_ms(), step, stream: stream.into(), line: text.into() };
+        let line = LogLine { seq: self.count, ts: now_ms(), step, host: self.host.clone(), stream: stream.into(), line: text.into() };
         {
             // Hold the backlog lock while broadcasting so subscribers never miss or repeat a line.
             let mut lines = self.live.lines.lock().unwrap();
@@ -276,39 +383,22 @@ impl<'a> Sink<'a> {
     }
 }
 
-enum StepEnd {
-    Exited,
-    TimedOut,
-    Cancelled,
-    SpawnFailed,
-}
-
-struct StepResult {
-    end: StepEnd,
-    exit_code: Option<i32>,
-}
-
-async fn run_step(
+/// Run one shell command to the end, a timeout or a cancel. Each output line goes to
+/// `emit` as it is printed. Used for steps on the server and by the agent on hosts.
+pub async fn run_command(
     command: &str,
-    workdir: &PathBuf,
-    run_id: &str,
-    step: usize,
-    secrets: &SecretEnv,
+    workdir: &std::path::Path,
+    env: &[(String, String)],
     timeout: Duration,
     cancel_rx: &mut watch::Receiver<bool>,
-    sink: &mut Sink<'_>,
-) -> StepResult {
+    mut emit: impl FnMut(&'static str, String),
+) -> JobEnd {
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c")
         .arg(command)
         .current_dir(workdir)
         .env_clear()
-        .env("PATH", SAFE_PATH)
-        .env("HOME", workdir)
-        .env("LANG", "C.UTF-8")
-        .env("OPSKILLS_RUN_ID", run_id)
-        .env("OPSKILLS_STEP", (step + 1).to_string())
-        .envs(secrets.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -317,10 +407,7 @@ async fn run_step(
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(err) => {
-            sink.system(step, &format!("Could not start the step: {err}"));
-            return StepResult { end: StepEnd::SpawnFailed, exit_code: None };
-        }
+        Err(err) => return JobEnd::not_run(format!("Could not start the step: {err}")),
     };
     let pgid = child.id().map(|p| p as i32);
     let (tx, mut rx) = mpsc::channel::<(&'static str, String)>(1024);
@@ -333,7 +420,7 @@ async fn run_step(
     let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
     let mut kill_at: Option<tokio::time::Instant> = None;
-    let mut end = StepEnd::Exited;
+    let mut end = End::Exited;
     let status = loop {
         let kill_timer = async {
             match kill_at {
@@ -342,15 +429,15 @@ async fn run_step(
             }
         };
         tokio::select! {
-            Some((stream, line)) = rx.recv() => sink.push(step, stream, &line),
+            Some((stream, line)) = rx.recv() => emit(stream, line),
             status = child.wait() => break status.ok(),
             _ = &mut deadline, if kill_at.is_none() => {
-                end = StepEnd::TimedOut;
+                end = End::TimedOut;
                 signal_group(pgid, libc::SIGTERM);
                 kill_at = Some(tokio::time::Instant::now() + KILL_GRACE);
             }
             _ = wait_cancel(cancel_rx), if kill_at.is_none() => {
-                end = StepEnd::Cancelled;
+                end = End::Cancelled;
                 signal_group(pgid, libc::SIGTERM);
                 kill_at = Some(tokio::time::Instant::now() + KILL_GRACE);
             }
@@ -364,7 +451,7 @@ async fn run_step(
     signal_group(pgid, libc::SIGKILL);
     let drain = async {
         while let Some((stream, line)) = rx.recv().await {
-            sink.push(step, stream, &line);
+            emit(stream, line);
         }
     };
     let _ = tokio::time::timeout(Duration::from_secs(2), drain).await;
@@ -373,7 +460,7 @@ async fn run_step(
     }
 
     let exit_code = status.map(|s| s.code().unwrap_or_else(|| 128 + s.signal().unwrap_or(0)));
-    StepResult { end, exit_code }
+    JobEnd { end, exit_code, error: None }
 }
 
 fn signal_group(pgid: Option<i32>, signal: i32) {

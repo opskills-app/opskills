@@ -109,7 +109,7 @@ export function RunbooksPage() {
     <div className="space-y-8">
       <PageHeader
         title="Runbooks"
-        subtitle="Procedures your team can run with one click. Each step runs as a shell command on this server."
+        subtitle="Procedures your team can run with one click. Each step is a shell command, run on the OpSkills server or on your hosts."
         actions={
           <Button variant="primary" onClick={() => go("runbooks/new")}>
             <Plus className="size-4" />

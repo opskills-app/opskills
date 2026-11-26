@@ -1,0 +1,46 @@
+# Agent packages (.deb and .rpm), built with nfpm from the prebuilt static binary.
+# Variables: VERSION, ARCH (amd64 or arm64). build-agent-packages.sh stages the
+# binary and license next to this file as ./opskills-agent and ./LICENSE.
+name: opskills-agent
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: admin
+priority: optional
+maintainer: Thomas Kim <mrthomaskim@users.noreply.github.com>
+vendor: OpSkills
+homepage: https://opskills.app
+license: Apache-2.0
+description: |
+  OpSkills agent: runs runbook steps sent by your OpSkills server.
+  Enroll this host from the Hosts page in OpSkills. The agent connects out to the
+  server over HTTPS, so the host needs no open ports and no SSH keys.
+contents:
+  - src: ./opskills-agent
+    dst: /usr/bin/opskills-agent
+    file_info:
+      mode: 0755
+  - src: ./opskills-agent.service
+    dst: /usr/lib/systemd/system/opskills-agent.service
+    file_info:
+      mode: 0644
+  - src: ./LICENSE
+    dst: /usr/share/doc/opskills-agent/copyright
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: ./LICENSE
+    dst: /usr/share/licenses/opskills-agent/LICENSE
+    packager: rpm
+    file_info:
+      mode: 0644
+    type: license
+scripts:
+  postinstall: ./postinstall.sh
+  preremove: ./preremove.sh
+  postremove: ./postremove.sh
+deb:
+  compression: xz
+rpm:
+  group: System Environment/Daemons
+  compression: xz

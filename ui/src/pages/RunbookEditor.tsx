@@ -1,11 +1,111 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ArrowDown, ArrowLeft, ArrowUp, Check, KeyRound, Plus, Save, Trash2 } from "lucide-react";
-import { api, useData, type RunbookInput } from "../api";
-import { Button, Card, ErrorNote, PageHeader } from "../components/ui";
+import { ArrowDown, ArrowLeft, ArrowUp, Check, KeyRound, Plus, Save, Server, Tag as TagIcon, Trash2 } from "lucide-react";
+import { api, LOCAL_HOST_ID, runsOnServer, useData, type RunbookInput, type Targets } from "../api";
+import { Button, Card, cx, ErrorNote, PageHeader, StatusDot } from "../components/ui";
 import { templates } from "../templates";
 import { go } from "../router";
 
-const blank: RunbookInput = { name: "", description: "", tags: [], steps: [{ name: "", run: "" }], secrets: [], timeout_seconds: 600 };
+const blank: RunbookInput = { name: "", description: "", tags: [], steps: [{ name: "", run: "" }], secrets: [], targets: { hosts: [], tags: [] }, timeout_seconds: 600 };
+
+function toggle(list: string[], item: string) {
+  return list.includes(item) ? list.filter((x) => x !== item) : [...list, item];
+}
+
+/** Where the steps run: the OpSkills server, or chosen hosts and host tags. */
+function RunOn({ targets, onChange, onHosts, setOnHosts }: { targets: Targets; onChange: (t: Targets) => void; onHosts: boolean; setOnHosts: (v: boolean) => void }) {
+  const hosts = useData(() => api.hosts(), []);
+  const enrolled = (hosts.data ?? []).filter((h) => !h.builtin);
+  const hostTags = [...new Set(enrolled.flatMap((h) => h.tags))].sort();
+  const onServer = !onHosts;
+  const matched = enrolled.filter((h) => targets.hosts.includes(h.id) || h.tags.some((t) => targets.tags.includes(t)));
+  const count = matched.length + (targets.hosts.includes(LOCAL_HOST_ID) ? 1 : 0);
+  const chip = (on: boolean) => cx("flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs", on ? "bg-accent text-accent-ink" : "bg-surface-2 text-ink-2 hover:bg-surface-3");
+
+  return (
+    <Card className="p-6">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-medium">Run on</p>
+        <a href="#/hosts" className="text-xs font-medium text-accent hover:underline">
+          Manage hosts
+        </a>
+      </div>
+      <div role="radiogroup" aria-label="Run on" className="mt-3 grid grid-cols-2 gap-1 rounded-xl bg-surface-2 p-1">
+        {[
+          {
+            on: onServer,
+            label: "OpSkills server",
+            pick: () => {
+              setOnHosts(false);
+              onChange({ hosts: [], tags: [] });
+            },
+          },
+          {
+            on: !onServer,
+            label: "Hosts",
+            pick: () => {
+              if (onServer && enrolled.length === 1) onChange({ hosts: [enrolled[0].id], tags: [] });
+              setOnHosts(true);
+            },
+          },
+        ].map((o) => (
+          <button key={o.label} type="button" role="radio" aria-checked={o.on} onClick={o.pick} className={cx("h-9 rounded-lg text-xs font-medium", o.on ? "bg-surface text-accent shadow-sm" : "text-muted hover:text-ink")}>
+            {o.label}
+          </button>
+        ))}
+      </div>
+      {onServer ? (
+        <p className="mt-3 text-xs text-muted">Steps run on the OpSkills server itself, as the user the server runs as.</p>
+      ) : enrolled.length === 0 ? (
+        <p className="mt-3 text-xs text-muted">
+          No hosts yet.{" "}
+          <a href="#/hosts" className="font-medium text-accent hover:underline">
+            Add a host
+          </a>{" "}
+          first, then pick it here.
+        </p>
+      ) : (
+        <div className="mt-4 space-y-4">
+          <div>
+            <p className="text-xs font-medium text-muted">Hosts</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button type="button" aria-pressed={targets.hosts.includes(LOCAL_HOST_ID)} onClick={() => onChange({ ...targets, hosts: toggle(targets.hosts, LOCAL_HOST_ID) })} className={chip(targets.hosts.includes(LOCAL_HOST_ID))}>
+                <Server className="size-3.5" /> OpSkills server
+              </button>
+              {enrolled.map((h) => {
+                const on = targets.hosts.includes(h.id);
+                return (
+                  <button key={h.id} type="button" aria-pressed={on} onClick={() => onChange({ ...targets, hosts: toggle(targets.hosts, h.id) })} className={chip(on)}>
+                    {on ? <Check className="size-3.5" /> : <StatusDot status={h.online ? "online" : "offline"} />}
+                    {h.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {hostTags.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-muted">Or every host tagged</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {hostTags.map((t) => {
+                  const on = targets.tags.includes(t);
+                  return (
+                    <button key={t} type="button" aria-pressed={on} onClick={() => onChange({ ...targets, tags: toggle(targets.tags, t) })} className={chip(on)}>
+                      {on ? <Check className="size-3.5" /> : <TagIcon className="size-3.5" />}
+                      {t}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <p className={cx("text-xs", count ? "text-muted" : "text-amber-700 dark:text-amber-300")}>
+            {count ? `Runs on ${count} host${count === 1 ? "" : "s"} now, one after another. A failing step stops the run.` : "Pick at least one host or tag."}
+          </p>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 const field = "h-11 w-full rounded-xl bg-surface-2 px-4 text-sm outline-none focus:ring-2 focus:ring-accent";
 
@@ -17,13 +117,15 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const vault = useData(() => api.secrets(), []);
+  const [onHosts, setOnHosts] = useState(false);
 
   useEffect(() => {
     if (!id) return;
     api.runbook(id).then(
       (rb) => {
-        setInput({ name: rb.name, description: rb.description, tags: rb.tags, steps: rb.steps, secrets: rb.secrets ?? [], timeout_seconds: rb.timeout_seconds });
+        setInput({ name: rb.name, description: rb.description, tags: rb.tags, steps: rb.steps, secrets: rb.secrets ?? [], targets: rb.targets ?? { hosts: [], tags: [] }, timeout_seconds: rb.timeout_seconds });
         setTagsText(rb.tags.join(", "));
+        setOnHosts(!runsOnServer(rb.targets));
         setLoaded(true);
       },
       (e) => setError(e.message),
@@ -53,6 +155,11 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
 
   async function save(e: FormEvent) {
     e.preventDefault();
+    if (onHosts && runsOnServer(input.targets)) {
+      setError("Pick at least one host or tag to run on, or choose the OpSkills server.");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
     setBusy(true);
     setError(null);
     const body: RunbookInput = {
@@ -82,7 +189,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
       </a>
       <PageHeader
         title={editing ? "Edit runbook" : "New runbook"}
-        subtitle="Each step is a shell command. Steps run in order on this OpSkills server, and the first failing step stops the run."
+        subtitle="Each step is a shell command. Steps run in order on the hosts you choose, and the first failing step stops the run."
         actions={
           <>
             <Button type="button" onClick={() => go(editing ? `runbooks/${id}` : "runbooks")}>
@@ -206,6 +313,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
               <p className="mt-1.5 text-xs text-muted">A step still running after this is stopped and the run fails.</p>
             </div>
           </Card>
+          <RunOn targets={input.targets} onChange={(targets) => setInput((s) => ({ ...s, targets }))} onHosts={onHosts} setOnHosts={setOnHosts} />
           <Card className="p-6">
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm font-medium">Secrets</p>
@@ -242,9 +350,10 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
             <p className="font-medium text-ink">How steps run</p>
             <ul className="mt-2 list-disc space-y-1 pl-5">
               <li>
-                With <code className="font-mono text-xs">/bin/sh</code> on the OpSkills server, as the user the server runs as.
+                With <code className="font-mono text-xs">/bin/sh</code>: on the OpSkills server as the user it runs as, or on a host as root through the OpSkills agent.
               </li>
-              <li>In a fresh temporary folder for each run.</li>
+              <li>In a fresh temporary folder for each run, on each host.</li>
+              <li>On several hosts, one host after another: all steps on the first host, then the next.</li>
               <li>
                 <code className="font-mono text-xs">$OPSKILLS_RUN_ID</code> and <code className="font-mono text-xs">$OPSKILLS_STEP</code> are set for each step.
               </li>

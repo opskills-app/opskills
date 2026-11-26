@@ -1,6 +1,6 @@
 [package]
 name = "opskills"
-version = "0.2.0"
+version = "0.3.0"
 description = "Runbooks your whole team can run: self-hosted job and runbook automation"
 license = "Apache-2.0"
 repository = "https://github.com/opskills-app/opskills"
@@ -28,6 +28,7 @@ toml = "1.2.3"
 tower-http = { version = "0.7.1", features = ["trace", "compression-gzip", "set-header"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+ureq = { version = "3.5.2", default-features = false, features = ["rustls", "json"] }
 uuid = { version = "1.29.3", features = ["v7"] }
 
 [profile.release]

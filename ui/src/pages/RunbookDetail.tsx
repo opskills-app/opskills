@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowLeft, Copy, Pencil, Play, Terminal, Trash2 } from "lucide-react";
-import { api, useData, type Runbook } from "../api";
+import { api, LOCAL_HOST_ID, runsOnServer, useData, type Host, type Runbook } from "../api";
 import { duration, runDuration, runNumber, timeAgo } from "../format";
 import { Button, Card, CardHeader, cx, ErrorNote, PageHeader, StatusPill, Tag } from "../components/ui";
 import { useRunNow } from "./Runbooks";
@@ -12,6 +12,11 @@ function toYaml(rb: Runbook) {
   if (rb.description) lines.push(`description: ${q(rb.description)}`);
   if (rb.tags.length) lines.push(`tags: [${rb.tags.join(", ")}]`);
   if (rb.secrets?.length) lines.push(`secrets: [${rb.secrets.join(", ")}]`);
+  if (!runsOnServer(rb.targets)) {
+    lines.push("run_on:");
+    if (rb.targets.hosts.length) lines.push(`  hosts: [${rb.targets.hosts.join(", ")}]`);
+    if (rb.targets.tags.length) lines.push(`  tags: [${rb.targets.tags.join(", ")}]`);
+  }
   lines.push(`timeout_seconds: ${rb.timeout_seconds}`, "steps:");
   for (const s of rb.steps) {
     lines.push(`  - name: ${q(s.name)}`);
@@ -25,8 +30,26 @@ function toYaml(rb: Runbook) {
   return lines.join("\n");
 }
 
+/** Where a runbook runs, in words, with links to its hosts. */
+function RunOnSummary({ rb, hosts }: { rb: Runbook; hosts: Host[] }) {
+  if (runsOnServer(rb.targets)) return <span>OpSkills server</span>;
+  const byId = new Map(hosts.map((h) => [h.id, h]));
+  const named = rb.targets.hosts.map((id) => (id === LOCAL_HOST_ID ? "OpSkills server" : (byId.get(id)?.name ?? "a removed host")));
+  const tagged = rb.targets.tags.map((t) => `tag ${t}`);
+  const count = hosts.filter((h) => (h.builtin ? rb.targets.hosts.includes(LOCAL_HOST_ID) : rb.targets.hosts.includes(h.id) || h.tags.some((t) => rb.targets.tags.includes(t)))).length;
+  return (
+    <span className="text-right">
+      {[...named, ...tagged].join(", ")}
+      <a href="#/hosts" className="block text-xs text-muted hover:text-accent">
+        {count} host{count === 1 ? "" : "s"} now
+      </a>
+    </span>
+  );
+}
+
 export function RunbookDetail({ id }: { id: string }) {
   const rb = useData(() => api.runbook(id), [id]);
+  const hosts = useData(() => api.hosts(), []);
   const runs = useData(() => api.runs({ runbookId: id, limit: 100 }), [id], 5000);
   const [tab, setTab] = useState<"steps" | "runs" | "yaml">("steps");
   const [copied, setCopied] = useState(false);
@@ -162,6 +185,12 @@ export function RunbookDetail({ id }: { id: string }) {
             <CardHeader title="Details" />
             <dl className="space-y-3 px-6 pb-6 text-sm sm:px-8">
               <div className="flex justify-between gap-4">
+                <dt className="text-muted">Runs on</dt>
+                <dd className="min-w-0">
+                  <RunOnSummary rb={r} hosts={hosts.data ?? []} />
+                </dd>
+              </div>
+              <div className="flex justify-between gap-4">
                 <dt className="text-muted">Steps</dt>
                 <dd>{r.steps.length}</dd>
               </div>
@@ -213,7 +242,9 @@ export function RunbookDetail({ id }: { id: string }) {
             </Card>
           )}
           <Card className="p-6 text-sm text-muted sm:px-8">
-            Steps run one after another on this OpSkills server, as the user the server runs as. The first failing step stops the run.
+            {runsOnServer(r.targets)
+              ? "Steps run one after another on the OpSkills server, as the user the server runs as. The first failing step stops the run."
+              : "Steps run one after another on each host in turn, as root through the OpSkills agent. The first failing step stops the run."}
           </Card>
         </aside>
       </div>

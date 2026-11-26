@@ -1,0 +1,24 @@
+[Unit]
+Description=OpSkills agent: runs runbook steps from your OpSkills server
+Documentation=https://github.com/opskills-app/opskills/blob/main/docs/hosts.md
+After=network-online.target
+Wants=network-online.target
+# Starts once the host is enrolled (opskills-agent enroll writes this file).
+ConditionPathExists=/etc/opskills-agent/agent.toml
+
+[Service]
+Type=simple
+# Runs as root so runbooks can administer this host. Steps run with a minimal
+# environment in their own process group, in /var/lib/opskills-agent/work.
+ExecStart=/usr/bin/opskills-agent run
+Restart=on-failure
+RestartSec=5s
+# 78: the server no longer accepts this host (it was removed). Don't retry.
+RestartPreventExitStatus=78
+StateDirectory=opskills-agent
+StateDirectoryMode=0700
+UMask=0077
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

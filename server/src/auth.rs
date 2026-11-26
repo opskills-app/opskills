@@ -29,7 +29,7 @@ pub fn verify_admin_password(hash_file: &Path, password: &str) -> bool {
     constant_time_eq(&out, &expected)
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 

@@ -9,6 +9,18 @@ export interface Step {
   run: string;
 }
 
+/** Where a runbook runs. Both empty: on the OpSkills server. */
+export interface Targets {
+  hosts: string[];
+  tags: string[];
+}
+
+export const LOCAL_HOST_ID = "local";
+
+export function runsOnServer(t: Targets | undefined) {
+  return !t || (t.hosts.length === 0 && t.tags.length === 0);
+}
+
 export interface Runbook {
   id: string;
   name: string;
@@ -16,6 +28,7 @@ export interface Runbook {
   tags: string[];
   steps: Step[];
   secrets: string[];
+  targets: Targets;
   timeout_seconds: number;
   created_at: number;
   updated_at: number;
@@ -27,7 +40,30 @@ export interface RunbookInput {
   tags: string[];
   steps: Step[];
   secrets: string[];
+  targets: Targets;
   timeout_seconds?: number;
+}
+
+export interface Host {
+  id: string;
+  name: string;
+  hostname: string;
+  os: string;
+  arch: string;
+  agent_version: string;
+  tags: string[];
+  enrolled_at: number;
+  last_seen: number;
+  online: boolean;
+  builtin: boolean;
+  used_by: { id: string; name: string }[];
+}
+
+export interface AgentPackage {
+  format: "deb" | "rpm";
+  arch: "amd64" | "arm64";
+  file: string;
+  bundled: boolean;
 }
 
 export type SecretKind = "password" | "token" | "ssh_key" | "certificate" | "other";
@@ -44,6 +80,8 @@ export interface Secret {
 export interface StepResult {
   name: string;
   run: string;
+  host_id: string;
+  host_name: string;
   status: RunStatus;
   exit_code: number | null;
   started_at: number | null;
@@ -62,6 +100,7 @@ export interface Run {
   finished_at: number | null;
   timeout_seconds: number;
   secrets: string[];
+  hosts: { id: string; name: string }[];
   steps: StepResult[];
   error: string | null;
   log_lines: number;
@@ -71,6 +110,7 @@ export interface LogLine {
   seq: number;
   ts: number;
   step: number;
+  host: string;
   stream: "stdout" | "stderr" | "system";
   line: string;
 }
@@ -136,6 +176,12 @@ export const api = {
   updateSecret: (name: string, s: { kind?: SecretKind; description?: string; value?: string }) =>
     request<Secret>("PUT", `/secrets/${encodeURIComponent(name)}`, s),
   deleteSecret: (name: string) => request<void>("DELETE", `/secrets/${encodeURIComponent(name)}`),
+  system: () => request<{ version: string; public_url: string | null }>("GET", "/system"),
+  hosts: () => request<Host[]>("GET", "/hosts"),
+  updateHost: (id: string, h: { name?: string; tags?: string[] }) => request<Host>("PUT", `/hosts/${encodeURIComponent(id)}`, h),
+  deleteHost: (id: string) => request<void>("DELETE", `/hosts/${encodeURIComponent(id)}`),
+  createEnrollmentToken: () => request<{ token: string; expires_at: number }>("POST", "/hosts/enrollment-tokens"),
+  agentPackages: () => request<{ version: string; packages: AgentPackage[] }>("GET", "/hosts/packages"),
 };
 
 /** Load data, optionally refreshing on an interval. Keeps showing the last data while refreshing. */
