@@ -3,6 +3,7 @@ name: Docker image
 # Pull requests: build both architectures and run the tests (inside the Dockerfile), push nothing.
 # Merges to main: publish opskills/opskills:edge and :sha-<commit>.
 # Version tags (v1.2.3): publish :1.2.3, :1.2 and :latest.
+# Packages, the GitHub release and the website are published by release.yml.
 
 on:
   pull_request:

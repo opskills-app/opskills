@@ -255,11 +255,12 @@ Errors are JSON with `title`, `status` and a readable `detail`.
 | [`server/`](server/) | The `opskills` server and agent in Rust, with [packaging](server/packaging/): the server `.deb` and the agent `.deb` and `.rpm` |
 | [`ui/`](ui/) | The web app: React, TypeScript, Vite and Tailwind CSS, built into the server |
 | [`web/`](web/) | The opskills.app website, deployed to Cloudflare Workers |
-| [`docs/`](docs/) | User documentation: [install and run](docs/install.md), [hosts and the agent](docs/hosts.md) |
+| [`docs/`](docs/) | User documentation: [install and run](docs/install.md), [hosts and the agent](docs/hosts.md), [writing runbooks](docs/runbooks.md); [release notes](docs/releases/) |
 | [`deploy/`](deploy/) | Deploying agents to many hosts: SSH script, Ansible playbook, cloud-init |
 | [`notes/`](notes/) | Design documents: [packaging and configuration](notes/01-packaging-and-config.md), [architecture](notes/02-architecture.md) |
 | [`compose.yaml`](compose.yaml) | Run the published image with Docker Compose |
 | [`Dockerfile`](Dockerfile) | Builds the container image and all packages from source |
+| [`RELEASING.md`](RELEASING.md) | How releases and the website are built and published by GitHub Actions |
 
 ## Development
 

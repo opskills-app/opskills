@@ -1,0 +1,163 @@
+name: Release
+
+# Version tags (v1.2.3): build the server and agent packages, check them, attest their
+# build provenance, publish the GitHub release with SHA256SUMS, then deploy the website.
+# The Docker image for the tag is published by docker.yml.
+# Pull requests that change packaging: build and check the packages, publish nothing.
+#
+# Release notes come from docs/releases/<tag>.md; the downloads table and checksums are
+# added here. See RELEASING.md.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - server/Cargo.toml
+      - server/Cargo.lock
+      - server/packaging/**
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  packages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the provenance attestations
+      attestations: write
+    env:
+      PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' server/Cargo.toml | head -1)
+          ui=$(jq -r .version ui/package.json)
+          if [ "$version" != "$ui" ]; then
+            echo "::error::server/Cargo.toml has $version but ui/package.json has $ui."
+            exit 1
+          fi
+          if [ "$PUBLISH" = "true" ]; then
+            if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME doesn't match version $version in server/Cargo.toml."
+              exit 1
+            fi
+            if [ ! -s "docs/releases/v$version.md" ]; then
+              echo "::error::docs/releases/v$version.md is missing. Add the release notes in the version bump PR."
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the packages
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: packages
+          push: false
+          outputs: type=local,dest=dist
+          cache-from: type=gha,scope=packages
+          cache-to: type=gha,mode=max,scope=packages
+
+      - name: Check the packages
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd dist
+          expected=(
+            "opskills_${VERSION}_amd64.deb" "opskills_${VERSION}_arm64.deb"
+            "opskills-agent_${VERSION}_amd64.deb" "opskills-agent_${VERSION}_arm64.deb"
+            "opskills-agent-${VERSION}-1.x86_64.rpm" "opskills-agent-${VERSION}-1.aarch64.rpm"
+          )
+          for f in "${expected[@]}"; do
+            [ -s "$f" ] || { echo "::error::$f was not built."; exit 1; }
+          done
+          for f in *; do
+            [[ " ${expected[*]} " == *" $f "* ]] || { echo "::error::Unexpected file: $f"; exit 1; }
+          done
+          # Each .deb must declare its version and architecture, and carry a binary built for it.
+          for f in *.deb; do
+            arch=$(dpkg-deb -f "$f" Architecture)
+            [ "$(dpkg-deb -f "$f" Version)" = "$VERSION" ] || { echo "::error::$f has the wrong version."; exit 1; }
+            dir=$(mktemp -d) && dpkg-deb -x "$f" "$dir"
+            bin=$(find "$dir/usr/bin" -type f -name 'opskills*' | head -1)
+            want=$([ "$arch" = amd64 ] && echo x86-64 || echo aarch64)
+            file -b "$bin" | grep -q "$want" || { echo "::error::$f carries a binary that isn't $want."; exit 1; }
+            echo "$f: $VERSION $arch, $(file -b "$bin" | cut -d, -f1-2)"
+          done
+          sha256sum "${expected[@]}" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest build provenance
+        if: env.PUBLISH == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.rpm
+
+      - name: Keep the packages (pull requests and manual runs)
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-${{ steps.version.outputs.version }}
+          path: dist/
+          retention-days: 7
+
+      - name: Publish the release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          {
+            cat "docs/releases/$tag.md"
+            echo
+            echo "## Downloads"
+            echo "| File | For |"
+            echo "|---|---|"
+            echo "| \`opskills_${VERSION}_amd64.deb\`, \`opskills_${VERSION}_arm64.deb\` | The OpSkills server on Debian and Ubuntu |"
+            echo "| \`opskills-agent_${VERSION}_amd64.deb\`, \`opskills-agent_${VERSION}_arm64.deb\` | The agent on Debian and Ubuntu hosts |"
+            echo "| \`opskills-agent-${VERSION}-1.x86_64.rpm\`, \`opskills-agent-${VERSION}-1.aarch64.rpm\` | The agent on RHEL, Rocky, Alma, Fedora and Amazon Linux hosts |"
+            echo
+            echo "Each package has a signed build provenance attestation: \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
+            echo
+            echo "## Checksums (SHA-256)"
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } > notes.md
+          if gh release view "$tag" > /dev/null 2>&1; then
+            # A re-run: replace the assets and notes of the existing release.
+            gh release upload "$tag" dist/* --clobber
+            gh release edit "$tag" --notes-file notes.md
+          else
+            # Created as a draft so the release never appears without its files.
+            gh release create "$tag" dist/* --verify-tag --draft --title "OpSkills $tag (preview)" --notes-file notes.md
+            gh release edit "$tag" --draft=false --latest
+          fi
+          echo "### Released [$tag](https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag)" >> "$GITHUB_STEP_SUMMARY"
+
+  website:
+    needs: packages
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/site.yml
+    secrets: inherit
