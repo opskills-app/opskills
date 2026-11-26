@@ -73,6 +73,9 @@ jobs:
           target: packages
           push: false
           outputs: type=local,dest=dist
+          # Provenance comes from the attestation step below; keep dist/ to the packages.
+          provenance: false
+          sbom: false
           cache-from: type=gha,scope=packages
           cache-to: type=gha,mode=max,scope=packages
 
