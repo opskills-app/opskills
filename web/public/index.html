@@ -154,21 +154,6 @@
     .frame img.theme-dark { display: none; }
     :root[data-theme="dark"] .frame img.theme-dark { display: block; }
     :root[data-theme="dark"] .frame img.theme-light { display: none; }
-    .float {
-      position: absolute; z-index: 2; display: none; align-items: center; gap: 12px;
-      padding: 14px 18px; border-radius: 18px; background: var(--surface); box-shadow: 0 18px 50px -18px rgb(40 20 120 / 0.4);
-      font-size: 13px;
-    }
-    .float b { display: block; font-size: 14px; }
-    .float small { color: var(--muted); }
-    @media (min-width: 1000px) { .float { display: flex; } }
-    .float.right { right: -40px; top: -30px; }
-    .badge {
-      display: inline-flex; align-items: center; justify-content: center; padding: 3px 10px; border-radius: 5px;
-      font-size: 12px; font-weight: 500; border: 1px solid;
-    }
-    .badge.green { color: var(--mint-ink); border-color: var(--mint-ink); background: color-mix(in oklab, var(--mint-ink) 12%, transparent); }
-    .badge.amber { color: var(--amber-ink); border-color: var(--amber-ink); background: color-mix(in oklab, var(--amber-ink) 12%, transparent); }
 
     /* Sections */
     section { padding: 88px 0 0; }
@@ -346,11 +331,6 @@
       </div>
 
       <div class="shot">
-        <div class="float right">
-          <span class="bubble mint" style="width:44px;height:44px"><svg style="width:20px;height:20px" aria-hidden="true"><use href="#i-check-circle"/></svg></span>
-          <span><b>Check disk space</b><small>2 steps in 1s, exit code 0</small></span>
-          <span class="badge green">Succeeded</span>
-        </div>
         <div class="frame">
           <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
           <img class="theme-light" src="app-light.jpg" width="2880" height="1764" alt="The OpSkills overview: runs this week, success rate, runbooks, a daily run chart, results and recent runs">
