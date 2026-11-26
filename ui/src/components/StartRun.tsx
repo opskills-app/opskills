@@ -79,7 +79,19 @@ function InputField({ def, value, onChange }: { def: InputDef; value: string; on
 }
 
 /** Asks for a runbook's inputs, then starts the run. */
-export function StartRunDialog({ rb, prefill, onStart, onClose }: { rb: Runbook; prefill?: Record<string, string>; onStart: (inputs: Record<string, string>) => Promise<void>; onClose: () => void }) {
+export function StartRunDialog({
+  rb,
+  prefill,
+  title,
+  onStart,
+  onClose,
+}: {
+  rb: Runbook;
+  prefill?: Record<string, string>;
+  title?: string;
+  onStart: (inputs: Record<string, string>) => Promise<void>;
+  onClose: () => void;
+}) {
   const [values, setValues] = useState(() => initial(rb, prefill));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,7 +112,7 @@ export function StartRunDialog({ rb, prefill, onStart, onClose }: { rb: Runbook;
 
   return (
     <Modal
-      title={`Run "${rb.name}"`}
+      title={title ?? `Run "${rb.name}"`}
       onClose={onClose}
       footer={
         <>

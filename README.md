@@ -9,7 +9,7 @@ with live output, approvals and a full audit trail.
 
 Website: [opskills.app](https://opskills.app)
 
-> **Status:** v0.5.0 preview. Sign in, keep secrets in an encrypted vault, enroll
+> **Status:** v0.6.0 preview. Sign in, keep secrets in an encrypted vault, enroll
 > your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks with
 > inputs, retries, file copies and calls to other runbooks, and run them on the
 > server or on your hosts, with output streaming live to your browser. Schedules and approvals are next (the Settings page still shows sample
@@ -31,7 +31,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.5.0
+  opskills/opskills:0.6.0
 docker logs opskills 2>&1 | grep 'Admin password'
 ```
 
@@ -43,13 +43,13 @@ use the included [`compose.yaml`](compose.yaml): `docker compose up -d`.
 ### Debian and Ubuntu
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.5.0/opskills_0.5.0_amd64.deb
-sudo apt install ./opskills_0.5.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.6.0/opskills_0.6.0_amd64.deb
+sudo apt install ./opskills_0.6.0_amd64.deb
 sudo systemctl start opskills
 sudo journalctl -u opskills | grep 'Admin password'
 ```
 
-Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.5.0_arm64.deb`
+Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.6.0_arm64.deb`
 on ARM servers (`dpkg --print-architecture` tells you which). All downloads and
 checksums are on the [releases page](https://github.com/opskills-app/opskills/releases/latest).
 The package installs a sandboxed systemd service that runs as the `opskills`
@@ -81,7 +81,8 @@ These files, and the database `opskills.redb`, are readable only by the server.
    in a step.
 5. **Add hosts** to run on other machines: on **Hosts**, press **Add host**,
    download the agent package, and paste the commands it shows on the machine.
-   Then pick hosts or host tags under **Run on** in a runbook.
+   Then pick hosts, host tags or a filter like `tags:web !name:db-*` under
+   **Run on** in a runbook, and choose a rollout.
 
 How steps run:
 
@@ -128,8 +129,8 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   the exact commands:
 
   ```bash
-  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.5.0_amd64.deb
-  sudo apt install ./opskills-agent_0.5.0_amd64.deb
+  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.6.0_amd64.deb
+  sudo apt install ./opskills-agent_0.6.0_amd64.deb
   sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
   sudo systemctl enable --now opskills-agent
   ```
@@ -229,9 +230,10 @@ The web app uses the same HTTP API you can call yourself, under `/api/v1`:
 | `GET /runs/{id}/logs?after=` | Output lines after a sequence number |
 | `GET /runs/{id}/events` | Live run updates and output as Server-Sent Events |
 | `POST /runs/{id}/cancel` | Cancel a queued or running run |
+| `POST /runs/{id}/retry` | Run again on the hosts that didn't finish; body `{"inputs": {...}}` for secret inputs |
 | `GET /secrets`, `POST /secrets` | List secrets (never values) and add one |
 | `PUT`, `DELETE /secrets/{name}` | Replace a value or edit a secret, and delete one |
-| `GET /hosts` | List hosts, starting with the OpSkills server itself |
+| `GET /hosts?filter=` | List hosts, starting with the OpSkills server itself, or the enrolled hosts a filter matches |
 | `PUT`, `DELETE /hosts/{id}` | Rename or tag a host, and remove one |
 | `POST /hosts/enrollment-tokens` | Create a one-time enrollment token |
 | `GET /hosts/packages` | Agent packages for this version |

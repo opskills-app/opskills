@@ -178,8 +178,36 @@ between those steps.
 
 ## Running on several hosts
 
-A runbook that runs on hosts runs every step on each host, in order. The `rollout`
-setting decides how the hosts take turns. In the editor it's the **Rollout** card,
+A runbook that runs on hosts runs every step on each host, in order. The `targets`
+decide which hosts, and the `rollout` decides how they take turns.
+
+### Choosing hosts with a filter
+
+`targets` picks hosts three ways, and a run goes to every host any of them picks:
+`hosts` (by id, including `local` for the OpSkills server), `tags` (any of them),
+and `filter`, an expression checked against every enrolled host when the run starts:
+
+```json
+"targets": {"filter": "tags:web,api !tags:staging os:debian*"}
+```
+
+| Part | Meaning |
+|---|---|
+| `key:value` | The host's field matches the value. Keys: `tags`, `name`, `hostname`, `os`, `arch` |
+| `key:a,b` | Any of the values matches |
+| `*`, `?` | Any run of characters, any one character |
+| `!key:value` | The host must not match |
+| `value` alone | Short for `name:value` |
+| spaces | Separate terms; a host must match every term |
+
+Matching ignores case, values can't contain spaces, and a filter never picks the
+OpSkills server. Saving checks the filter. In the editor, the field under **Run on**
+shows which hosts it matches as you type; the API offers the same preview with
+`GET /api/v1/hosts?filter=<expression>`.
+
+### Rollout
+
+The `rollout` setting decides how the hosts take turns. In the editor it's the **Rollout** card,
 shown when **Run on** is set to hosts.
 
 | Field | Default | What it does |
@@ -204,6 +232,18 @@ then ends as failed whatever the rollout does next. When `on_host_failure` is un
 a runbook that stops at a failed step also stops starting hosts, and one set to
 finish then fail lets the other hosts run: the same as before rollouts existed.
 Cancelling a run stops every host that is running.
+
+### Retrying hosts that didn't finish
+
+When a run ends with hosts that didn't finish well (a step failed and doesn't
+continue on error, or the host was skipped or cancelled), its page offers
+**Retry N hosts**. That starts a new run of the runbook on just those hosts, with
+the same input values. Secret inputs are never stored, so the form asks for them
+again. The retry uses the runbook as it is now, so you can fix a step first, and
+it links back to the run it retries.
+
+Through the API: `POST /api/v1/runs/{id}/retry`, with an optional body
+`{"inputs": {...}}` for new or secret values.
 
 ## Output limit
 
