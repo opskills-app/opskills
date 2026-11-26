@@ -2,8 +2,10 @@ name: Website
 
 # Deploys web/ to Cloudflare Workers (opskills.app, getopskills.com, opskills.dev).
 # Runs after each release (called by release.yml), on merges to main that change web/,
-# and by hand. It deploys only when every release the site links to exists, so a
-# version bump merged before its release never sends visitors to missing downloads.
+# and by hand. It always deploys web/ as it is on main, whatever started it, so a site
+# fix merged while a release is still building isn't lost. It deploys only when every
+# release the site links to exists, so a version bump merged before its release never
+# sends visitors to missing downloads.
 #
 # Needs the CLOUDFLARE_API_TOKEN secret and the CLOUDFLARE_ACCOUNT_ID variable.
 # See RELEASING.md.
@@ -29,8 +31,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Check out
+      - name: Check out main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
 
       - name: Check that the linked releases exist
         id: gate
