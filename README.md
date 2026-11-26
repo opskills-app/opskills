@@ -170,6 +170,11 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   `server.public_url = "https://..."` so the session cookie is marked `Secure`, or
   use an SSH tunnel.
 
+### Reporting a vulnerability
+
+Please report security problems privately, as described in [SECURITY.md](SECURITY.md),
+not in a public issue.
+
 ## Configuration
 
 Settings live in one TOML file, `/etc/opskills/opskills.toml` (pass another path
