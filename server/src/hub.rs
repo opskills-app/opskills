@@ -31,11 +31,16 @@ pub struct Job {
     /// Step number on this host, from 1.
     pub step: usize,
     pub command: String,
-    /// Vault secrets for the step, as environment variables.
+    /// Run values, inputs and vault secrets for the step, as environment variables.
     pub env: Vec<(String, String)>,
     pub timeout_seconds: u64,
     /// No later step of this run comes to this host, so its working folder can go.
     pub last: bool,
+    /// If this step fails, the run still comes back to this host (a retry or a later
+    /// step), so keep the working folder. Agents from before 0.4 ignore this and
+    /// remove the folder after any failed step.
+    #[serde(default)]
+    pub keep_on_failure: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

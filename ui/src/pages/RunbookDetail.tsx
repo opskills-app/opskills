@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ArrowLeft, Copy, Pencil, Play, Terminal, Trash2 } from "lucide-react";
-import { api, LOCAL_HOST_ID, runsOnServer, useData, type Host, type Runbook } from "../api";
+import { api, LOCAL_HOST_ID, MAX_OUTPUT_LINES, runsOnServer, useData, type Host, type Runbook } from "../api";
+import { inputLabel } from "../components/StartRun";
 import { duration, runDuration, runNumber, timeAgo } from "../format";
 import { Button, Card, CardHeader, cx, ErrorNote, PageHeader, StatusPill, Tag } from "../components/ui";
 import { useRunNow } from "./Runbooks";
@@ -11,13 +12,30 @@ function toYaml(rb: Runbook) {
   const lines = [`name: ${q(rb.name)}`];
   if (rb.description) lines.push(`description: ${q(rb.description)}`);
   if (rb.tags.length) lines.push(`tags: [${rb.tags.join(", ")}]`);
+  if (rb.inputs?.length) {
+    lines.push("inputs:");
+    for (const d of rb.inputs) {
+      lines.push(`  - name: ${d.name}`, `    type: ${d.type}`);
+      if (d.label) lines.push(`    label: ${q(d.label)}`);
+      if (d.description) lines.push(`    description: ${q(d.description)}`);
+      if (d.required) lines.push("    required: true");
+      if (d.default !== null) lines.push(`    default: ${q(d.default)}`);
+      if (d.choices.length) lines.push(`    choices: [${d.choices.map(q).join(", ")}]`);
+      if (d.pattern) lines.push(`    pattern: ${JSON.stringify(d.pattern)}`);
+    }
+  }
   if (rb.secrets?.length) lines.push(`secrets: [${rb.secrets.join(", ")}]`);
   if (!runsOnServer(rb.targets)) {
     lines.push("run_on:");
     if (rb.targets.hosts.length) lines.push(`  hosts: [${rb.targets.hosts.join(", ")}]`);
     if (rb.targets.tags.length) lines.push(`  tags: [${rb.targets.tags.join(", ")}]`);
   }
-  lines.push(`timeout_seconds: ${rb.timeout_seconds}`, "steps:");
+  lines.push(`timeout_seconds: ${rb.timeout_seconds}`);
+  if (rb.on_step_failure === "finish_then_fail") lines.push("on_step_failure: finish_then_fail");
+  if (rb.output_limit && (rb.output_limit.lines !== MAX_OUTPUT_LINES || rb.output_limit.action !== "truncate")) {
+    lines.push("output_limit:", `  lines: ${rb.output_limit.lines}`, `  action: ${rb.output_limit.action}`);
+  }
+  lines.push("steps:");
   for (const s of rb.steps) {
     lines.push(`  - name: ${q(s.name)}`);
     if (s.run.includes("\n")) {
@@ -26,8 +44,28 @@ function toYaml(rb: Runbook) {
     } else {
       lines.push(`    run: ${q(s.run)}`);
     }
+    if (s.timeout_seconds) lines.push(`    timeout_seconds: ${s.timeout_seconds}`);
+    if (s.retries) lines.push(`    retries: ${s.retries}`);
+    if (s.retry_delay_seconds) lines.push(`    retry_delay_seconds: ${s.retry_delay_seconds}`);
+    if (s.continue_on_error) lines.push("    continue_on_error: true");
   }
   return lines.join("\n");
+}
+
+/** Short words for a step's non-default options. */
+export function stepOptions(s: { timeout_seconds?: number | string | null; retries?: number; retry_delay_seconds?: number | string; continue_on_error?: boolean }) {
+  const out: string[] = [];
+  if (s.timeout_seconds) out.push(`timeout ${typeof s.timeout_seconds === "number" ? duration(s.timeout_seconds * 1000) : s.timeout_seconds}`);
+  if (s.retries) {
+    const delay = s.retry_delay_seconds ? `, ${typeof s.retry_delay_seconds === "number" ? duration(s.retry_delay_seconds * 1000) : s.retry_delay_seconds} apart` : "";
+    out.push(`${s.retries} ${s.retries === 1 ? "retry" : "retries"}${delay}`);
+  }
+  if (s.continue_on_error) out.push("continues on error");
+  return out;
+}
+
+function failureText(rb: Runbook) {
+  return rb.on_step_failure === "finish_then_fail" ? "A failing step fails the run, but the remaining steps still run." : "The first failing step stops the run.";
 }
 
 /** Where a runbook runs, in words, with links to its hosts. */
@@ -54,7 +92,7 @@ export function RunbookDetail({ id }: { id: string }) {
   const [tab, setTab] = useState<"steps" | "runs" | "yaml">("steps");
   const [copied, setCopied] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const { runNow, busy, error } = useRunNow();
+  const { runNow, busy, error, dialog } = useRunNow();
 
   if (rb.error) return <ErrorNote>{rb.error}</ErrorNote>;
   if (!rb.data) return <p className="text-sm text-muted">Loading...</p>;
@@ -73,6 +111,7 @@ export function RunbookDetail({ id }: { id: string }) {
 
   return (
     <>
+      {dialog}
       <a href="#/runbooks" className="mb-3 inline-flex items-center gap-1 text-sm text-muted hover:text-ink">
         <ArrowLeft className="size-3.5" /> Runbooks
       </a>
@@ -128,9 +167,14 @@ export function RunbookDetail({ id }: { id: string }) {
                     <Terminal className="size-4" />
                   </span>
                   <Card className="min-w-0 flex-1 p-5 sm:p-6">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs font-medium text-muted tabular-nums">{String(i + 1).padStart(2, "0")}</span>
                       <h3 className="font-medium">{s.name}</h3>
+                      {stepOptions(s).map((o) => (
+                        <span key={o} className="rounded-md bg-surface-2 px-2 py-0.5 text-[11px] text-muted">
+                          {o}
+                        </span>
+                      ))}
                     </div>
                     <pre className="scroll-thin mt-3 overflow-x-auto rounded-lg bg-surface-2 px-3 py-2 font-mono text-[12.5px] text-ink-2">{s.run}</pre>
                   </Card>
@@ -199,6 +243,34 @@ export function RunbookDetail({ id }: { id: string }) {
                 <dd>{duration(r.timeout_seconds * 1000)}</dd>
               </div>
               <div className="flex justify-between gap-4">
+                <dt className="text-muted">If a step fails</dt>
+                <dd className="text-right">{r.on_step_failure === "finish_then_fail" ? "Finish, then fail" : "Stop the run"}</dd>
+              </div>
+              {r.output_limit && (r.output_limit.lines !== MAX_OUTPUT_LINES || r.output_limit.action === "fail") && (
+                <div className="flex justify-between gap-4">
+                  <dt className="text-muted">Output limit</dt>
+                  <dd className="text-right">
+                    {r.output_limit.lines.toLocaleString()} lines, then {r.output_limit.action === "fail" ? "stop" : "drop output"}
+                  </dd>
+                </div>
+              )}
+              {r.inputs?.length > 0 && (
+                <div>
+                  <dt className="text-muted">Inputs</dt>
+                  <dd className="mt-2 space-y-1.5">
+                    {r.inputs.map((d) => (
+                      <div key={d.name} className="flex items-baseline justify-between gap-3">
+                        <span>
+                          {inputLabel(d)}
+                          {d.required && <span className="text-rose-600"> *</span>}
+                        </span>
+                        <code className="font-mono text-[11px] text-muted">{d.type}</code>
+                      </div>
+                    ))}
+                  </dd>
+                </div>
+              )}
+              <div className="flex justify-between gap-4">
                 <dt className="text-muted">Created</dt>
                 <dd>{timeAgo(r.created_at)}</dd>
               </div>
@@ -243,8 +315,8 @@ export function RunbookDetail({ id }: { id: string }) {
           )}
           <Card className="p-6 text-sm text-muted sm:px-8">
             {runsOnServer(r.targets)
-              ? "Steps run one after another on the OpSkills server, as the user the server runs as. The first failing step stops the run."
-              : "Steps run one after another on each host in turn, as root through the OpSkills agent. The first failing step stops the run."}
+              ? `Steps run one after another on the OpSkills server, as the user the server runs as. ${failureText(r)}`
+              : `Steps run one after another on each host in turn, as root through the OpSkills agent. ${failureText(r)}`}
           </Card>
         </aside>
       </div>

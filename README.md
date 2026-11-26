@@ -9,10 +9,10 @@ with live output, approvals and a full audit trail.
 
 Website: [opskills.app](https://opskills.app)
 
-> **Status:** v0.3.1 preview. Sign in, keep secrets in an encrypted vault, enroll
-> your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks and
-> run them on the server or on your hosts, with output streaming live to your
-> browser. Schedules and approvals are next (the Settings page still shows sample
+> **Status:** v0.4.0 preview. Sign in, keep secrets in an encrypted vault, enroll
+> your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks with
+> inputs, retries and failure handling, and run them on the server or on your hosts,
+> with output streaming live to your browser. Schedules and approvals are next (the Settings page still shows sample
 > data).
 
 ## Install
@@ -31,7 +31,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.3.1
+  opskills/opskills:0.4.0
 docker logs opskills 2>&1 | grep 'Admin password'
 ```
 
@@ -43,13 +43,13 @@ use the included [`compose.yaml`](compose.yaml): `docker compose up -d`.
 ### Debian and Ubuntu
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.3.1/opskills_0.3.1_amd64.deb
-sudo apt install ./opskills_0.3.1_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.4.0/opskills_0.4.0_amd64.deb
+sudo apt install ./opskills_0.4.0_amd64.deb
 sudo systemctl start opskills
 sudo journalctl -u opskills | grep 'Admin password'
 ```
 
-Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.3.1_arm64.deb`
+Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.4.0_arm64.deb`
 on ARM servers (`dpkg --print-architecture` tells you which). All downloads and
 checksums are on the [releases page](https://github.com/opskills-app/opskills/releases/latest).
 The package installs a sandboxed systemd service that runs as the `opskills`
@@ -71,9 +71,10 @@ These files, and the database `opskills.redb`, are readable only by the server.
 1. **Sign in** as `admin` with the password from the first start.
 2. **Create a runbook**: give it a name, then add steps. Each step is a shell
    command. Start from an example (Hello world, Check disk space, System health)
-   or from scratch.
-3. **Press Run.** The run page streams each step's output live, shows a timeline
-   of the steps, and lets you cancel.
+   or from scratch. Add **inputs** for the values that change between runs, like a
+   service name, and use them as `{{ inputs.service }}` in a step.
+3. **Press Run.** Fill in the inputs, if any. The run page streams each step's
+   output live, shows a timeline of the steps, and lets you cancel.
 4. **Keep credentials in the vault**, not in commands: add a secret such as
    `DB_PASSWORD` under **Vault**, pick it in the runbook, and use `"$DB_PASSWORD"`
    in a step.
@@ -87,13 +88,23 @@ How steps run:
   (`opskills` for the package and the container), with that user's permissions and
   nothing more. On an enrolled host they run as root through the OpSkills agent.
 - One after another, in a fresh temporary folder per run. On several hosts, all
-  steps run on the first host, then on the next, and so on. The first step that
-  exits with a non-zero code stops the run, and the rest are skipped.
-- Each step has a timeout (10 minutes by default, set per runbook). A step still
-  running at its timeout, or when you cancel, is stopped along with any processes
-  it started.
-- `$OPSKILLS_RUN_ID` and `$OPSKILLS_STEP` are set. Other environment variables of
-  the server are not passed on.
+  steps run on the first host, then on the next, and so on.
+- A step that exits with a non-zero code, times out or can't start fails. It can be
+  retried (with a wait between tries) or set to continue on error. Otherwise the run
+  stops and the rest is skipped, or, if the runbook says so, the remaining steps
+  still run and then the run fails.
+- Each step has a timeout (10 minutes by default, set per runbook and per step, in
+  seconds or like `10m`). A step still running at its timeout, or when you cancel,
+  is stopped along with any processes it started.
+- `{{ inputs.name }}`, `{{ host.name }}` and other run values in a command become
+  single, quoted shell words. `$OPSKILLS_RUN_ID`, `$OPSKILLS_STEP`,
+  `$OPSKILLS_HOST_NAME` and one `$OPSKILLS_INPUT_<NAME>` per input are set. Other
+  environment variables of the server are not passed on.
+- A run keeps up to 20,000 output lines; a runbook can set a lower limit that drops
+  further output or stops the run.
+
+The full guide to inputs, run values, step options and failure handling is
+[docs/runbooks.md](docs/runbooks.md).
 - Up to `runs.max_concurrent` runs execute at once (4 by default); others wait in
   the queue.
 
@@ -114,8 +125,8 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   the exact commands:
 
   ```bash
-  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.3.1_amd64.deb
-  sudo apt install ./opskills-agent_0.3.1_amd64.deb
+  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.4.0_amd64.deb
+  sudo apt install ./opskills-agent_0.4.0_amd64.deb
   sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
   sudo systemctl enable --now opskills-agent
   ```
@@ -210,7 +221,7 @@ The web app uses the same HTTP API you can call yourself, under `/api/v1`:
 | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` | Sign in and out |
 | `GET /runbooks`, `POST /runbooks` | List and create runbooks |
 | `GET`, `PUT`, `DELETE /runbooks/{id}` | Read, replace and delete a runbook |
-| `POST /runbooks/{id}/runs` | Start a run |
+| `POST /runbooks/{id}/runs` | Start a run; body `{"inputs": {...}}` when the runbook has inputs |
 | `GET /runs?runbook_id=&limit=`, `GET /runs/{id}` | List runs, newest first, and read one |
 | `GET /runs/{id}/logs?after=` | Output lines after a sequence number |
 | `GET /runs/{id}/events` | Live run updates and output as Server-Sent Events |

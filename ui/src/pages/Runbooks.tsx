@@ -3,6 +3,7 @@ import { Activity, BookOpen, Database, HardDrive, LayoutGrid, List, Play, Plus, 
 import { api, useData, type Run, type Runbook } from "../api";
 import { duration, runDuration, timeAgo } from "../format";
 import { Button, Card, cx, EmptyState, ErrorNote, PageHeader, RunStrip, SearchField, Tag, Tile } from "../components/ui";
+import { StartRunDialog } from "../components/StartRun";
 import { templates } from "../templates";
 import { go } from "../router";
 
@@ -60,23 +61,36 @@ function ViewToggle({ view, onChange }: { view: View; onChange: (v: View) => voi
   );
 }
 
-/** Start a run and open its page. */
+/**
+ * Start a run and open its page. A runbook with inputs first asks for them in a
+ * dialog, which the caller renders as `dialog`. `prefill` offers an earlier run's values.
+ */
 export function useRunNow() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  async function runNow(id: string) {
+  const [asking, setAsking] = useState<{ rb: Runbook; prefill?: Record<string, string> } | null>(null);
+
+  async function start(id: string, inputs?: Record<string, string>) {
+    const run = await api.startRun(id, inputs);
+    go(`runs/${run.id}`);
+  }
+
+  async function runNow(id: string, prefill?: Record<string, string>) {
     setBusy(id);
     setError(null);
     try {
-      const run = await api.startRun(id);
-      go(`runs/${run.id}`);
+      const rb = await api.runbook(id);
+      if (rb.inputs?.length) setAsking({ rb, prefill });
+      else await start(id);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
     }
   }
-  return { runNow, busy, error };
+
+  const dialog = asking && <StartRunDialog rb={asking.rb} prefill={asking.prefill} onStart={(inputs) => start(asking.rb.id, inputs)} onClose={() => setAsking(null)} />;
+  return { runNow, busy, error, dialog };
 }
 
 function stats(runs: Run[], id: string) {
@@ -92,7 +106,7 @@ export function RunbooksPage() {
   const [q, setQ] = useState("");
   const [tag, setTag] = useState<string | null>(null);
   const [view, setView] = useView();
-  const { runNow, busy, error } = useRunNow();
+  const { runNow, busy, error, dialog } = useRunNow();
 
   const all = useMemo(() => runbooks.data ?? [], [runbooks.data]);
   const tags = useMemo(() => [...new Set(all.flatMap((r) => r.tags))].sort(), [all]);
@@ -107,6 +121,7 @@ export function RunbooksPage() {
 
   return (
     <div className="space-y-8">
+      {dialog}
       <PageHeader
         title="Runbooks"
         subtitle="Procedures your team can run with one click. Each step is a shell command, run on the OpSkills server or on your hosts."

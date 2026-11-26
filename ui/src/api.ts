@@ -7,7 +7,39 @@ export type RunStatus = "pending" | "queued" | "running" | "succeeded" | "failed
 export interface Step {
   name: string;
   run: string;
+  /** Overrides the runbook's step timeout. The API also accepts strings like "10m". */
+  timeout_seconds?: number | string | null;
+  /** Further tries after a failure, 0 to 10. */
+  retries?: number;
+  /** Wait between tries. The API also accepts strings like "30s". */
+  retry_delay_seconds?: number | string;
+  /** A failure is recorded but the run goes on. */
+  continue_on_error?: boolean;
 }
+
+export type InputKind = "text" | "number" | "boolean" | "choice" | "secret";
+
+/** A value filled in when starting a run. */
+export interface InputDef {
+  name: string;
+  label: string;
+  description: string;
+  type: InputKind;
+  required: boolean;
+  default: string | null;
+  choices: string[];
+  pattern: string | null;
+}
+
+/** What a run does after a step fails. */
+export type FailurePolicy = "stop" | "finish_then_fail";
+
+export interface OutputLimit {
+  lines: number;
+  action: "truncate" | "fail";
+}
+
+export const MAX_OUTPUT_LINES = 20000;
 
 /** Where a runbook runs. Both empty: on the OpSkills server. */
 export interface Targets {
@@ -26,7 +58,10 @@ export interface Runbook {
   name: string;
   description: string;
   tags: string[];
+  inputs: InputDef[];
   steps: Step[];
+  on_step_failure: FailurePolicy;
+  output_limit: OutputLimit;
   secrets: string[];
   targets: Targets;
   timeout_seconds: number;
@@ -38,10 +73,14 @@ export interface RunbookInput {
   name: string;
   description: string;
   tags: string[];
+  inputs?: InputDef[];
   steps: Step[];
+  on_step_failure?: FailurePolicy;
+  output_limit?: OutputLimit;
   secrets: string[];
   targets: Targets;
-  timeout_seconds?: number;
+  /** Seconds, or a duration string like "10m". */
+  timeout_seconds?: number | string;
 }
 
 export interface Host {
@@ -86,7 +125,16 @@ export interface StepResult {
   exit_code: number | null;
   started_at: number | null;
   finished_at: number | null;
+  timeout_seconds?: number;
+  retries?: number;
+  retry_delay_seconds?: number;
+  continue_on_error?: boolean;
+  /** How many times the step was started. */
+  attempts?: number;
 }
+
+/** Shown in place of a secret value. */
+export const MASK = "••••••";
 
 export interface Run {
   id: string;
@@ -100,6 +148,10 @@ export interface Run {
   finished_at: number | null;
   timeout_seconds: number;
   secrets: string[];
+  /** Input values the run started with; secret ones are masked. */
+  inputs?: Record<string, string>;
+  on_step_failure?: FailurePolicy;
+  output_limit?: OutputLimit;
   hosts: { id: string; name: string }[];
   steps: StepResult[];
   error: string | null;
@@ -162,7 +214,8 @@ export const api = {
   createRunbook: (input: RunbookInput) => request<Runbook>("POST", "/runbooks", input),
   updateRunbook: (id: string, input: RunbookInput) => request<Runbook>("PUT", `/runbooks/${encodeURIComponent(id)}`, input),
   deleteRunbook: (id: string) => request<void>("DELETE", `/runbooks/${encodeURIComponent(id)}`),
-  startRun: (runbookId: string) => request<Run>("POST", `/runbooks/${encodeURIComponent(runbookId)}/runs`),
+  startRun: (runbookId: string, inputs?: Record<string, string>) =>
+    request<Run>("POST", `/runbooks/${encodeURIComponent(runbookId)}/runs`, inputs ? { inputs } : undefined),
   runs: (opts: { runbookId?: string; limit?: number } = {}) => {
     const q = new URLSearchParams();
     if (opts.runbookId) q.set("runbook_id", opts.runbookId);

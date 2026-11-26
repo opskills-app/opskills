@@ -9,6 +9,7 @@ mod firststart;
 mod hub;
 mod model;
 mod store;
+mod template;
 mod vault;
 mod web;
 

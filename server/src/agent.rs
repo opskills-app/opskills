@@ -425,7 +425,8 @@ async fn execute(client: &Arc<Client>, job: &Job, workdir: &Path) -> JobEnd {
     drop(line_tx);
     let _ = forwarder.await;
     let succeeded = end.end == End::Exited && end.exit_code == Some(0);
-    if job.last || !succeeded {
+    let done = if succeeded { job.last } else { !job.keep_on_failure };
+    if done {
         // No later step of this run comes here.
         let _ = std::fs::remove_dir_all(workdir);
     }
