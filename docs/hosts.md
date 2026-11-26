@@ -50,8 +50,8 @@ the right address in the commands it shows.
    `amd64` they look like this:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.5.0_amd64.deb
-   sudo apt install ./opskills-agent_0.5.0_amd64.deb
+   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.6.0_amd64.deb
+   sudo apt install ./opskills-agent_0.6.0_amd64.deb
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -59,8 +59,8 @@ the right address in the commands it shows.
    And for RHEL, Rocky, Alma or Fedora on `x86_64`:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.5.0-1.x86_64.rpm
-   sudo dnf install ./opskills-agent-0.5.0-1.x86_64.rpm
+   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.6.0-1.x86_64.rpm
+   sudo dnf install ./opskills-agent-0.6.0-1.x86_64.rpm
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -154,13 +154,20 @@ first boot (cloud-init above, or your own first-boot script).
 
 In the runbook editor, under **Run on**, choose **Hosts**, then pick:
 
-- **hosts** by name (including the OpSkills server itself), and/or
-- **tags**: every host with that tag at the time the run starts.
+- **hosts** by name (including the OpSkills server itself),
+- **tags**: every host with that tag at the time the run starts, and/or
+- a **filter**, like `tags:web !name:db-*` or `os:rocky* arch:amd64`: every host it
+  matches when the run starts. See
+  [Choosing hosts with a filter](runbooks.md#choosing-hosts-with-a-filter).
 
-The editor shows how many hosts match. A run goes to each host in turn, sorted by
-name: all steps on the first host, then the next. The first failing step stops the
-run. On the run page, the steps are grouped by host and every output line is
-labelled with its host.
+A run goes to every host that any of these picks. The editor shows how many hosts
+match now, and which ones the filter matches as you type it. Each host runs all the
+steps in order; how hosts take turns (one by one, in parallel or in batches, canary
+first) is the runbook's rollout, see
+[Running on several hosts](runbooks.md#running-on-several-hosts). On the run page,
+the steps are grouped by host and every output line is labelled with its host.
+When some hosts didn't finish, **Retry N hosts** runs the runbook again on just
+those.
 
 On each host a run gets a fresh folder under `/var/lib/opskills-agent/work`, which
 is removed when the run's last step there finishes. Steps see `PATH`, `HOME`,

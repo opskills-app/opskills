@@ -138,6 +138,11 @@ Since 0.4.0, runbooks have typed inputs and per-step control:
   sink and the halt flags are shared behind short-lived locks. A failed step stops
   only its own host; `on_host_failure` decides whether hosts that haven't started
   still run.
+- Targets add a host filter (since 0.6.0): `filter.rs` parses `key:value` terms with
+  globs, `!` and comma alternatives, all of which must match. A run's hosts are the
+  union of explicit ids, tags and filter matches; the server is never matched by a
+  filter. `POST /runs/{id}/retry` starts a new run on the hosts of a finished run that
+  didn't finish well, with `retry_of` set and the earlier non-secret inputs.
 - A step is one of `run`, `copy` or `call`. A copy becomes a short shell script on
   the server (temp file, `chmod`, `mv`) with the content in `OPSKILLS_COPY_CONTENT`,
   so agents need nothing new. A call starts a child run of the other runbook on the

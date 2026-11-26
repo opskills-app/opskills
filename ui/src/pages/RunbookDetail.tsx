@@ -29,6 +29,7 @@ function toYaml(rb: Runbook) {
     lines.push("run_on:");
     if (rb.targets.hosts.length) lines.push(`  hosts: [${rb.targets.hosts.join(", ")}]`);
     if (rb.targets.tags.length) lines.push(`  tags: [${rb.targets.tags.join(", ")}]`);
+    if (rb.targets.filter?.trim()) lines.push(`  filter: ${JSON.stringify(rb.targets.filter)}`);
   }
   lines.push(`timeout_seconds: ${rb.timeout_seconds}`);
   if (rb.on_step_failure === "finish_then_fail") lines.push("on_step_failure: finish_then_fail");
@@ -171,10 +172,12 @@ function RunOnSummary({ rb, hosts }: { rb: Runbook; hosts: Host[] }) {
   const byId = new Map(hosts.map((h) => [h.id, h]));
   const named = rb.targets.hosts.map((id) => (id === LOCAL_HOST_ID ? "OpSkills server" : (byId.get(id)?.name ?? "a removed host")));
   const tagged = rb.targets.tags.map((t) => `tag ${t}`);
-  const count = hosts.filter((h) => (h.builtin ? rb.targets.hosts.includes(LOCAL_HOST_ID) : rb.targets.hosts.includes(h.id) || h.tags.some((t) => rb.targets.tags.includes(t)))).length;
+  const filtered = rb.targets.filter?.trim() ? [`hosts matching ${rb.targets.filter}`] : [];
+  // The server knows which hosts a runbook targets, filter included: they list it as a user.
+  const count = hosts.filter((h) => (h.builtin ? rb.targets.hosts.includes(LOCAL_HOST_ID) : h.used_by.some((u) => u.id === rb.id))).length;
   return (
     <span className="text-right">
-      {[...named, ...tagged].join(", ")}
+      {[...named, ...tagged, ...filtered].join(", ")}
       <a href="#/hosts" className="block text-xs text-muted hover:text-accent">
         {count} host{count === 1 ? "" : "s"} now
       </a>

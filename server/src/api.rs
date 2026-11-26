@@ -19,6 +19,7 @@ use tokio_stream::wrappers::BroadcastStream;
 
 use crate::auth;
 use crate::executor::{Event, StartError};
+use crate::filter::HostFilter;
 use crate::hub::{AgentInfo, JobEnd, OutLine, POLL_WAIT};
 use crate::model::{
     calls_of, DEFAULT_STEP_TIMEOUT, EnrollmentToken, Host, LOCAL_HOST_ID, LOCAL_HOST_NAME, Run, RunHost, Runbook, RunbookInput, Secret, StoredHost, normalize_tag, SecretInput, SecretUpdate, StoredSecret, now_ms, validate_secret_description, validate_secret_kind,
@@ -41,6 +42,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/runs/{id}/logs", get(run_logs))
         .route("/runs/{id}/events", get(run_events))
         .route("/runs/{id}/cancel", post(cancel_run))
+        .route("/runs/{id}/retry", post(retry_run))
         .route("/secrets", get(list_secrets).post(create_secret))
         .route("/secrets/{name}", axum::routing::put(update_secret).delete(delete_secret))
         .route("/hosts", get(list_hosts))
@@ -336,7 +338,7 @@ fn run_hosts(st: &AppState, rb: &Runbook) -> ApiResult<Vec<RunHost>> {
         out.push(local);
     }
     for h in st.store.hosts()? {
-        if rb.targets.hosts.contains(&h.id) || h.tags.iter().any(|t| rb.targets.tags.contains(t)) {
+        if rb.targets.includes(&h) {
             out.push(RunHost { id: h.id, name: h.name });
         }
     }
@@ -371,6 +373,58 @@ async fn run_logs(State(st): State<Arc<AppState>>, Path(id): Path<String>, Query
     st.store.run(&id)?.ok_or_else(|| ApiError::not_found("Run"))?;
     let lines = st.store.logs(&id, q.after.unwrap_or(0), q.limit.unwrap_or(5000).clamp(1, 20_000))?;
     Ok(Json(json!({ "lines": lines })))
+}
+
+/// Start a new run of the same runbook on the hosts of run `id` that didn't finish
+/// well. It uses the runbook as it is now, and the earlier run's input values unless
+/// the body gives new ones; secret inputs are never stored, so they must be given again.
+async fn retry_run(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>, body: String) -> ApiResult<Response> {
+    let conflict = |m: &str| ApiError::new(StatusCode::CONFLICT, m.to_string());
+    let earlier = st.store.run(&id)?.ok_or_else(|| ApiError::not_found("Run"))?;
+    if !earlier.status.is_finished() {
+        return Err(conflict("This run is still going. Retry it after it ends."));
+    }
+    let rb = st.store.runbook(&earlier.runbook_id)?.ok_or_else(|| conflict("The runbook of this run was deleted, so it can't be retried."))?;
+    let mut hosts = earlier.unfinished_hosts();
+    if hosts.is_empty() {
+        return Err(conflict("Every host of this run succeeded; there is nothing to retry."));
+    }
+    let mut kept = Vec::new();
+    for h in hosts.drain(..) {
+        if h.id == LOCAL_HOST_ID || st.store.stored_host(&h.id)?.is_some() {
+            kept.push(h);
+        }
+    }
+    if kept.is_empty() {
+        return Err(conflict("The hosts to retry have all been removed."));
+    }
+    let start: StartRunInput = if body.trim().is_empty() {
+        StartRunInput::default()
+    } else {
+        serde_json::from_str(&body).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("Invalid retry request: {e}")))?
+    };
+    // The earlier values (secret ones were masked, so they're left out), then any given now.
+    let mut given = serde_json::Map::new();
+    for def in &rb.inputs {
+        match earlier.inputs.get(&def.name) {
+            Some(v) if def.kind != crate::model::InputKind::Secret && v != crate::model::MASK => {
+                given.insert(def.name.clone(), serde_json::Value::String(v.clone()));
+            }
+            _ => {}
+        }
+    }
+    given.extend(start.inputs);
+    let values = st.executor.prepare(&rb, &given).map_err(|e| match e {
+        StartError::BadInput(m) => ApiError::new(StatusCode::BAD_REQUEST, m),
+        StartError::Conflict(m) => ApiError::new(StatusCode::CONFLICT, m),
+        StartError::Internal(e) => e.into(),
+    })?;
+    let mut run = Run::new(&rb, &user.0, kept, &values.inputs);
+    run.trigger = "retry".into();
+    run.retry_of = Some(earlier.id.clone());
+    let run = st.executor.start(run, values)?;
+    tracing::info!(run_id = %run.id, retry_of = %earlier.id, hosts = run.hosts.len(), "retrying unfinished hosts");
+    Ok((StatusCode::CREATED, Json(run)).into_response())
 }
 
 async fn cancel_run(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
@@ -523,7 +577,7 @@ fn targets_host(rb: &Runbook, host: &Host) -> bool {
     if host.id == LOCAL_HOST_ID {
         return rb.targets.is_server() || rb.targets.hosts.iter().any(|h| h == LOCAL_HOST_ID);
     }
-    rb.targets.hosts.contains(&host.id) || host.tags.iter().any(|t| rb.targets.tags.contains(t))
+    rb.targets.includes(host)
 }
 
 fn local_host(st: &AppState) -> Host {
@@ -554,8 +608,17 @@ fn host_views(st: &AppState) -> ApiResult<Vec<HostView>> {
     Ok(list)
 }
 
-async fn list_hosts(State(st): State<Arc<AppState>>) -> ApiResult<Json<Vec<HostView>>> {
-    Ok(Json(host_views(&st)?))
+#[derive(Deserialize)]
+struct HostsQuery {
+    /// Only enrolled hosts this filter expression matches.
+    filter: Option<String>,
+}
+
+async fn list_hosts(State(st): State<Arc<AppState>>, Query(q): Query<HostsQuery>) -> ApiResult<Json<Vec<HostView>>> {
+    let views = host_views(&st)?;
+    let Some(text) = q.filter.filter(|f| !f.trim().is_empty()) else { return Ok(Json(views)) };
+    let filter = HostFilter::parse(&text).map_err(|msg| ApiError::new(StatusCode::BAD_REQUEST, msg))?;
+    Ok(Json(views.into_iter().filter(|v| !v.builtin && filter.matches(&v.host)).collect()))
 }
 
 #[derive(Deserialize)]

@@ -85,16 +85,18 @@ export interface Rollout {
 
 export const defaultRollout: Rollout = { mode: "sequential", max_parallel: 0, canary: 0, pause_seconds: 0 };
 
-/** Where a runbook runs. Both empty: on the OpSkills server. */
+/** Where a runbook runs. All empty: on the OpSkills server. */
 export interface Targets {
   hosts: string[];
   tags: string[];
+  /** A host filter expression, like "tags:web !name:db-*". */
+  filter?: string;
 }
 
 export const LOCAL_HOST_ID = "local";
 
 export function runsOnServer(t: Targets | undefined) {
-  return !t || (t.hosts.length === 0 && t.tags.length === 0);
+  return !t || (t.hosts.length === 0 && t.tags.length === 0 && !t.filter?.trim());
 }
 
 export interface Runbook {
@@ -210,6 +212,8 @@ export interface Run {
   /** Set when a call step in another run started this one. */
   parent?: { run_id: string; runbook_name: string; step: number };
   depth?: number;
+  /** The run whose unfinished hosts this run retries. */
+  retry_of?: string;
 }
 
 export interface LogLine {
@@ -278,13 +282,15 @@ export const api = {
   },
   run: (id: string) => request<Run>("GET", `/runs/${encodeURIComponent(id)}`),
   cancelRun: (id: string) => request<void>("POST", `/runs/${encodeURIComponent(id)}/cancel`),
+  /** Rerun the hosts of a finished run that didn't finish well; secret inputs must be given again. */
+  retryRun: (id: string, inputs?: Record<string, string>) => request<Run>("POST", `/runs/${encodeURIComponent(id)}/retry`, inputs ? { inputs } : undefined),
   secrets: () => request<Secret[]>("GET", "/secrets"),
   createSecret: (s: { name: string; kind: SecretKind; description: string; value: string }) => request<Secret>("POST", "/secrets", s),
   updateSecret: (name: string, s: { kind?: SecretKind; description?: string; value?: string }) =>
     request<Secret>("PUT", `/secrets/${encodeURIComponent(name)}`, s),
   deleteSecret: (name: string) => request<void>("DELETE", `/secrets/${encodeURIComponent(name)}`),
   system: () => request<{ version: string; public_url: string | null }>("GET", "/system"),
-  hosts: () => request<Host[]>("GET", "/hosts"),
+  hosts: (filter?: string) => request<Host[]>("GET", filter ? `/hosts?filter=${encodeURIComponent(filter)}` : "/hosts"),
   updateHost: (id: string, h: { name?: string; tags?: string[] }) => request<Host>("PUT", `/hosts/${encodeURIComponent(id)}`, h),
   deleteHost: (id: string) => request<void>("DELETE", `/hosts/${encodeURIComponent(id)}`),
   createEnrollmentToken: () => request<{ token: string; expires_at: number }>("POST", "/hosts/enrollment-tokens"),

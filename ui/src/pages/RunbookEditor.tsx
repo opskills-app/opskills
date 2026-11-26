@@ -70,12 +70,33 @@ function toggle(list: string[], item: string) {
 }
 
 /** Where the steps run: the OpSkills server, or chosen hosts and host tags. */
+/** The hosts a filter expression matches now, asked of the server as you type. */
+function useFilterPreview(filter: string) {
+  const [state, setState] = useState<{ ids: string[]; names: string[]; error: string | null }>({ ids: [], names: [], error: null });
+  useEffect(() => {
+    const f = filter.trim();
+    if (!f) {
+      setState({ ids: [], names: [], error: null });
+      return;
+    }
+    const timer = setTimeout(() => {
+      api.hosts(f).then(
+        (hs) => setState({ ids: hs.map((h) => h.id), names: hs.map((h) => h.name), error: null }),
+        (e) => setState({ ids: [], names: [], error: e instanceof Error ? e.message : String(e) }),
+      );
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [filter]);
+  return state;
+}
+
 function RunOn({ targets, onChange, onHosts, setOnHosts }: { targets: Targets; onChange: (t: Targets) => void; onHosts: boolean; setOnHosts: (v: boolean) => void }) {
   const hosts = useData(() => api.hosts(), []);
   const enrolled = (hosts.data ?? []).filter((h) => !h.builtin);
   const hostTags = [...new Set(enrolled.flatMap((h) => h.tags))].sort();
   const onServer = !onHosts;
-  const matched = enrolled.filter((h) => targets.hosts.includes(h.id) || h.tags.some((t) => targets.tags.includes(t)));
+  const preview = useFilterPreview(targets.filter ?? "");
+  const matched = enrolled.filter((h) => targets.hosts.includes(h.id) || h.tags.some((t) => targets.tags.includes(t)) || preview.ids.includes(h.id));
   const count = matched.length + (targets.hosts.includes(LOCAL_HOST_ID) ? 1 : 0);
   const chip = (on: boolean) => cx("flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs", on ? "bg-accent text-accent-ink" : "bg-surface-2 text-ink-2 hover:bg-surface-3");
 
@@ -94,7 +115,7 @@ function RunOn({ targets, onChange, onHosts, setOnHosts }: { targets: Targets; o
             label: "OpSkills server",
             pick: () => {
               setOnHosts(false);
-              onChange({ hosts: [], tags: [] });
+              onChange({ hosts: [], tags: [], filter: "" });
             },
           },
           {
@@ -156,8 +177,36 @@ function RunOn({ targets, onChange, onHosts, setOnHosts }: { targets: Targets; o
               </div>
             </div>
           )}
+          <div>
+            <label className="text-xs font-medium text-muted" htmlFor="rb-filter">
+              Or hosts matching
+            </label>
+            <input
+              id="rb-filter"
+              value={targets.filter ?? ""}
+              onChange={(e) => onChange({ ...targets, filter: e.target.value })}
+              placeholder="tags:web !name:db-*"
+              spellCheck={false}
+              className="mt-2 h-10 w-full rounded-xl bg-surface-2 px-3 font-mono text-xs outline-none focus:ring-2 focus:ring-accent"
+            />
+            <p className="mt-1.5 text-xs text-muted">
+              {preview.error ? (
+                <span className="text-rose-600 dark:text-rose-400">{preview.error}</span>
+              ) : targets.filter?.trim() ? (
+                preview.names.length ? (
+                  `Matches ${preview.names.join(", ")} now, and any host enrolled later that fits.`
+                ) : (
+                  "Matches no host now."
+                )
+              ) : (
+                <>
+                  Keys: tags, name, hostname, os, arch. <code className="font-mono">!</code> excludes, <code className="font-mono">*</code> is a wildcard, commas mean any of.
+                </>
+              )}
+            </p>
+          </div>
           <p className={cx("text-xs", count ? "text-muted" : "text-amber-700 dark:text-amber-300")}>
-            {count ? `Runs on ${count} host${count === 1 ? "" : "s"} now. Choose how below, under Rollout.` : "Pick at least one host or tag."}
+            {count ? `Runs on ${count} host${count === 1 ? "" : "s"} now. Choose how below, under Rollout.` : "Pick at least one host or tag, or enter a filter that matches a host."}
           </p>
         </div>
       )}

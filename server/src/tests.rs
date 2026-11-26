@@ -1028,3 +1028,95 @@ async fn rollouts_are_validated_on_save() {
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{rollout}: {}", r.body);
     }
 }
+
+// Host filters
+
+#[tokio::test]
+async fn host_filters_pick_the_hosts_a_run_goes_to() {
+    let s = server();
+    let c = sign_in(&s).await;
+    for (name, tags) in [("web-1", json!(["web", "prod"])), ("web-2", json!(["web", "staging"])), ("db-1", json!(["db", "prod"]))] {
+        enroll(&s, &c, name, tags).await;
+    }
+    let preview = call(&s.app, "GET", "/api/v1/hosts?filter=tags:prod%20!name:db-*", None, Some(&c), false).await;
+    assert_eq!(preview.status, StatusCode::OK, "{}", preview.body);
+    let names: Vec<String> = preview.json().as_array().unwrap().iter().map(|h| h["name"].as_str().unwrap().to_string()).collect();
+    assert_eq!(names, vec!["web-1"]);
+    assert_eq!(call(&s.app, "GET", "/api/v1/hosts?filter=color:blue", None, Some(&c), false).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(call(&s.app, "GET", "/api/v1/hosts", None, Some(&c), false).await.json().as_array().unwrap().len(), 4, "no filter lists every host");
+
+    let bad = call(&s.app, "POST", "/api/v1/runbooks", Some(json!({"name": "Bad", "targets": {"filter": "tags:"}, "steps": [{"name": "a", "run": "true"}]})), Some(&c), true).await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.body);
+
+    // Union of an explicit host, a tag and a filter; the filter never matches the server.
+    let rb = create(&s, &c, json!({"name": "Prod web", "targets": {"filter": "tags:web  !tags:staging", "tags": ["db"]}, "steps": [{"name": "a", "run": "true"}]})).await;
+    let got = call(&s.app, "GET", &format!("/api/v1/runbooks/{rb}"), None, Some(&c), false).await.json();
+    assert_eq!(got["targets"]["filter"], "tags:web !tags:staging", "spaces are tidied");
+    let run = start(&s, &c, &rb).await;
+    let hosts: Vec<String> = run_json(&s, &c, &run).await["hosts"].as_array().unwrap().iter().map(|h| h["name"].as_str().unwrap().to_string()).collect();
+    assert_eq!(hosts, vec!["db-1", "web-1"]);
+    call(&s.app, "POST", &format!("/api/v1/runs/{run}/cancel"), None, Some(&c), true).await;
+    let used: Vec<String> = call(&s.app, "GET", "/api/v1/hosts", None, Some(&c), false).await.json().as_array().unwrap().iter().filter(|h| !h["used_by"].as_array().unwrap().is_empty()).map(|h| h["name"].as_str().unwrap().to_string()).collect();
+    assert_eq!(used, vec!["db-1", "web-1"], "the Hosts page shows which runbooks target each host");
+
+    let none = create(&s, &c, json!({"name": "Nobody", "targets": {"filter": "tags:mars"}, "steps": [{"name": "a", "run": "true"}]})).await;
+    assert_eq!(call(&s.app, "POST", &format!("/api/v1/runbooks/{none}/runs"), None, Some(&c), true).await.status, StatusCode::CONFLICT);
+}
+
+// Retrying unfinished hosts
+
+#[tokio::test]
+async fn retry_runs_only_the_hosts_that_didnt_finish() {
+    let s = server();
+    let c = sign_in(&s).await;
+    let auth = fleet(&s, &c, &["r1", "r2", "r3"]).await;
+    let rb = create(&s, &c, json!({"name": "Fleet", "targets": {"tags": ["fleet"]}, "steps": [{"name": "s", "run": "true"}]})).await;
+    let run = start(&s, &c, &rb).await;
+    let retry = |id: String| format!("/api/v1/runs/{id}/retry");
+    assert_eq!(call(&s.app, "POST", &retry(run.clone()), None, Some(&c), true).await.status, StatusCode::CONFLICT, "still running");
+    wait_running(&s, &c, &run, &["r1"]).await;
+    finish_on(&s, &auth["r1"], 0).await;
+    wait_running(&s, &c, &run, &["r2"]).await;
+    finish_on(&s, &auth["r2"], 1).await;
+    assert_eq!(wait_finished(&s, &c, &run).await["status"], "failed");
+
+    let r = call(&s.app, "POST", &retry(run.clone()), None, Some(&c), true).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let again = r.json();
+    let names: Vec<&str> = again["hosts"].as_array().unwrap().iter().map(|h| h["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["r2", "r3"], "the failed host and the one it caused to be skipped");
+    assert_eq!((again["trigger"].as_str(), again["retry_of"].as_str()), (Some("retry"), Some(run.as_str())));
+    let again_id = again["id"].as_str().unwrap().to_string();
+    wait_running(&s, &c, &again_id, &["r2"]).await;
+    finish_on(&s, &auth["r2"], 0).await;
+    wait_running(&s, &c, &again_id, &["r3"]).await;
+    finish_on(&s, &auth["r3"], 0).await;
+    assert_eq!(wait_finished(&s, &c, &again_id).await["status"], "succeeded");
+    let nothing = call(&s.app, "POST", &retry(again_id), None, Some(&c), true).await;
+    assert_eq!(nothing.status, StatusCode::CONFLICT);
+    assert!(nothing.json()["detail"].as_str().unwrap().contains("nothing to retry"));
+}
+
+#[tokio::test]
+async fn retry_reuses_inputs_but_asks_for_secrets_again() {
+    let s = server();
+    let c = sign_in(&s).await;
+    let inputs = json!([{"name": "svc", "type": "text", "required": true}, {"name": "tok", "type": "secret", "required": true}]);
+    let rb = create(&s, &c, json!({"name": "Deploy", "inputs": inputs, "steps": [{"name": "s", "run": "exit 1"}]})).await;
+    let r = start_with(&s, &c, &rb, json!({"inputs": {"svc": "api", "tok": "tok-4410"}})).await;
+    let first = r.json()["id"].as_str().unwrap().to_string();
+    assert_eq!(wait_finished(&s, &c, &first).await["status"], "failed");
+    // Fix the runbook; a retry uses it as it is now.
+    let upd = call(&s.app, "PUT", &format!("/api/v1/runbooks/{rb}"), Some(json!({"name": "Deploy", "inputs": inputs, "steps": [{"name": "s", "run": "echo svc=$OPSKILLS_INPUT_SVC tok=$OPSKILLS_INPUT_TOK"}]})), Some(&c), true).await;
+    assert_eq!(upd.status, StatusCode::OK, "{}", upd.body);
+    let url = format!("/api/v1/runs/{first}/retry");
+    let missing = call(&s.app, "POST", &url, None, Some(&c), true).await;
+    assert_eq!(missing.status, StatusCode::BAD_REQUEST, "{}", missing.body);
+    let ok = call(&s.app, "POST", &url, Some(json!({"inputs": {"tok": "tok-5520"}})), Some(&c), true).await;
+    assert_eq!(ok.status, StatusCode::CREATED, "{}", ok.body);
+    let again = wait_finished(&s, &c, ok.json()["id"].as_str().unwrap()).await;
+    assert_eq!(again["status"], "succeeded");
+    assert_eq!(again["inputs"]["svc"], "api");
+    let lines = log_lines(&s, &c, again["id"].as_str().unwrap()).await;
+    assert!(lines.iter().any(|l| l == &format!("svc=api tok={}", crate::executor::MASK)), "{lines:?}");
+}

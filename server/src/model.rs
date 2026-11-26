@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::filter::HostFilter;
 use crate::template::{self, seconds};
 
 pub fn now_ms() -> u64 {
@@ -583,7 +584,8 @@ pub struct RunbookInput {
     pub timeout_seconds: Option<u64>,
 }
 
-/// Hosts a runbook runs on: specific hosts by id, plus every host with one of the tags.
+/// Hosts a runbook runs on: specific hosts by id, every host with one of the tags,
+/// and every host the filter matches.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Targets {
@@ -591,11 +593,21 @@ pub struct Targets {
     pub hosts: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// A host filter expression, like `tags:web !name:db-*`. Never matches the server.
+    #[serde(default)]
+    pub filter: String,
 }
 
 impl Targets {
     pub fn is_server(&self) -> bool {
-        self.hosts.is_empty() && self.tags.is_empty()
+        self.hosts.is_empty() && self.tags.is_empty() && self.filter.trim().is_empty()
+    }
+
+    /// Whether an enrolled host (not the server) is a target.
+    pub fn includes(&self, host: &Host) -> bool {
+        self.hosts.contains(&host.id)
+            || host.tags.iter().any(|t| self.tags.contains(t))
+            || HostFilter::parse(&self.filter).is_ok_and(|f| f.matches(host))
     }
 }
 
@@ -642,6 +654,8 @@ impl RunbookInput {
                 }
         }
         self.targets.tags = target_tags;
+        self.targets.filter = self.targets.filter.split_whitespace().collect::<Vec<_>>().join(" ");
+        HostFilter::parse(&self.targets.filter)?;
         self.targets.hosts.dedup();
         if self.targets.hosts.len() > 200 || self.targets.tags.len() > 20 {
             return Err("A runbook can target at most 200 hosts and 20 tags.".into());
@@ -799,6 +813,24 @@ pub struct Run {
     /// 0 for a run started directly, 1 for a run it called, and so on.
     #[serde(default)]
     pub depth: u32,
+    /// The run whose unfinished hosts this run retries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_of: Option<String>,
+}
+
+impl Run {
+    /// Hosts of this run that didn't finish well: a step failed (and doesn't continue
+    /// on error), or was skipped, cancelled or never ran. In run order.
+    pub fn unfinished_hosts(&self) -> Vec<RunHost> {
+        let ok = |s: &StepResult| s.status == Status::Succeeded || (s.status == Status::Failed && s.continue_on_error);
+        let mut out: Vec<RunHost> = Vec::new();
+        for s in &self.steps {
+            if !ok(s) && !out.iter().any(|h| h.id == s.host_id) {
+                out.push(RunHost { id: s.host_id.clone(), name: s.host_name.clone() });
+            }
+        }
+        out
+    }
 }
 
 fn local_id() -> String {
@@ -862,6 +894,7 @@ impl Run {
             log_lines: 0,
             parent: None,
             depth: 0,
+            retry_of: None,
         }
     }
 

@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownToLine, ArrowLeft, ArrowUpRight, Ban, Check, CircleStop, Loader2, RotateCcw, Search, Server, X } from "lucide-react";
-import { api, isActive, type LogLine, type Run, type StepResult } from "../api";
+import { ArrowDownToLine, ArrowLeft, ArrowUpRight, Ban, Check, CircleStop, Loader2, Redo2, RotateCcw, Search, Server, X } from "lucide-react";
+import { api, isActive, type LogLine, type Run, type Runbook, type StepResult } from "../api";
 import { clock, duration, runDuration, runNumber, timeAgo } from "../format";
 import { Button, Card, CardHeader, cx, ErrorNote, StatusPill } from "../components/ui";
+import { StartRunDialog } from "../components/StartRun";
+import { go } from "../router";
 import { useRunNow } from "./Runbooks";
+
+/** Hosts of a finished run that didn't finish well, as the server counts them for a retry. */
+function unfinishedHosts(run: Run) {
+  const ok = (s: StepResult) => s.status === "succeeded" || (s.status === "failed" && !!s.continue_on_error);
+  return [...new Set(run.steps.filter((s) => !ok(s)).map((s) => s.host_name))];
+}
 
 /** Subscribe to a run's live events; replays everything so far, then streams. */
 function useRunStream(id: string) {
@@ -94,6 +102,9 @@ export function RunDetail({ id }: { id: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const { runNow, busy, error: runError, dialog } = useRunNow();
+  const [retrying, setRetrying] = useState(false);
+  // A runbook with secret inputs asks for them again before retrying.
+  const [retryAsk, setRetryAsk] = useState<Runbook | null>(null);
 
   const shown = useMemo(
     () => lines.filter((l) => (stepFilter === null || l.step === stepFilter) && (!q || l.line.toLowerCase().includes(q.toLowerCase()))),
@@ -106,6 +117,26 @@ export function RunDetail({ id }: { id: string }) {
 
   if (error) return <ErrorNote>{error}</ErrorNote>;
   if (!run) return <p className="text-sm text-muted">Loading run...</p>;
+
+  const unfinished = isActive(run.status) || run.status === "succeeded" ? [] : unfinishedHosts(run);
+
+  async function retry() {
+    setRetrying(true);
+    setActionError(null);
+    try {
+      const rb = await api.runbook(run!.runbook_id);
+      if (rb.inputs?.some((d) => d.type === "secret")) {
+        setRetryAsk(rb);
+      } else {
+        const again = await api.retryRun(run!.id);
+        go(`runs/${again.id}`);
+      }
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   async function cancel() {
     setCancelling(true);
@@ -131,6 +162,18 @@ export function RunDetail({ id }: { id: string }) {
   return (
     <>
       {dialog}
+      {retryAsk && (
+        <StartRunDialog
+          rb={retryAsk}
+          prefill={run.inputs}
+          title={`Retry ${unfinished.length} host${unfinished.length === 1 ? "" : "s"} of run #${runNumber(run.id)}`}
+          onStart={async (inputs) => {
+            const again = await api.retryRun(run.id, inputs);
+            go(`runs/${again.id}`);
+          }}
+          onClose={() => setRetryAsk(null)}
+        />
+      )}
       <a href={`#/runbooks/${run.runbook_id}`} className="mb-3 inline-flex items-center gap-1 text-sm text-muted hover:text-ink">
         <ArrowLeft className="size-3.5" /> {run.runbook_name}
       </a>
@@ -142,7 +185,15 @@ export function RunDetail({ id }: { id: string }) {
             <StatusPill status={run.status} />
           </div>
           <p className="mt-1 text-sm text-muted">
-            {run.parent ? (
+            {run.retry_of ? (
+              <>
+                Retries{" "}
+                <a href={`#/runs/${run.retry_of}`} className="font-medium text-accent hover:underline">
+                  run #{runNumber(run.retry_of)}
+                </a>
+                , started by {run.started_by}
+              </>
+            ) : run.parent ? (
               <>
                 Called by{" "}
                 <a href={`#/runs/${run.parent.run_id}`} className="font-medium text-accent hover:underline">
@@ -166,9 +217,16 @@ export function RunDetail({ id }: { id: string }) {
               <CircleStop className="size-4" /> {cancelling ? "Cancelling..." : "Cancel run"}
             </Button>
           ) : (
-            <Button variant="primary" disabled={busy === run.runbook_id} onClick={() => runNow(run.runbook_id, run.inputs)}>
-              <RotateCcw className="size-3.5" /> Run again
-            </Button>
+            <>
+              {unfinished.length > 0 && (
+                <Button disabled={retrying} onClick={retry} title={`Run again on ${unfinished.join(", ")}`}>
+                  <Redo2 className="size-3.5" /> {retrying ? "Starting..." : `Retry ${unfinished.length} host${unfinished.length === 1 ? "" : "s"}`}
+                </Button>
+              )}
+              <Button variant="primary" disabled={busy === run.runbook_id} onClick={() => runNow(run.runbook_id, run.inputs)}>
+                <RotateCcw className="size-3.5" /> Run again
+              </Button>
+            </>
           )}
         </div>
       </div>
