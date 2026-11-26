@@ -34,6 +34,8 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
+        .route("/me/tokens", get(list_tokens).post(create_token))
+        .route("/me/tokens/{id}", axum::routing::delete(delete_token))
         .route("/runbooks", get(list_runbooks).post(create_runbook))
         .route("/runbooks/{id}", get(get_runbook).put(update_runbook).delete(delete_runbook))
         .route("/runbooks/{id}/runs", post(start_run))
@@ -90,15 +92,66 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = Result<T, ApiError>;
 
+/// Who is making a request, and the API token they used, if any.
 #[derive(Clone)]
-pub struct CurrentUser(pub String);
+pub struct CurrentUser {
+    pub user: String,
+    /// Name of the API token, when the request didn't come from a signed-in session.
+    pub token: Option<String>,
+}
 
-// Guard: CSRF header on writes, and a session everywhere except a few public endpoints.
+impl CurrentUser {
+    /// How runs and other records name the requester: "admin" or "admin (token ci)".
+    pub fn label(&self) -> String {
+        match &self.token {
+            Some(name) => format!("{} (token {name})", self.user),
+            None => self.user.clone(),
+        }
+    }
+}
+
+/// How long a token's last use may be stale before it's written again.
+const TOKEN_USE_RESOLUTION_MS: u64 = 60_000;
+
+/// The token a Bearer header carries, if it is valid, unexpired and not revoked.
+fn check_api_token(st: &AppState, raw: &str) -> Option<crate::model::ApiToken> {
+    let (id, secret) = auth::parse_api_token(raw)?;
+    let mut stored = st.store.api_token(id).ok()??;
+    if !auth::constant_time_eq(auth::token_hash(secret).as_bytes(), stored.secret_hash.as_bytes()) {
+        return None;
+    }
+    let now = now_ms();
+    if stored.token.expires_at.is_some_and(|e| e <= now) {
+        return None;
+    }
+    if stored.token.last_used_at.is_none_or(|t| now.saturating_sub(t) > TOKEN_USE_RESOLUTION_MS) {
+        stored.token.last_used_at = Some(now);
+        let _ = st.store.put_api_token(&stored);
+    }
+    Some(stored.token)
+}
+
+// Guard: an API token, or a session plus the CSRF header on writes, everywhere except a
+// few public endpoints.
 
 async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
     if path.starts_with("/agent/") || path.starts_with("/api/v1/agent/") {
         // Agents authenticate with their own credential in each handler; no cookies.
+        return next.run(req).await;
+    }
+    // API tokens: no cookies are involved, so no CSRF header is needed.
+    if let Some(raw) = auth::bearer_token(req.headers()) {
+        if path.ends_with("/system") {
+            return next.run(req).await;
+        }
+        let Some(token) = check_api_token(&st, &raw) else {
+            return ApiError::new(StatusCode::UNAUTHORIZED, "This API token is not valid, has expired or was revoked.").into_response();
+        };
+        if path.contains("/me/tokens") || (path.contains("/auth/") && !path.ends_with("/auth/me")) {
+            return ApiError::new(StatusCode::FORBIDDEN, "API tokens can't manage tokens or sign-ins. Sign in to the web app to do that.").into_response();
+        }
+        req.extensions_mut().insert(CurrentUser { user: token.user, token: Some(token.name) });
         return next.run(req).await;
     }
     let safe = matches!(*req.method(), Method::GET | Method::HEAD);
@@ -111,7 +164,7 @@ async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next) ->
     let user = auth::cookie_token(req.headers()).and_then(|t| st.store.session(&auth::token_hash(&t)).ok().flatten());
     match user {
         Some(session) => {
-            req.extensions_mut().insert(CurrentUser(session.user));
+            req.extensions_mut().insert(CurrentUser { user: session.user, token: None });
             next.run(req).await
         }
         None => ApiError::new(StatusCode::UNAUTHORIZED, "Sign in to continue.").into_response(),
@@ -173,7 +226,7 @@ async fn logout(State(st): State<Arc<AppState>>, req: Request) -> ApiResult<Resp
 }
 
 async fn me(Extension(user): Extension<CurrentUser>) -> Json<serde_json::Value> {
-    Json(json!({ "user": user.0 }))
+    Json(json!({ "user": user.user, "token": user.token }))
 }
 
 // Runbooks
@@ -298,6 +351,64 @@ async fn delete_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>)
     if st.store.delete_runbook(&id)? { Ok(StatusCode::NO_CONTENT) } else { Err(ApiError::not_found("Runbook")) }
 }
 
+// API tokens
+
+const MAX_TOKENS: usize = 50;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TokenInput {
+    name: String,
+    /// Days until the token stops working; null or absent for never.
+    #[serde(default)]
+    expires_in_days: Option<u32>,
+}
+
+async fn list_tokens(State(st): State<Arc<AppState>>) -> ApiResult<Json<Vec<crate::model::ApiToken>>> {
+    Ok(Json(st.store.api_tokens()?))
+}
+
+async fn create_token(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, body: String) -> ApiResult<Response> {
+    let input: TokenInput = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid token request: {e}")))?;
+    let name = input.name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 60 {
+        return Err(bad("Give the token a name of 1 to 60 characters, like \"CI deploy\".".into()));
+    }
+    if input.expires_in_days.is_some_and(|d| d == 0 || d > 3650) {
+        return Err(bad("A token can last 1 to 3650 days, or never expire.".into()));
+    }
+    let existing = st.store.api_tokens()?;
+    if existing.iter().any(|t| t.name.eq_ignore_ascii_case(&name)) {
+        return Err(ApiError::new(StatusCode::CONFLICT, format!("There is already a token named {name:?}.")));
+    }
+    if existing.len() >= MAX_TOKENS {
+        return Err(ApiError::new(StatusCode::CONFLICT, format!("You can have at most {MAX_TOKENS} tokens. Revoke one first.")));
+    }
+    let (id, secret, whole) = auth::new_api_token();
+    let now = now_ms();
+    let token = crate::model::ApiToken {
+        id,
+        name,
+        user: user.user.clone(),
+        created_at: now,
+        expires_at: input.expires_in_days.map(|d| now + u64::from(d) * 86_400_000),
+        last_used_at: None,
+    };
+    st.store.put_api_token(&crate::model::StoredApiToken { token: token.clone(), secret_hash: auth::token_hash(&secret) })?;
+    tracing::info!(token_id = %token.id, name = %token.name, "API token created");
+    // The only time the token itself is ever shown.
+    Ok((StatusCode::CREATED, Json(json!({ "token": token, "value": whole }))).into_response())
+}
+
+async fn delete_token(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    if st.store.delete_api_token(&id)? {
+        tracing::info!(token_id = %id, "API token revoked");
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::not_found("Token"))
+    }
+}
+
 // Runs
 
 /// Optional body of `POST /runbooks/{id}/runs`.
@@ -322,7 +433,7 @@ async fn start_run(State(st): State<Arc<AppState>>, Extension(user): Extension<C
         StartError::Internal(e) => e.into(),
     })?;
     let hosts = run_hosts(&st, &rb)?;
-    let run = Run::new(&rb, &user.0, hosts, &values.inputs);
+    let run = Run::new(&rb, &user.label(), hosts, &values.inputs);
     let run = st.executor.start(run, values)?;
     Ok((StatusCode::CREATED, Json(run)).into_response())
 }
@@ -419,7 +530,7 @@ async fn retry_run(State(st): State<Arc<AppState>>, Extension(user): Extension<C
         StartError::Conflict(m) => ApiError::new(StatusCode::CONFLICT, m),
         StartError::Internal(e) => e.into(),
     })?;
-    let mut run = Run::new(&rb, &user.0, kept, &values.inputs);
+    let mut run = Run::new(&rb, &user.label(), kept, &values.inputs);
     run.trigger = "retry".into();
     run.retry_of = Some(earlier.id.clone());
     let run = st.executor.start(run, values)?;
@@ -696,7 +807,7 @@ async fn create_enrollment_token(State(st): State<Arc<AppState>>, Extension(user
     st.store.purge_expired_enrollment_tokens()?;
     let token = auth::new_token();
     let now = now_ms();
-    let t = EnrollmentToken { created_at: now, expires_at: now + ENROLLMENT_HOURS * 3_600_000, created_by: user.0 };
+    let t = EnrollmentToken { created_at: now, expires_at: now + ENROLLMENT_HOURS * 3_600_000, created_by: user.label() };
     st.store.put_enrollment_token(&auth::token_hash(&token), &t)?;
     tracing::info!("enrollment token created");
     Ok((StatusCode::CREATED, Json(json!({ "token": token, "expires_at": t.expires_at }))).into_response())

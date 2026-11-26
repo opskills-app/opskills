@@ -138,6 +138,12 @@ Since 0.4.0, runbooks have typed inputs and per-step control:
   sink and the halt flags are shared behind short-lived locks. A failed step stops
   only its own host; `on_host_failure` decides whether hosts that haven't started
   still run.
+- API tokens (since 0.7.0): `osk_<12 hex id>_<64 hex secret>`, stored by id with the
+  SHA-256 of the secret, compared in constant time. The guard accepts `Authorization:
+  Bearer` (no CSRF header needed, since no cookie is involved) or a session. Tokens
+  can't reach `/me/tokens` or `/auth/*` except `GET /auth/me`, so a leaked token can't
+  mint another. Runs record `admin (token <name>)`; last use is written at most once
+  a minute.
 - Targets add a host filter (since 0.6.0): `filter.rs` parses `key:value` terms with
   globs, `!` and comma alternatives, all of which must match. A run's hosts are the
   union of explicit ids, tags and filter matches; the server is never matched by a

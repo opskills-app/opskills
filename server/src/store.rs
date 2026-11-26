@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{EnrollmentToken, Host, LogLine, Run, Runbook, Secret, Status, StoredHost, StoredSecret, now_ms};
+use crate::model::{ApiToken, EnrollmentToken, Host, LogLine, Run, Runbook, Secret, Status, StoredApiToken, StoredHost, StoredSecret, now_ms};
 
 const RUNBOOKS: TableDefinition<&str, &str> = TableDefinition::new("runbooks");
 const RUNS: TableDefinition<&str, &str> = TableDefinition::new("runs");
@@ -23,6 +23,8 @@ const HOSTS: TableDefinition<&str, &str> = TableDefinition::new("hosts");
 const ENROLLMENT: TableDefinition<&str, &str> = TableDefinition::new("enrollment_tokens");
 /// Key: SHA-256 of the session token, hex.
 const SESSIONS: TableDefinition<&str, &str> = TableDefinition::new("sessions");
+/// Key: API token id. Value: the token plus the SHA-256 of its secret.
+const API_TOKENS: TableDefinition<&str, &str> = TableDefinition::new("api_tokens");
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
@@ -52,6 +54,7 @@ impl Store {
             w.open_table(SECRETS)?;
             w.open_table(HOSTS)?;
             w.open_table(ENROLLMENT)?;
+            w.open_table(API_TOKENS)?;
         }
         w.commit()?;
         Ok(Store { db })
@@ -280,6 +283,24 @@ impl Store {
     }
 
     // Sessions
+
+    // API tokens
+
+    pub fn put_api_token(&self, t: &StoredApiToken) -> Result<()> {
+        self.put(API_TOKENS, &t.token.id, &serde_json::to_string(t)?)
+    }
+    pub fn api_token(&self, id: &str) -> Result<Option<StoredApiToken>> {
+        self.get(API_TOKENS, id)?.map(|s| serde_json::from_str(&s).map_err(Into::into)).transpose()
+    }
+    /// Every token, newest first.
+    pub fn api_tokens(&self) -> Result<Vec<ApiToken>> {
+        let mut out: Vec<ApiToken> = self.values(API_TOKENS)?.iter().map(|s| serde_json::from_str::<StoredApiToken>(s).map(|t| t.token)).collect::<Result<_, _>>()?;
+        out.sort_by_key(|t| std::cmp::Reverse(t.created_at));
+        Ok(out)
+    }
+    pub fn delete_api_token(&self, id: &str) -> Result<bool> {
+        self.remove(API_TOKENS, id)
+    }
 
     pub fn put_session(&self, token_hash: &str, s: &Session) -> Result<()> {
         self.put(SESSIONS, token_hash, &serde_json::to_string(s)?)
