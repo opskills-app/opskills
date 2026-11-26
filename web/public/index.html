@@ -154,23 +154,6 @@
     .frame img.theme-dark { display: none; }
     :root[data-theme="dark"] .frame img.theme-dark { display: block; }
     :root[data-theme="dark"] .frame img.theme-light { display: none; }
-    .float {
-      position: absolute; z-index: 2; display: none; align-items: center; gap: 12px;
-      padding: 14px 18px; border-radius: 18px; background: var(--surface); box-shadow: 0 18px 50px -18px rgb(40 20 120 / 0.4);
-      font-size: 13px;
-    }
-    .float b { display: block; font-size: 14px; }
-    .float small { color: var(--muted); }
-    @media (min-width: 1000px) { .float { display: flex; } }
-    .float.left { left: -40px; bottom: -60px; }
-    .float.right { right: -40px; top: -30px; }
-    .badge {
-      display: inline-flex; align-items: center; justify-content: center; padding: 3px 10px; border-radius: 5px;
-      font-size: 12px; font-weight: 500; border: 1px solid;
-    }
-    .badge.blue { color: var(--sky-ink); border-color: var(--sky-ink); background: color-mix(in oklab, var(--sky-ink) 12%, transparent); }
-    .badge.green { color: var(--mint-ink); border-color: var(--mint-ink); background: color-mix(in oklab, var(--mint-ink) 12%, transparent); }
-    .badge.amber { color: var(--amber-ink); border-color: var(--amber-ink); background: color-mix(in oklab, var(--amber-ink) 12%, transparent); }
 
     /* Sections */
     section { padding: 88px 0 0; }
@@ -299,7 +282,6 @@
       <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
       <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
       <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-      <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></symbol>
       <symbol id="i-github" viewBox="0 0 16 16"><path fill="currentColor" d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></symbol>
     </defs>
   </svg>
@@ -349,16 +331,6 @@
       </div>
 
       <div class="shot">
-        <div class="float left">
-          <span class="bubble violet" style="width:44px;height:44px"><svg style="width:20px;height:20px" aria-hidden="true"><use href="#i-play"/></svg></span>
-          <span><b>Rolling restart: web tier</b><small>Step 2 of 3: Restart</small></span>
-          <span class="badge blue">Running</span>
-        </div>
-        <div class="float right">
-          <span class="bubble mint" style="width:44px;height:44px"><svg style="width:20px;height:20px" aria-hidden="true"><use href="#i-check-circle"/></svg></span>
-          <span><b>Check disk space</b><small>2 steps in 1s, exit code 0</small></span>
-          <span class="badge green">Succeeded</span>
-        </div>
         <div class="frame">
           <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
           <img class="theme-light" src="app-light.jpg" width="2880" height="1764" alt="The OpSkills overview: runs this week, success rate, runbooks, a daily run chart, results and recent runs">
