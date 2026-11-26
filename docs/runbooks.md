@@ -285,7 +285,7 @@ test** to check it before saving.
 | `on` | Any of `started`, `succeeded`, `failed` and `slow` |
 | `slow_after_seconds` | With `slow`: how long a run may take before it counts as slow. Sent once per run, while it's still running |
 | `webhook` | A URL that gets a JSON `POST` |
-| `headers` | Extra headers for the webhook, up to 10: `[{"name": "X-Api-Key", "value": "{{ secrets.ALERT_API_KEY }}"}]` |
+| `headers` | Extra headers for the webhook, up to 10: `[{"name": "X-Api-Key", "value": "{{ secrets.ACME_API_KEY }}"}]` |
 | `body` | A custom JSON body for the webhook, as a string (see below) |
 | `auth` | Sign the webhook call in: `{"type": "bearer", "secret": "HOOK_TOKEN"}` or `{"type": "basic", "username": "ops", "secret": "HOOK_PASSWORD"}` |
 | `email` | Or up to 20 addresses; email must be set up first ([how](install.md#sending-email)) |
@@ -319,7 +319,7 @@ when the message goes out, and kept out of any recorded error. A secret in use
 can't be deleted from the vault. `Host`, `Content-Type`, `Content-Length`,
 `Connection`, `Transfer-Encoding` and `X-OpSkills-Event` are set by OpSkills.
 
-**Custom body.** Some receivers want their own format, like an incident tool's events API.
+**Custom body.** Some receivers want their own format, like an alerting service's events API.
 Under **Body**, pick **Custom** and write the JSON to send. Any string in it can
 use placeholders, which take the same fields as the default body:
 
@@ -341,14 +341,15 @@ value as nothing). Values are always escaped, so the result is valid JSON. The b
 is checked when you save: it must be a JSON object or array, at most 16 KB, using
 only these placeholders. **Send a test** fills it with example values.
 
-To open an incident in an alerting tool when a run fails, and close it when the
-runbook next succeeds, use two webhook notifications to the tool's events URL,
-with its key in the vault (here `ALERT_ROUTING_KEY`). The first, on **Failed**,
-can start from **Start from an incident example** in the editor:
+For example, to open an alert in Acme, a made-up alerting service, when a run
+fails, and close it when the runbook next succeeds, use two webhook notifications
+to Acme's events URL (say `https://events.acme.example/v2/enqueue`), with its key
+in the vault as `ACME_ROUTING_KEY`. The first, on **Failed**, can start from
+**Start from the Acme example** in the editor:
 
 ```json
 {
-  "routing_key": "{{ secrets.ALERT_ROUTING_KEY }}",
+  "routing_key": "{{ secrets.ACME_ROUTING_KEY }}",
   "event_action": "trigger",
   "dedup_key": "opskills-{{ runbook.id }}",
   "payload": {"summary": "{{ text }}", "source": "opskills", "severity": "error",
@@ -359,8 +360,8 @@ can start from **Start from an incident example** in the editor:
 
 The second, on **Succeeded**, sends the same key and dedup key with the action
 that resolves, like
-`{"routing_key": "{{ secrets.ALERT_ROUTING_KEY }}", "event_action": "resolve", "dedup_key": "opskills-{{ runbook.id }}"}`.
-Rename the fields to the ones your tool's API documents. Set `server.public_url`
+`{"routing_key": "{{ secrets.ACME_ROUTING_KEY }}", "event_action": "resolve", "dedup_key": "opskills-{{ runbook.id }}"}`.
+For a real service, use the URL and field names its API documents. Set `server.public_url`
 so `run.url` has a value.
 
 The header `X-OpSkills-Event` names the event. `output_tail` holds the last 20

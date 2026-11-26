@@ -1764,7 +1764,7 @@ async fn webhook_notifications_can_send_a_custom_body() {
     let (base, seen) = receiver().await;
     let s = server();
     let c = sign_in(&s).await;
-    add_secret(&s, &c, "ALERT_ROUTING_KEY", "R0UT1NG").await;
+    add_secret(&s, &c, "ACME_ROUTING_KEY", "R0UT1NG").await;
     let rb = |n: Value| json!({"name": "B", "steps": [{"name": "a", "run": "true"}], "notifications": [n]});
     for bad in [
         json!({"on": ["failed"], "webhook": base, "body": "{not json"}),
@@ -1777,7 +1777,7 @@ async fn webhook_notifications_can_send_a_custom_body() {
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad} -> {}", r.body);
     }
     let template = r#"{
-      "routing_key": "{{ secrets.ALERT_ROUTING_KEY }}",
+      "routing_key": "{{ secrets.ACME_ROUTING_KEY }}",
       "event_action": "trigger",
       "dedup_key": "opskills-{{ runbook.id }}",
       "payload": {
@@ -1825,5 +1825,5 @@ async fn webhook_notifications_can_send_a_custom_body() {
     assert_eq!(tb["code"], json!(1));
     assert!(tb["summary"].as_str().unwrap().contains("test notification"));
     // A secret used in a body can't be deleted.
-    assert_eq!(call(&s.app, "DELETE", "/api/v1/secrets/ALERT_ROUTING_KEY", None, Some(&c), true).await.status, StatusCode::CONFLICT);
+    assert_eq!(call(&s.app, "DELETE", "/api/v1/secrets/ACME_ROUTING_KEY", None, Some(&c), true).await.status, StatusCode::CONFLICT);
 }

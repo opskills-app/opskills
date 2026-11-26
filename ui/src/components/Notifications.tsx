@@ -27,9 +27,9 @@ export function cleanNotification(n: Notification): Notification {
   return { ...base, webhook: n.webhook.trim(), headers: headers.length ? headers : undefined, auth: n.auth, body: n.body?.trim() ? n.body : undefined };
 }
 
-/** A starting point for incident and alerting tools: trigger with a dedup key. */
-const incidentBody = `{
-  "routing_key": "{{ secrets.ALERT_ROUTING_KEY }}",
+/** An example body for Acme, a made-up alerting service: trigger with a dedup key. */
+const acmeBody = `{
+  "routing_key": "{{ secrets.ACME_ROUTING_KEY }}",
   "event_action": "trigger",
   "dedup_key": "opskills-{{ runbook.id }}",
   "payload": {
@@ -73,8 +73,8 @@ function BodyEditor({ n, index, onChange }: { n: Notification; index: number; on
           ))}
         </div>
         {custom && (
-          <button type="button" onClick={() => onChange({ ...n, body: incidentBody })} className="text-xs font-medium text-accent hover:underline">
-            Start from an incident example
+          <button type="button" onClick={() => onChange({ ...n, body: acmeBody })} className="text-xs font-medium text-accent hover:underline">
+            Start from the Acme example
           </button>
         )}
       </div>
