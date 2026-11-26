@@ -2,9 +2,14 @@
 //! hosts in turn. Steps for the OpSkills server run here; steps for enrolled hosts go
 //! to their agents through the hub.
 //!
+//! A failed step can be retried, can continue on error, and otherwise either stops
+//! the run or lets the remaining steps finish before the run fails, as the runbook
+//! says. Commands get their `{{ ... }}` references expanded per host, and every
+//! input is also an `OPSKILLS_INPUT_<NAME>` environment variable.
+//!
 //! Output is broadcast live to subscribers and written to the store in batches.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -16,11 +21,11 @@ use tokio::process::Command;
 use tokio::sync::{Semaphore, broadcast, mpsc, watch};
 
 use crate::hub::{AgentMsg, CONTACT_TIMEOUT, End, Hub, Job, JobEnd, PICKUP_TIMEOUT};
-use crate::model::{LOCAL_HOST_ID, LOCAL_HOST_NAME, LogLine, Run, RunHost, Status, now_ms};
+use crate::model::{FailurePolicy, InputValue, LOCAL_HOST_ID, LOCAL_HOST_NAME, LimitAction, LogLine, Run, RunHost, Status, now_ms};
 use crate::store::Store;
+use crate::template;
 
 const MAX_LINE_CHARS: usize = 4000;
-const MAX_LINES_PER_RUN: u64 = 20_000;
 const FLUSH_EVERY: Duration = Duration::from_millis(250);
 const KILL_GRACE: Duration = Duration::from_secs(5);
 pub const SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -41,6 +46,59 @@ struct Live {
 
 /// Secret values a run needs, as environment variables. Held only in memory.
 pub type SecretEnv = Vec<(String, String)>;
+
+/// Everything a run needs besides what its record holds. Held only in memory.
+#[derive(Default)]
+pub struct RunValues {
+    /// Vault secrets, as environment variables.
+    pub secrets: SecretEnv,
+    pub inputs: Vec<InputValue>,
+}
+
+impl RunValues {
+    /// Values to hide in output: vault secrets and secret inputs.
+    fn hidden(&self) -> Vec<String> {
+        self.secrets.iter().map(|(_, v)| v.clone()).chain(self.inputs.iter().filter(|i| i.secret).map(|i| i.value.clone())).collect()
+    }
+
+    /// Environment a step on `host` gets besides the base environment.
+    fn env(&self, run: &Run, host: &RunHost) -> Vec<(String, String)> {
+        let mut env = vec![
+            ("OPSKILLS_RUNBOOK_ID".to_string(), run.runbook_id.clone()),
+            ("OPSKILLS_RUNBOOK_NAME".to_string(), run.runbook_name.clone()),
+            ("OPSKILLS_STARTED_BY".to_string(), run.started_by.clone()),
+            ("OPSKILLS_HOST_ID".to_string(), host.id.clone()),
+            ("OPSKILLS_HOST_NAME".to_string(), host.name.clone()),
+        ];
+        env.extend(self.inputs.iter().map(|i| (i.env_name(), i.value.clone())));
+        env.extend(self.secrets.iter().cloned());
+        env
+    }
+
+    /// What `{{ scope.name }}` references expand to on `host`.
+    fn template_values(&self, run: &Run, host: &RunHost) -> BTreeMap<String, String> {
+        let mut v: BTreeMap<String, String> = [
+            ("run.id", run.id.as_str()),
+            ("run.started_by", run.started_by.as_str()),
+            ("runbook.id", run.runbook_id.as_str()),
+            ("runbook.name", run.runbook_name.as_str()),
+            ("host.id", host.id.as_str()),
+            ("host.name", host.name.as_str()),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        v.extend(self.inputs.iter().map(|i| (format!("inputs.{}", i.name), i.value.clone())));
+        v
+    }
+}
+
+/// What ended a run early, so every later step is skipped.
+#[derive(Clone, Copy, PartialEq)]
+enum Halt {
+    Failed,
+    Cancelled,
+}
 
 pub struct Executor {
     store: Arc<Store>,
@@ -74,7 +132,7 @@ impl Executor {
     }
 
     /// Persist the queued run and start it in the background.
-    pub fn start(self: &Arc<Self>, run: Run, secrets: SecretEnv) -> anyhow::Result<Run> {
+    pub fn start(self: &Arc<Self>, run: Run, values: RunValues) -> anyhow::Result<Run> {
         self.store.put_run(&run)?;
         let (tx, _) = broadcast::channel(4096);
         let (cancel, cancel_rx) = watch::channel(false);
@@ -84,7 +142,7 @@ impl Executor {
         let snapshot = run.clone();
         tokio::spawn(async move {
             let id = run.id.clone();
-            me.execute(run, secrets, live, cancel_rx).await;
+            me.execute(run, values, live, cancel_rx).await;
             me.live.lock().unwrap().remove(&id);
         });
         Ok(snapshot)
@@ -97,12 +155,13 @@ impl Executor {
         let _ = live.tx.send(Event::Run(Box::new(run.clone())));
     }
 
-    async fn execute(&self, mut run: Run, secrets: SecretEnv, live: Arc<Live>, mut cancel_rx: watch::Receiver<bool>) {
+    async fn execute(&self, mut run: Run, values: RunValues, live: Arc<Live>, mut cancel_rx: watch::Receiver<bool>) {
         let permit = tokio::select! {
             p = self.limit.clone().acquire_owned() => p.ok(),
             _ = wait_cancel(&mut cancel_rx) => None,
         };
-        let mut sink = Sink::new(&run.id, &live, &self.store, &secrets);
+        let limit = run.output_limit;
+        let mut sink = Sink::new(&run.id, &live, &self.store, &values.hidden(), limit.lines, limit.action == LimitAction::Fail);
         if permit.is_none() {
             run.status = Status::Cancelled;
             for s in &mut run.steps {
@@ -121,26 +180,36 @@ impl Executor {
         self.publish(&live, &run);
         tracing::info!(run_id = %run.id, runbook = %run.runbook_name, "run started");
 
-        let timeout = Duration::from_secs(run.timeout_seconds.max(1));
         let hosts = if run.hosts.is_empty() { vec![RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into() }] } else { run.hosts.clone() };
         let per_host = run.steps.len() / hosts.len();
-        let mut outcome = Status::Succeeded;
+        let finish_anyway = run.on_step_failure == FailurePolicy::FinishThenFail;
+        // A step failed that doesn't continue on error: the run ends as failed.
+        let mut failed = false;
+        let mut halt: Option<Halt> = None;
         for (h, host) in hosts.iter().enumerate() {
             let range = h * per_host..(h + 1) * per_host;
             sink.host = host.name.clone();
             let local = host.id == LOCAL_HOST_ID;
             let workdir = self.work_root.join(&run.id);
-            if local && outcome == Status::Succeeded
+            let env = values.env(&run, host);
+            let template_values = values.template_values(&run, host);
+            let mut host_ok = true;
+            if local && halt.is_none()
                 && let Err(err) = std::fs::create_dir_all(&workdir) {
                     sink.system(range.start, &format!("Could not create the working directory: {err}"));
-                    outcome = Status::Failed;
+                    failed = true;
+                    host_ok = false;
+                    if !finish_anyway {
+                        halt = Some(Halt::Failed);
+                    }
                 }
             for i in range.clone() {
-                if outcome != Status::Succeeded {
+                if halt.is_some() || !host_ok {
                     run.steps[i].status = Status::Skipped;
                     continue;
                 }
                 let number = i - range.start + 1;
+                let last_on_host = i + 1 == range.end;
                 run.steps[i].status = Status::Running;
                 run.steps[i].started_at = Some(now_ms());
                 run.log_lines = sink.count;
@@ -150,49 +219,84 @@ impl Executor {
                 }
                 sink.system(i, &format!("Step {number}: {}", run.steps[i].name));
 
-                let command = run.steps[i].run.clone();
-                let result = if local {
-                    let mut env = base_env(&workdir, &run.id, number);
-                    env.extend(secrets.iter().cloned());
-                    run_command(&command, &workdir, &env, timeout, &mut cancel_rx, |stream, line| sink.push(i, stream, &line)).await
-                } else {
-                    let job = Job {
-                        id: uuid::Uuid::now_v7().to_string(),
-                        run_id: run.id.clone(),
-                        step: number,
-                        command,
-                        env: secrets.clone(),
-                        timeout_seconds: timeout.as_secs(),
-                        last: i + 1 == range.end,
+                let step = run.steps[i].clone();
+                let command = template::expand(&step.run, &template_values);
+                let timeout = Duration::from_secs(if step.timeout_seconds > 0 { step.timeout_seconds } else { run.timeout_seconds }.max(1));
+                let tries = step.retries + 1;
+                // Later steps on this host may still run after this one fails, so its files must stay.
+                let more_after_failure = !last_on_host && (step.continue_on_error || finish_anyway);
+                let mut attempt = 0;
+                let result = loop {
+                    attempt += 1;
+                    run.steps[i].attempts = attempt;
+                    if attempt > 1 {
+                        sink.system(i, &format!("Attempt {attempt} of {tries}."));
+                        run.log_lines = sink.count;
+                        self.publish(&live, &run);
+                    }
+                    let result = if local {
+                        let mut step_env = base_env(&workdir, &run.id, number);
+                        step_env.extend(env.iter().cloned());
+                        run_command(&command, &workdir, &step_env, timeout, &mut cancel_rx, |stream, line| sink.push(i, stream, &line)).await
+                    } else {
+                        let job = Job {
+                            id: uuid::Uuid::now_v7().to_string(),
+                            run_id: run.id.clone(),
+                            step: number,
+                            command: command.clone(),
+                            env: env.clone(),
+                            timeout_seconds: timeout.as_secs(),
+                            last: last_on_host,
+                            keep_on_failure: attempt < tries || more_after_failure,
+                        };
+                        self.run_remote(&host.id, job, timeout, &mut cancel_rx, &mut sink, i).await
                     };
-                    self.run_remote(&host.id, job, timeout, &mut cancel_rx, &mut sink, i).await
+                    let succeeded = result.end == End::Exited && result.exit_code == Some(0);
+                    if succeeded || result.end == End::Cancelled || attempt >= tries {
+                        break result;
+                    }
+                    sink.system(i, &failure_message(&result, timeout));
+                    let delay = Duration::from_secs(step.retry_delay_seconds);
+                    if !delay.is_zero() {
+                        sink.system(i, &format!("Trying again in {}.", human_duration(step.retry_delay_seconds)));
+                        tokio::select! {
+                            _ = tokio::time::sleep(delay) => {}
+                            _ = wait_cancel(&mut cancel_rx) => break JobEnd { end: End::Cancelled, exit_code: None, error: None },
+                        }
+                    }
                 };
+
+                let over_limit = sink.limit_hit;
                 let step = &mut run.steps[i];
                 step.finished_at = Some(now_ms());
                 step.exit_code = result.exit_code;
                 step.status = match result.end {
                     End::Exited if result.exit_code == Some(0) => Status::Succeeded,
-                    End::Cancelled => Status::Cancelled,
+                    End::Cancelled if !over_limit => Status::Cancelled,
                     _ => Status::Failed,
                 };
-                match result.end {
-                    End::Exited if result.exit_code != Some(0) => {
-                        sink.system(i, &format!("Step failed with exit code {}.", result.exit_code.unwrap_or(-1)));
-                        outcome = Status::Failed;
+                if step.status == Status::Succeeded {
+                    continue;
+                }
+                if over_limit {
+                    sink.system(i, &format!("The run reached its output limit of {} lines and was stopped.", limit.lines));
+                    failed = true;
+                    halt = Some(Halt::Failed);
+                } else if result.end == End::Cancelled {
+                    sink.system(i, "Run cancelled.");
+                    halt = Some(Halt::Cancelled);
+                } else {
+                    sink.system(i, &failure_message(&result, timeout));
+                    if step.continue_on_error {
+                        sink.system(i, "This step continues on error, so the run goes on.");
+                    } else {
+                        failed = true;
+                        if finish_anyway {
+                            sink.system(i, "The remaining steps still run; the run will end as failed.");
+                        } else {
+                            halt = Some(Halt::Failed);
+                        }
                     }
-                    End::TimedOut => {
-                        sink.system(i, &format!("Step timed out after {} seconds and was stopped.", timeout.as_secs()));
-                        outcome = Status::Failed;
-                    }
-                    End::Cancelled => {
-                        sink.system(i, "Run cancelled.");
-                        outcome = Status::Cancelled;
-                    }
-                    End::NotRun => {
-                        sink.system(i, result.error.as_deref().unwrap_or("The step could not start."));
-                        outcome = Status::Failed;
-                    }
-                    End::Exited => {}
                 }
             }
             if local {
@@ -200,7 +304,11 @@ impl Executor {
             }
         }
 
-        run.status = outcome;
+        run.status = match halt {
+            Some(Halt::Cancelled) => Status::Cancelled,
+            _ if failed => Status::Failed,
+            _ => Status::Succeeded,
+        };
         run.finished_at = Some(now_ms());
         sink.flush();
         run.log_lines = sink.count;
@@ -273,6 +381,27 @@ impl Executor {
     }
 }
 
+/// Why a step attempt didn't succeed, for the run log.
+fn failure_message(result: &JobEnd, timeout: Duration) -> String {
+    match result.end {
+        End::Exited => format!("Step failed with exit code {}.", result.exit_code.unwrap_or(-1)),
+        End::TimedOut => format!("Step timed out after {} and was stopped.", human_duration(timeout.as_secs())),
+        End::Cancelled => "Step cancelled.".into(),
+        End::NotRun => result.error.clone().unwrap_or_else(|| "The step could not start.".into()),
+    }
+}
+
+/// "45 seconds", "1 minute", "1 hour 30 minutes".
+pub fn human_duration(secs: u64) -> String {
+    let unit = |n: u64, word: &str| if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") };
+    let parts: Vec<String> = [(secs / 86_400, "day"), (secs % 86_400 / 3600, "hour"), (secs % 3600 / 60, "minute"), (secs % 60, "second")]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, w)| unit(n, w))
+        .collect();
+    if parts.is_empty() { "0 seconds".into() } else { parts.join(" ") }
+}
+
 /// Environment every step starts from, before secrets are added.
 pub fn base_env(workdir: &std::path::Path, run_id: &str, step: usize) -> Vec<(String, String)> {
     vec![
@@ -308,14 +437,20 @@ struct Sink<'a> {
     truncated: bool,
     /// Secret values to hide in output, longest first.
     masks: Vec<String>,
+    /// Lines the run may keep, system lines included.
+    limit: u64,
+    /// Reaching the limit stops the run instead of dropping output.
+    fail_on_limit: bool,
+    /// The limit was reached and the run is being stopped for it.
+    limit_hit: bool,
 }
 
-pub const MASK: &str = "••••••";
+pub use crate::model::MASK;
 
 /// Every secret value, and each line of a multi-line value, at least 4 characters long.
-fn mask_list(secrets: &SecretEnv) -> Vec<String> {
+fn mask_list(secrets: &[String]) -> Vec<String> {
     let mut masks: Vec<String> = Vec::new();
-    for (_, value) in secrets {
+    for value in secrets {
         let candidates = std::iter::once(value.as_str()).chain(value.lines().map(str::trim));
         for c in candidates {
             if c.chars().count() >= 4 && !masks.iter().any(|m| m == c) {
@@ -328,8 +463,21 @@ fn mask_list(secrets: &SecretEnv) -> Vec<String> {
 }
 
 impl<'a> Sink<'a> {
-    fn new(run_id: &'a str, live: &'a Live, store: &'a Store, secrets: &SecretEnv) -> Self {
-        Sink { run_id, live, store, pending: Vec::new(), count: 0, host: LOCAL_HOST_NAME.into(), last_flush: Instant::now(), truncated: false, masks: mask_list(secrets) }
+    fn new(run_id: &'a str, live: &'a Live, store: &'a Store, hidden: &[String], limit: u64, fail_on_limit: bool) -> Self {
+        Sink {
+            run_id,
+            live,
+            store,
+            pending: Vec::new(),
+            count: 0,
+            host: LOCAL_HOST_NAME.into(),
+            last_flush: Instant::now(),
+            truncated: false,
+            masks: mask_list(hidden),
+            limit,
+            fail_on_limit,
+            limit_hit: false,
+        }
     }
 
     fn mask(&self, text: &str) -> String {
@@ -343,10 +491,16 @@ impl<'a> Sink<'a> {
     }
 
     fn push(&mut self, step: usize, stream: &str, text: &str) {
-        if self.count >= MAX_LINES_PER_RUN {
+        if self.count >= self.limit {
             if !self.truncated {
                 self.truncated = true;
-                self.emit(step, "system", &format!("Output limit of {MAX_LINES_PER_RUN} lines reached; further output is not kept."));
+                if self.fail_on_limit {
+                    self.limit_hit = true;
+                    // Stops the step the same way a cancel does; the executor reports it as a failure.
+                    let _ = self.live.cancel.send(true);
+                } else {
+                    self.emit(step, "system", &format!("Output limit of {} lines reached; further output is not kept.", self.limit));
+                }
             }
             return;
         }

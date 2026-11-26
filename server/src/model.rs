@@ -1,6 +1,10 @@
 //! Domain types shared by the API, the store and the executor.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+
+use crate::template::{self, seconds};
 
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -27,10 +31,243 @@ impl Status {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Step {
     pub name: String,
     pub run: String,
+    /// Overrides the runbook's step timeout. Accepts seconds or a duration like "10m".
+    #[serde(default, deserialize_with = "seconds::option::deserialize")]
+    pub timeout_seconds: Option<u64>,
+    /// How many more times to try the step after it fails or times out.
+    #[serde(default)]
+    pub retries: u32,
+    /// Wait between attempts. Accepts seconds or a duration like "30s".
+    #[serde(default, deserialize_with = "seconds::deserialize")]
+    pub retry_delay_seconds: u64,
+    /// When the step still fails, record it and go on as if it had succeeded.
+    #[serde(default)]
+    pub continue_on_error: bool,
+}
+
+pub const MAX_RETRIES: u32 = 10;
+pub const MAX_RETRY_DELAY: u64 = 3600;
+pub const MAX_TIMEOUT: u64 = 86_400;
+
+/// What a run does after a step fails (unless that step continues on error).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailurePolicy {
+    /// Skip every later step; the run fails.
+    #[default]
+    Stop,
+    /// Run every later step anyway, then fail the run.
+    FinishThenFail,
+}
+
+pub const MAX_OUTPUT_LINES: u64 = 20_000;
+const MIN_OUTPUT_LINES: u64 = 10;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitAction {
+    /// Keep running and drop further output.
+    #[default]
+    Truncate,
+    /// Stop the run and fail it.
+    Fail,
+}
+
+/// How much output a run keeps, counting system lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputLimit {
+    pub lines: u64,
+    #[serde(default)]
+    pub action: LimitAction,
+}
+
+impl Default for OutputLimit {
+    fn default() -> Self {
+        OutputLimit { lines: MAX_OUTPUT_LINES, action: LimitAction::Truncate }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputKind {
+    #[default]
+    Text,
+    Number,
+    Boolean,
+    Choice,
+    /// Like text, but masked in output and never stored with the run.
+    Secret,
+}
+
+/// A value the person starting a run fills in.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputDef {
+    /// Lower case, used as `{{ inputs.<name> }}` and `$OPSKILLS_INPUT_<NAME>`.
+    pub name: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(rename = "type", default)]
+    pub kind: InputKind,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub default: Option<String>,
+    /// Allowed values of a choice input.
+    #[serde(default)]
+    pub choices: Vec<String>,
+    /// Regular expression a text or secret value must match in full.
+    #[serde(default)]
+    pub pattern: Option<String>,
+}
+
+pub const MAX_INPUTS: usize = 30;
+const MAX_INPUT_VALUE: usize = 4096;
+
+/// An input value for one run. Held only in memory.
+#[derive(Clone, Debug)]
+pub struct InputValue {
+    pub name: String,
+    pub value: String,
+    pub secret: bool,
+}
+
+impl InputValue {
+    pub fn env_name(&self) -> String {
+        format!("OPSKILLS_INPUT_{}", self.name.to_ascii_uppercase())
+    }
+}
+
+fn compile_pattern(pattern: &str) -> Result<regex::Regex, String> {
+    regex::RegexBuilder::new(&format!("^(?:{pattern})$"))
+        .size_limit(1 << 20)
+        .build()
+        .map_err(|e| format!("Pattern {pattern:?} is not a valid regular expression: {e}"))
+}
+
+impl InputDef {
+    fn display(&self) -> &str {
+        if self.label.is_empty() { &self.name } else { &self.label }
+    }
+
+    /// Check a value given for this input and return it normalized.
+    pub fn check_value(&self, value: &str) -> Result<String, String> {
+        let who = self.display();
+        match self.kind {
+            InputKind::Text | InputKind::Secret => {
+                if value.chars().count() > MAX_INPUT_VALUE || value.contains('\0') {
+                    return Err(format!("{who} must be at most {MAX_INPUT_VALUE} characters."));
+                }
+                if let Some(p) = &self.pattern
+                    && !compile_pattern(p)?.is_match(value) {
+                        return Err(format!("{who} must match the pattern {p}."));
+                    }
+                Ok(value.to_string())
+            }
+            InputKind::Number => {
+                let t = value.trim();
+                match t.parse::<f64>() {
+                    Ok(n) if n.is_finite() => Ok(t.to_string()),
+                    _ => Err(format!("{who} must be a number.")),
+                }
+            }
+            InputKind::Boolean => match value.trim().to_ascii_lowercase().as_str() {
+                "true" => Ok("true".into()),
+                "false" => Ok("false".into()),
+                _ => Err(format!("{who} must be true or false.")),
+            },
+            InputKind::Choice => {
+                if self.choices.iter().any(|c| c == value) {
+                    Ok(value.to_string())
+                } else {
+                    Err(format!("{who} must be one of: {}.", self.choices.join(", ")))
+                }
+            }
+        }
+    }
+
+    fn validate(mut self) -> Result<Self, String> {
+        self.name = self.name.trim().to_string();
+        let n = &self.name;
+        let ok = n.len() <= 40 && n.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !ok {
+            return Err(format!("Input name {n:?} must be 1 to 40 lower case letters, digits or underscores, starting with a letter, like service_name."));
+        }
+        self.label = self.label.trim().to_string();
+        self.description = self.description.trim().to_string();
+        if self.label.chars().count() > 100 || self.description.chars().count() > 500 {
+            return Err(format!("Input {n}: label must be at most 100 characters and description at most 500."));
+        }
+        if self.kind == InputKind::Choice {
+            let mut seen: Vec<String> = Vec::new();
+            for c in &self.choices {
+                let c = c.trim().to_string();
+                if c.is_empty() || c.chars().count() > 200 {
+                    return Err(format!("Input {n}: each choice must be 1 to 200 characters."));
+                }
+                if !seen.contains(&c) {
+                    seen.push(c);
+                }
+            }
+            if seen.is_empty() || seen.len() > 100 {
+                return Err(format!("Input {n}: a choice input needs 1 to 100 choices."));
+            }
+            self.choices = seen;
+        } else if !self.choices.is_empty() {
+            return Err(format!("Input {n}: only choice inputs have choices."));
+        }
+        self.pattern = self.pattern.take().filter(|p| !p.trim().is_empty());
+        if let Some(p) = &self.pattern {
+            if !matches!(self.kind, InputKind::Text | InputKind::Secret) {
+                return Err(format!("Input {n}: only text and secret inputs can have a pattern."));
+            }
+            if p.chars().count() > 500 {
+                return Err(format!("Input {n}: the pattern must be at most 500 characters."));
+            }
+            compile_pattern(p)?;
+        }
+        if self.kind == InputKind::Secret && self.default.is_some() {
+            return Err(format!("Input {n}: a secret input can't have a default. Use a vault secret for fixed values."));
+        }
+        if let Some(d) = self.default.take()
+            && (!d.is_empty() || self.kind == InputKind::Text) {
+                self.default = Some(self.check_value(&d).map_err(|e| format!("Default for {e}"))?);
+            }
+        Ok(self)
+    }
+}
+
+/// Check the values given when starting a run against a runbook's inputs.
+pub fn resolve_inputs(defs: &[InputDef], given: &serde_json::Map<String, serde_json::Value>) -> Result<Vec<InputValue>, String> {
+    if let Some(unknown) = given.keys().find(|k| !defs.iter().any(|d| &d.name == *k)) {
+        return Err(format!("This runbook has no input named {unknown}."));
+    }
+    let mut out = Vec::new();
+    for def in defs {
+        let raw = match given.get(&def.name) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(s)) => Some(s.clone()),
+            Some(serde_json::Value::Bool(b)) => Some(b.to_string()),
+            Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+            Some(_) => return Err(format!("{} must be a single value.", def.display())),
+        };
+        let raw = raw.filter(|v| !v.is_empty() || def.kind == InputKind::Text && !def.required);
+        let value = match (raw, &def.default) {
+            (Some(v), _) => def.check_value(&v)?,
+            (None, Some(d)) => d.clone(),
+            (None, None) if def.required => return Err(format!("{} is required.", def.display())),
+            (None, None) => String::new(),
+        };
+        out.push(InputValue { name: def.name.clone(), value, secret: def.kind == InputKind::Secret });
+    }
+    Ok(out)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -39,7 +276,13 @@ pub struct Runbook {
     pub name: String,
     pub description: String,
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub inputs: Vec<InputDef>,
     pub steps: Vec<Step>,
+    #[serde(default)]
+    pub on_step_failure: FailurePolicy,
+    #[serde(default)]
+    pub output_limit: OutputLimit,
     /// Names of vault secrets exposed to every step as environment variables.
     #[serde(default)]
     pub secrets: Vec<String>,
@@ -61,12 +304,18 @@ pub struct RunbookInput {
     pub description: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub inputs: Vec<InputDef>,
     pub steps: Vec<Step>,
+    #[serde(default)]
+    pub on_step_failure: FailurePolicy,
+    #[serde(default)]
+    pub output_limit: Option<OutputLimit>,
     #[serde(default)]
     pub secrets: Vec<String>,
     #[serde(default)]
     pub targets: Targets,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "seconds::option::deserialize")]
     pub timeout_seconds: Option<u64>,
 }
 
@@ -137,10 +386,37 @@ impl RunbookInput {
             return Err("A runbook can have at most 20 tags.".into());
         }
         self.tags = tags;
+        if self.inputs.len() > MAX_INPUTS {
+            return Err(format!("A runbook can have at most {MAX_INPUTS} inputs."));
+        }
+        let mut inputs: Vec<InputDef> = Vec::new();
+        for def in std::mem::take(&mut self.inputs) {
+            let def = def.validate()?;
+            if inputs.iter().any(|d| d.name == def.name) {
+                return Err(format!("Two inputs are named {}. Names must be unique.", def.name));
+            }
+            inputs.push(def);
+        }
+        self.inputs = inputs;
+        let input_names: Vec<String> = self.inputs.iter().map(|d| d.name.clone()).collect();
+        if let Some(limit) = self.output_limit
+            && !(MIN_OUTPUT_LINES..=MAX_OUTPUT_LINES).contains(&limit.lines) {
+                return Err(format!("The output limit must be {MIN_OUTPUT_LINES} to {MAX_OUTPUT_LINES} lines."));
+            }
         if self.steps.is_empty() || self.steps.len() > 50 {
             return Err("A runbook needs 1 to 50 steps.".into());
         }
         for (i, step) in self.steps.iter_mut().enumerate() {
+            if step.timeout_seconds.is_some_and(|t| !(1..=MAX_TIMEOUT).contains(&t)) {
+                return Err(format!("Step {} timeout must be 1 second to 1 day.", i + 1));
+            }
+            if step.retries > MAX_RETRIES {
+                return Err(format!("Step {} can retry at most {MAX_RETRIES} times.", i + 1));
+            }
+            if step.retry_delay_seconds > MAX_RETRY_DELAY {
+                return Err(format!("Step {} retry delay must be at most 1 hour.", i + 1));
+            }
+            template::check(&step.run, &input_names).map_err(|e| format!("Step {}: {e}", i + 1))?;
             step.name = step.name.trim().to_string();
             if step.name.is_empty() {
                 step.name = format!("Step {}", i + 1);
@@ -164,7 +440,7 @@ impl RunbookInput {
         }
         self.secrets = secrets;
         match self.timeout_seconds {
-            Some(t) if !(1..=86_400).contains(&t) => return Err("Step timeout must be 1 to 86400 seconds.".into()),
+            Some(t) if !(1..=MAX_TIMEOUT).contains(&t) => return Err("Step timeout must be 1 second to 1 day.".into()),
             _ => {}
         }
         Ok(self)
@@ -183,6 +459,18 @@ pub struct StepResult {
     pub exit_code: Option<i32>,
     pub started_at: Option<u64>,
     pub finished_at: Option<u64>,
+    /// This step's timeout; 0 in runs from before per-step timeouts (use the run's).
+    #[serde(default)]
+    pub timeout_seconds: u64,
+    #[serde(default)]
+    pub retries: u32,
+    #[serde(default)]
+    pub retry_delay_seconds: u64,
+    #[serde(default)]
+    pub continue_on_error: bool,
+    /// How many times the step was started.
+    #[serde(default)]
+    pub attempts: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -199,6 +487,13 @@ pub struct Run {
     pub timeout_seconds: u64,
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Input values the run started with; secret ones are masked.
+    #[serde(default)]
+    pub inputs: BTreeMap<String, String>,
+    #[serde(default)]
+    pub on_step_failure: FailurePolicy,
+    #[serde(default)]
+    pub output_limit: OutputLimit,
     /// Hosts in the order they run.
     #[serde(default)]
     pub hosts: Vec<RunHost>,
@@ -223,8 +518,11 @@ pub struct RunHost {
 
 impl Run {
     /// A queued run of `runbook` on `hosts`, one after another; each host runs every step.
-    pub fn new(runbook: &Runbook, started_by: &str, hosts: Vec<RunHost>) -> Self {
+    pub fn new(runbook: &Runbook, started_by: &str, hosts: Vec<RunHost>, inputs: &[InputValue]) -> Self {
         Run {
+            inputs: inputs.iter().map(|i| (i.name.clone(), if i.secret { MASK.to_string() } else { i.value.clone() })).collect(),
+            on_step_failure: runbook.on_step_failure,
+            output_limit: runbook.output_limit,
             id: uuid::Uuid::now_v7().to_string(),
             runbook_id: runbook.id.clone(),
             runbook_name: runbook.name.clone(),
@@ -248,6 +546,11 @@ impl Run {
                         exit_code: None,
                         started_at: None,
                         finished_at: None,
+                        timeout_seconds: s.timeout_seconds.unwrap_or(runbook.timeout_seconds),
+                        retries: s.retries,
+                        retry_delay_seconds: s.retry_delay_seconds,
+                        continue_on_error: s.continue_on_error,
+                        attempts: 0,
                     })
                 })
                 .collect(),
@@ -328,6 +631,9 @@ pub struct SecretUpdate {
     pub value: Option<String>,
 }
 
+/// Shown in place of a secret value.
+pub const MASK: &str = "••••••";
+
 pub const SECRET_KINDS: &[&str] = &["password", "token", "ssh_key", "certificate", "other"];
 const RESERVED_NAMES: &[&str] = &["PATH", "HOME", "LANG", "PWD", "OLDPWD", "SHELL", "USER", "LOGNAME", "IFS", "TERM", "TMPDIR", "LD_PRELOAD", "LD_LIBRARY_PATH"];
 
@@ -382,10 +688,102 @@ mod tests {
             name: name.into(),
             description: String::new(),
             tags: vec![" Web ".into(), "web".into(), "".into()],
-            steps: steps.into_iter().map(|(n, r)| Step { name: n.into(), run: r.into() }).collect(),
+            inputs: vec![],
+            steps: steps.into_iter().map(|(n, r)| Step { name: n.into(), run: r.into(), ..Default::default() }).collect(),
+            on_step_failure: FailurePolicy::Stop,
+            output_limit: None,
             secrets: vec![],
             targets: Targets::default(),
             timeout_seconds: None,
+        }
+    }
+
+    fn def(name: &str, kind: InputKind) -> InputDef {
+        InputDef { name: name.into(), kind, ..Default::default() }
+    }
+
+    #[test]
+    fn inputs_are_validated() {
+        let mut rb = input("x", vec![("a", "echo {{ inputs.service }}")]);
+        assert!(rb.clone().validate().is_err(), "reference to a missing input");
+        rb.inputs = vec![def("service", InputKind::Text)];
+        assert!(rb.clone().validate().is_ok());
+        for bad in ["Service", "1x", "a-b", "", &"x".repeat(41)] {
+            let mut r = rb.clone();
+            r.inputs = vec![def(bad, InputKind::Text)];
+            assert!(r.validate().is_err(), "{bad}");
+        }
+        let mut dup = rb.clone();
+        dup.inputs = vec![def("service", InputKind::Text), def("service", InputKind::Number)];
+        assert!(dup.validate().is_err());
+        let mut choice = rb.clone();
+        choice.inputs = vec![def("service", InputKind::Choice)];
+        assert!(choice.clone().validate().is_err(), "choice without choices");
+        choice.inputs[0].choices = vec!["nginx".into(), " nginx ".into(), "redis".into()];
+        assert_eq!(choice.validate().unwrap().inputs[0].choices, vec!["nginx", "redis"]);
+        let mut secret_default = rb.clone();
+        secret_default.inputs = vec![InputDef { default: Some("hunter22".into()), ..def("service", InputKind::Secret) }];
+        assert!(secret_default.validate().is_err());
+        let mut bad_default = rb.clone();
+        bad_default.inputs = vec![InputDef { default: Some("ten".into()), ..def("service", InputKind::Number) }];
+        assert!(bad_default.validate().is_err());
+        let mut bad_pattern = rb.clone();
+        bad_pattern.inputs = vec![InputDef { pattern: Some("(".into()), ..def("service", InputKind::Text) }];
+        assert!(bad_pattern.validate().is_err());
+    }
+
+    #[test]
+    fn step_options_are_checked() {
+        let mut rb = input("x", vec![("a", "true")]);
+        rb.steps[0].retries = MAX_RETRIES + 1;
+        assert!(rb.clone().validate().is_err());
+        rb.steps[0].retries = 2;
+        rb.steps[0].retry_delay_seconds = MAX_RETRY_DELAY + 1;
+        assert!(rb.clone().validate().is_err());
+        rb.steps[0].retry_delay_seconds = 5;
+        rb.steps[0].timeout_seconds = Some(0);
+        assert!(rb.clone().validate().is_err());
+        rb.steps[0].timeout_seconds = Some(30);
+        rb.output_limit = Some(OutputLimit { lines: 5, action: LimitAction::Fail });
+        assert!(rb.clone().validate().is_err());
+        rb.output_limit = Some(OutputLimit { lines: 100, action: LimitAction::Fail });
+        assert!(rb.validate().is_ok());
+        let parsed: RunbookInput = serde_json::from_value(serde_json::json!({
+            "name": "x", "timeout_seconds": "2h",
+            "steps": [{"name": "a", "run": "true", "timeout_seconds": "90s", "retry_delay_seconds": "1m"}]
+        }))
+        .unwrap();
+        assert_eq!(parsed.timeout_seconds, Some(7200));
+        assert_eq!(parsed.steps[0].timeout_seconds, Some(90));
+        assert_eq!(parsed.steps[0].retry_delay_seconds, 60);
+    }
+
+    #[test]
+    fn input_values_are_resolved() {
+        let defs = vec![
+            InputDef { required: true, pattern: Some("[a-z]+".into()), ..def("service", InputKind::Text) },
+            InputDef { default: Some("3".into()), ..def("count", InputKind::Number) },
+            def("dry_run", InputKind::Boolean),
+            InputDef { choices: vec!["eu".into(), "us".into()], default: Some("eu".into()), ..def("region", InputKind::Choice) },
+            def("token", InputKind::Secret),
+        ];
+        let given = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let ok = resolve_inputs(&defs, &given(serde_json::json!({"service": "nginx", "dry_run": true, "token": "abcd"}))).unwrap();
+        let get = |n: &str| ok.iter().find(|i| i.name == n).unwrap().value.clone();
+        assert_eq!((get("service"), get("count"), get("dry_run"), get("region"), get("token")), ("nginx".into(), "3".into(), "true".into(), "eu".into(), "abcd".into()));
+        assert!(ok.iter().find(|i| i.name == "token").unwrap().secret);
+        assert_eq!(ok[0].env_name(), "OPSKILLS_INPUT_SERVICE");
+        for bad in [
+            serde_json::json!({}),
+            serde_json::json!({"service": ""}),
+            serde_json::json!({"service": "Nginx"}),
+            serde_json::json!({"service": "nginx", "count": "many"}),
+            serde_json::json!({"service": "nginx", "dry_run": "maybe"}),
+            serde_json::json!({"service": "nginx", "region": "asia"}),
+            serde_json::json!({"service": "nginx", "nope": 1}),
+            serde_json::json!({"service": ["a"]}),
+        ] {
+            assert!(resolve_inputs(&defs, &given(bad.clone())).is_err(), "{bad}");
         }
     }
 

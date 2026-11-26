@@ -1,6 +1,6 @@
 [package]
 name = "opskills"
-version = "0.3.1"
+version = "0.4.0"
 description = "Runbooks your whole team can run: self-hosted job and runbook automation"
 license = "Apache-2.0"
 repository = "https://github.com/opskills-app/opskills"
@@ -18,6 +18,7 @@ futures-util = "0.3.34"
 hex = "0.4.3"
 libc = "0.2.191"
 redb = "5.0.0"
+regex = { version = "1.13.2", default-features = false, features = ["std", "unicode-perl"] }
 rust-embed = { version = "8.14.0", features = ["mime-guess"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

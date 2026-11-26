@@ -1,11 +1,50 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ArrowDown, ArrowLeft, ArrowUp, Check, KeyRound, Plus, Save, Server, Tag as TagIcon, Trash2 } from "lucide-react";
-import { api, LOCAL_HOST_ID, runsOnServer, useData, type RunbookInput, type Targets } from "../api";
+import { ArrowDown, ArrowLeft, ArrowUp, Check, ChevronDown, KeyRound, Plus, Save, Server, SlidersHorizontal, Tag as TagIcon, Trash2 } from "lucide-react";
+import { api, LOCAL_HOST_ID, MAX_OUTPUT_LINES, runsOnServer, useData, type InputDef, type InputKind, type RunbookInput, type Step, type Targets } from "../api";
 import { Button, Card, cx, ErrorNote, PageHeader, StatusDot } from "../components/ui";
+import { stepOptions } from "./RunbookDetail";
 import { templates } from "../templates";
 import { go } from "../router";
 
-const blank: RunbookInput = { name: "", description: "", tags: [], steps: [{ name: "", run: "" }], secrets: [], targets: { hosts: [], tags: [] }, timeout_seconds: 600 };
+const blank: RunbookInput = {
+  name: "",
+  description: "",
+  tags: [],
+  inputs: [],
+  steps: [{ name: "", run: "" }],
+  on_step_failure: "stop",
+  secrets: [],
+  targets: { hosts: [], tags: [] },
+  timeout_seconds: 600,
+};
+
+const kinds: { id: InputKind; label: string }[] = [
+  { id: "text", label: "Text" },
+  { id: "number", label: "Number" },
+  { id: "boolean", label: "Yes or no" },
+  { id: "choice", label: "Choice" },
+  { id: "secret", label: "Secret" },
+];
+
+const newInput = (): InputDef => ({ name: "", label: "", description: "", type: "text", required: false, default: null, choices: [], pattern: null });
+
+/** A number of seconds stays a number; "10m" and the like go to the server as written. */
+function durationValue(text: string): number | string | null {
+  const t = text.trim();
+  if (t === "") return null;
+  return /^\d+$/.test(t) ? Number(t) : t;
+}
+
+/** Tidy the editor's working copy into what the API expects. */
+function cleanInput(d: InputDef): InputDef {
+  return {
+    ...d,
+    name: d.name.trim(),
+    choices: d.type === "choice" ? d.choices.map((c) => c.trim()).filter(Boolean) : [],
+    pattern: (d.type === "text" || d.type === "secret") && d.pattern?.trim() ? d.pattern : null,
+    default: d.type === "secret" || d.default === null || d.default === "" ? null : d.default,
+  };
+}
 
 function toggle(list: string[], item: string) {
   return list.includes(item) ? list.filter((x) => x !== item) : [...list, item];
@@ -99,7 +138,7 @@ function RunOn({ targets, onChange, onHosts, setOnHosts }: { targets: Targets; o
             </div>
           )}
           <p className={cx("text-xs", count ? "text-muted" : "text-amber-700 dark:text-amber-300")}>
-            {count ? `Runs on ${count} host${count === 1 ? "" : "s"} now, one after another. A failing step stops the run.` : "Pick at least one host or tag."}
+            {count ? `Runs on ${count} host${count === 1 ? "" : "s"} now, one after another.` : "Pick at least one host or tag."}
           </p>
         </div>
       )}
@@ -108,6 +147,178 @@ function RunOn({ targets, onChange, onHosts, setOnHosts }: { targets: Targets; o
 }
 
 const field = "h-11 w-full rounded-xl bg-surface-2 px-4 text-sm outline-none focus:ring-2 focus:ring-accent";
+const smallLabel = "text-xs font-medium text-muted";
+
+/** Values people fill in when they start a run. */
+function InputsEditor({ inputs, onChange }: { inputs: InputDef[]; onChange: (inputs: InputDef[]) => void }) {
+  const set = (i: number, patch: Partial<InputDef>) => onChange(inputs.map((d, k) => (k === i ? { ...d, ...patch } : d)));
+  const example = inputs.find((d) => d.name.trim())?.name.trim() ?? "service";
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-[19px] font-semibold">Inputs</h3>
+        <p className="mt-1 text-sm text-muted">
+          Values asked for when someone starts a run. Use <code className="font-mono text-xs text-ink-2">{`{{ inputs.${example} }}`}</code> in a command (it becomes one safely quoted word), or{" "}
+          <code className="font-mono text-xs text-ink-2">"$OPSKILLS_INPUT_{example.toUpperCase()}"</code>.
+        </p>
+      </div>
+      {inputs.map((d, i) => (
+        <Card key={i} className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-2 sm:p-6">
+          <div>
+            <label className={smallLabel} htmlFor={`in-name-${i}`}>
+              Name
+            </label>
+            <input id={`in-name-${i}`} required value={d.name} onChange={(e) => set(i, { name: e.target.value.toLowerCase() })} placeholder="service_name" spellCheck={false} className={`mt-1.5 font-mono ${field}`} />
+          </div>
+          <div>
+            <label className={smallLabel} htmlFor={`in-label-${i}`}>
+              Label
+            </label>
+            <input id={`in-label-${i}`} value={d.label} onChange={(e) => set(i, { label: e.target.value })} placeholder="Service to restart" className={`mt-1.5 ${field}`} />
+          </div>
+          <div>
+            <label className={smallLabel} htmlFor={`in-type-${i}`}>
+              Type
+            </label>
+            <select id={`in-type-${i}`} value={d.type} onChange={(e) => set(i, { type: e.target.value as InputKind, default: null })} className={`mt-1.5 ${field}`}>
+              {kinds.map((k) => (
+                <option key={k.id} value={k.id}>
+                  {k.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {d.type !== "secret" && (
+            <div>
+              <label className={smallLabel} htmlFor={`in-default-${i}`}>
+                Default
+              </label>
+              {d.type === "boolean" ? (
+                <select id={`in-default-${i}`} value={d.default ?? ""} onChange={(e) => set(i, { default: e.target.value || null })} className={`mt-1.5 ${field}`}>
+                  <option value="">None</option>
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              ) : (
+                <input id={`in-default-${i}`} value={d.default ?? ""} onChange={(e) => set(i, { default: e.target.value })} inputMode={d.type === "number" ? "decimal" : undefined} className={`mt-1.5 ${field}`} />
+              )}
+            </div>
+          )}
+          {d.type === "choice" && (
+            <div className="sm:col-span-2">
+              <label className={smallLabel} htmlFor={`in-choices-${i}`}>
+                Choices, one per line
+              </label>
+              <textarea
+                id={`in-choices-${i}`}
+                rows={Math.min(8, Math.max(3, d.choices.length + 1))}
+                value={d.choices.join("\n")}
+                onChange={(e) => set(i, { choices: e.target.value.split("\n") })}
+                className="mt-1.5 w-full resize-y rounded-xl bg-surface-2 px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-accent"
+              />
+            </div>
+          )}
+          {(d.type === "text" || d.type === "secret") && (
+            <div className="sm:col-span-2">
+              <label className={smallLabel} htmlFor={`in-pattern-${i}`}>
+                Must match (regular expression, optional)
+              </label>
+              <input id={`in-pattern-${i}`} value={d.pattern ?? ""} onChange={(e) => set(i, { pattern: e.target.value })} placeholder="[a-z0-9-]+" spellCheck={false} className={`mt-1.5 font-mono ${field}`} />
+            </div>
+          )}
+          <div className="sm:col-span-2">
+            <label className={smallLabel} htmlFor={`in-desc-${i}`}>
+              Help text
+            </label>
+            <input id={`in-desc-${i}`} value={d.description} onChange={(e) => set(i, { description: e.target.value })} placeholder="Shown under the field when starting a run" className={`mt-1.5 ${field}`} />
+          </div>
+          <div className="flex items-center justify-between gap-3 sm:col-span-2">
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={d.required} onChange={(e) => set(i, { required: e.target.checked })} className="size-4 accent-accent" />
+              Required
+            </label>
+            <button type="button" onClick={() => onChange(inputs.filter((_, k) => k !== i))} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-muted hover:text-rose-600" aria-label={`Remove input ${d.name || i + 1}`}>
+              <Trash2 className="size-3.5" /> Remove
+            </button>
+          </div>
+        </Card>
+      ))}
+      <button
+        type="button"
+        onClick={() => onChange([...inputs, newInput()])}
+        className="flex h-11 items-center gap-2 rounded-xl border border-dashed border-line-strong px-4 text-sm text-muted hover:border-accent hover:text-accent"
+      >
+        <Plus className="size-4" /> Add input
+      </button>
+    </div>
+  );
+}
+
+/** Timeout, retries and error handling for one step. */
+function StepOptions({ step, index, onChange }: { step: Step; index: number; onChange: (patch: Partial<Step>) => void }) {
+  const summary = stepOptions(step);
+  const [open, setOpen] = useState(summary.length > 0);
+  return (
+    <div className="mt-3">
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex items-center gap-1.5 text-xs font-medium text-muted hover:text-ink">
+        <SlidersHorizontal className="size-3.5" /> Options
+        {!open && summary.length > 0 && <span className="font-normal">: {summary.join(", ")}</span>}
+        <ChevronDown className={cx("size-3.5 transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="mt-3 grid grid-cols-1 gap-4 rounded-xl bg-surface-2/60 p-4 sm:grid-cols-3">
+          <div>
+            <label className={smallLabel} htmlFor={`st-timeout-${index}`}>
+              Timeout
+            </label>
+            <input
+              id={`st-timeout-${index}`}
+              value={step.timeout_seconds ?? ""}
+              onChange={(e) => onChange({ timeout_seconds: durationValue(e.target.value) })}
+              placeholder="Runbook default"
+              className={`mt-1.5 ${field} bg-surface`}
+            />
+          </div>
+          <div>
+            <label className={smallLabel} htmlFor={`st-retries-${index}`}>
+              Retries
+            </label>
+            <input
+              id={`st-retries-${index}`}
+              type="number"
+              min={0}
+              max={10}
+              value={step.retries ?? 0}
+              onChange={(e) => onChange({ retries: Math.max(0, Math.min(10, Number(e.target.value) || 0)) })}
+              className={`mt-1.5 ${field} bg-surface`}
+            />
+          </div>
+          <div>
+            <label className={smallLabel} htmlFor={`st-delay-${index}`}>
+              Wait between tries
+            </label>
+            <input
+              id={`st-delay-${index}`}
+              value={step.retry_delay_seconds || ""}
+              onChange={(e) => onChange({ retry_delay_seconds: durationValue(e.target.value) ?? 0 })}
+              placeholder="No wait"
+              disabled={!step.retries}
+              className={`mt-1.5 ${field} bg-surface disabled:opacity-50`}
+            />
+          </div>
+          <label className="flex items-start gap-2 text-sm sm:col-span-3">
+            <input type="checkbox" checked={!!step.continue_on_error} onChange={(e) => onChange({ continue_on_error: e.target.checked })} className="mt-0.5 size-4 accent-accent" />
+            <span>
+              Continue on error
+              <span className="block text-xs text-muted">If this step still fails, record it and carry on as if it had succeeded.</span>
+            </span>
+          </label>
+          <p className="text-xs text-muted sm:col-span-3">Durations: seconds, or with a unit, like 90s, 10m, 2h or 1h30m.</p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function RunbookEditor({ id, template }: { id?: string; template?: string }) {
   const editing = !!id;
@@ -123,7 +334,18 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
     if (!id) return;
     api.runbook(id).then(
       (rb) => {
-        setInput({ name: rb.name, description: rb.description, tags: rb.tags, steps: rb.steps, secrets: rb.secrets ?? [], targets: rb.targets ?? { hosts: [], tags: [] }, timeout_seconds: rb.timeout_seconds });
+        setInput({
+          name: rb.name,
+          description: rb.description,
+          tags: rb.tags,
+          inputs: rb.inputs ?? [],
+          steps: rb.steps,
+          on_step_failure: rb.on_step_failure ?? "stop",
+          output_limit: rb.output_limit,
+          secrets: rb.secrets ?? [],
+          targets: rb.targets ?? { hosts: [], tags: [] },
+          timeout_seconds: rb.timeout_seconds,
+        });
         setTagsText(rb.tags.join(", "));
         setOnHosts(!runsOnServer(rb.targets));
         setLoaded(true);
@@ -168,6 +390,8 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
         .split(",")
         .map((t) => t.trim())
         .filter(Boolean),
+      inputs: (input.inputs ?? []).map(cleanInput),
+      timeout_seconds: typeof input.timeout_seconds === "string" ? (durationValue(input.timeout_seconds) ?? undefined) : input.timeout_seconds,
     };
     try {
       const rb = editing ? await api.updateRunbook(id!, body) : await api.createRunbook(body);
@@ -189,7 +413,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
       </a>
       <PageHeader
         title={editing ? "Edit runbook" : "New runbook"}
-        subtitle="Each step is a shell command. Steps run in order on the hosts you choose, and the first failing step stops the run."
+        subtitle="Each step is a shell command. Steps run in order on the hosts you choose. Inputs let people fill in values when they start a run."
         actions={
           <>
             <Button type="button" onClick={() => go(editing ? `runbooks/${id}` : "runbooks")}>
@@ -218,7 +442,8 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
 
       <div className="grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-4">
-          <h3 className="text-[19px] font-semibold">Steps</h3>
+          <InputsEditor inputs={input.inputs ?? []} onChange={(inputs) => setInput((s) => ({ ...s, inputs }))} />
+          <h3 className="pt-4 text-[19px] font-semibold">Steps</h3>
           {input.steps.map((step, i) => (
             <Card key={i} className="p-5 sm:p-6">
               <div className="flex items-center gap-3">
@@ -257,6 +482,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
                 spellCheck={false}
                 className="mt-4 w-full resize-y rounded-xl bg-term px-4 py-3 font-mono text-[13px] leading-relaxed text-term-ink outline-none placeholder:text-white/30 focus:ring-2 focus:ring-accent"
               />
+              <StepOptions step={step} index={i} onChange={(patch) => setStep(i, patch)} />
             </Card>
           ))}
           <button
@@ -299,18 +525,65 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
             </div>
             <div>
               <label className="text-sm font-medium" htmlFor="rb-timeout">
-                Step timeout (seconds)
+                Step timeout
               </label>
-              <input
-                id="rb-timeout"
-                type="number"
-                min={1}
-                max={86400}
-                value={input.timeout_seconds ?? 600}
-                onChange={(e) => setInput({ ...input, timeout_seconds: Number(e.target.value) || undefined })}
-                className={`mt-2 ${field}`}
-              />
-              <p className="mt-1.5 text-xs text-muted">A step still running after this is stopped and the run fails.</p>
+              <input id="rb-timeout" value={input.timeout_seconds ?? ""} onChange={(e) => setInput({ ...input, timeout_seconds: e.target.value })} placeholder="600" className={`mt-2 ${field}`} />
+              <p className="mt-1.5 text-xs text-muted">Seconds, or like 10m or 2h. A step still running after this is stopped and fails. Steps can override it.</p>
+            </div>
+          </Card>
+          <Card className="space-y-4 p-6">
+            <div>
+              <p className="text-sm font-medium">When a step fails</p>
+              <div role="radiogroup" aria-label="When a step fails" className="mt-3 space-y-2">
+                {(
+                  [
+                    ["stop", "Stop the run", "Skip every later step."],
+                    ["finish_then_fail", "Finish, then fail", "Run the remaining steps, then mark the run as failed. Good for cleanup steps."],
+                  ] as const
+                ).map(([id, label, hint]) => {
+                  const on = (input.on_step_failure ?? "stop") === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      role="radio"
+                      aria-checked={on}
+                      onClick={() => setInput((s) => ({ ...s, on_step_failure: id }))}
+                      className={cx("block w-full rounded-xl px-4 py-3 text-left", on ? "bg-accent-soft ring-1 ring-accent" : "bg-surface-2 hover:bg-surface-3")}
+                    >
+                      <span className="block text-sm font-medium">{label}</span>
+                      <span className="block text-xs text-muted">{hint}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-xs text-muted">Steps set to continue on error never fail the run.</p>
+            </div>
+            <div>
+              <label className="text-sm font-medium" htmlFor="rb-limit">
+                Output limit (lines)
+              </label>
+              <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                <input
+                  id="rb-limit"
+                  type="number"
+                  min={10}
+                  max={MAX_OUTPUT_LINES}
+                  value={input.output_limit?.lines ?? MAX_OUTPUT_LINES}
+                  onChange={(e) => setInput((s) => ({ ...s, output_limit: { lines: Number(e.target.value) || MAX_OUTPUT_LINES, action: s.output_limit?.action ?? "truncate" } }))}
+                  className={field}
+                />
+                <select
+                  aria-label="When the limit is reached"
+                  value={input.output_limit?.action ?? "truncate"}
+                  onChange={(e) => setInput((s) => ({ ...s, output_limit: { lines: s.output_limit?.lines ?? MAX_OUTPUT_LINES, action: e.target.value as "truncate" | "fail" } }))}
+                  className={`${field} w-auto`}
+                >
+                  <option value="truncate">then drop output</option>
+                  <option value="fail">then stop the run</option>
+                </select>
+              </div>
+              <p className="mt-1.5 text-xs text-muted">Up to {MAX_OUTPUT_LINES.toLocaleString()} lines per run.</p>
             </div>
           </Card>
           <RunOn targets={input.targets} onChange={(targets) => setInput((s) => ({ ...s, targets }))} onHosts={onHosts} setOnHosts={setOnHosts} />
@@ -355,9 +628,13 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
               <li>In a fresh temporary folder for each run, on each host.</li>
               <li>On several hosts, one host after another: all steps on the first host, then the next.</li>
               <li>
-                <code className="font-mono text-xs">$OPSKILLS_RUN_ID</code> and <code className="font-mono text-xs">$OPSKILLS_STEP</code> are set for each step.
+                <code className="font-mono text-xs">$OPSKILLS_RUN_ID</code>, <code className="font-mono text-xs">$OPSKILLS_STEP</code>, <code className="font-mono text-xs">$OPSKILLS_HOST_NAME</code> and one{" "}
+                <code className="font-mono text-xs">$OPSKILLS_INPUT_...</code> per input are set for each step.
               </li>
-              <li>A step that exits with a non-zero code stops the run.</li>
+              <li>
+                <code className="font-mono text-xs">{"{{ host.name }}"}</code>, <code className="font-mono text-xs">{"{{ run.id }}"}</code> and <code className="font-mono text-xs">{"{{ inputs.x }}"}</code> in a command become quoted values.
+              </li>
+              <li>A step that exits with a non-zero code fails. What happens next is set under "When a step fails".</li>
             </ul>
           </Card>
         </aside>

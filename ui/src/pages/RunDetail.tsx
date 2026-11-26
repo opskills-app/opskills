@@ -93,7 +93,7 @@ export function RunDetail({ id }: { id: string }) {
   const [cancelling, setCancelling] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
-  const { runNow, busy } = useRunNow();
+  const { runNow, busy, error: runError, dialog } = useRunNow();
 
   const shown = useMemo(
     () => lines.filter((l) => (stepFilter === null || l.step === stepFilter) && (!q || l.line.toLowerCase().includes(q.toLowerCase()))),
@@ -126,9 +126,11 @@ export function RunDetail({ id }: { id: string }) {
   const stepNo = (i: number) => (i % perHost) + 1;
   const hostNames = (run.hosts ?? []).map((h) => h.name);
   const lastExit = [...run.steps].reverse().find((s) => s.exit_code !== null)?.exit_code;
+  const inputs = Object.entries(run.inputs ?? {});
 
   return (
     <>
+      {dialog}
       <a href={`#/runbooks/${run.runbook_id}`} className="mb-3 inline-flex items-center gap-1 text-sm text-muted hover:text-ink">
         <ArrowLeft className="size-3.5" /> {run.runbook_name}
       </a>
@@ -151,17 +153,33 @@ export function RunDetail({ id }: { id: string }) {
               <CircleStop className="size-4" /> {cancelling ? "Cancelling..." : "Cancel run"}
             </Button>
           ) : (
-            <Button variant="primary" disabled={busy === run.runbook_id} onClick={() => runNow(run.runbook_id)}>
+            <Button variant="primary" disabled={busy === run.runbook_id} onClick={() => runNow(run.runbook_id, run.inputs)}>
               <RotateCcw className="size-3.5" /> Run again
             </Button>
           )}
         </div>
       </div>
 
-      {(run.error || actionError) && (
+      {(run.error || actionError || runError) && (
         <div className="mb-4">
-          <ErrorNote>{actionError ?? run.error}</ErrorNote>
+          <ErrorNote>{actionError ?? runError ?? run.error}</ErrorNote>
         </div>
+      )}
+
+      {inputs.length > 0 && (
+        <Card className="mb-4 rounded-2xl px-5 py-4">
+          <div className="text-xs text-muted">Inputs</div>
+          <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-2 text-sm">
+            {inputs.map(([k, v]) => (
+              <div key={k} className="flex min-w-0 items-baseline gap-2">
+                <dt className="font-mono text-xs text-muted">{k}</dt>
+                <dd className="min-w-0 truncate font-medium" title={v}>
+                  {v === "" ? <span className="text-muted">empty</span> : v}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </Card>
       )}
 
       <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -218,6 +236,8 @@ export function RunDetail({ id }: { id: string }) {
                     <span className="text-right text-xs text-muted tabular-nums">
                       {took !== null && <span className="block">{duration(took)}</span>}
                       {s.exit_code !== null && <span className="block">exit {s.exit_code}</span>}
+                      {(s.attempts ?? 0) > 1 && <span className="block">{s.attempts} tries</span>}
+                      {s.status === "failed" && s.continue_on_error && <span className="block">continued</span>}
                     </span>
                   </button>
                 </li>

@@ -18,10 +18,10 @@ use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::auth;
-use crate::executor::Event;
+use crate::executor::{Event, RunValues};
 use crate::hub::{AgentInfo, JobEnd, OutLine, POLL_WAIT};
 use crate::model::{
-    DEFAULT_STEP_TIMEOUT, EnrollmentToken, Host, LOCAL_HOST_ID, LOCAL_HOST_NAME, Run, RunHost, Runbook, RunbookInput, Secret, StoredHost, normalize_tag, SecretInput, SecretUpdate, StoredSecret, now_ms, validate_secret_description, validate_secret_kind,
+    resolve_inputs, DEFAULT_STEP_TIMEOUT, EnrollmentToken, Host, LOCAL_HOST_ID, LOCAL_HOST_NAME, Run, RunHost, Runbook, RunbookInput, Secret, StoredHost, normalize_tag, SecretInput, SecretUpdate, StoredSecret, now_ms, validate_secret_description, validate_secret_kind,
     validate_secret_name, validate_secret_value,
 };
 use crate::vault::Sealed;
@@ -209,7 +209,10 @@ async fn create_runbook(State(st): State<Arc<AppState>>, body: String) -> ApiRes
         name: input.name,
         description: input.description,
         tags: input.tags,
+        inputs: input.inputs,
         steps: input.steps,
+        on_step_failure: input.on_step_failure,
+        output_limit: input.output_limit.unwrap_or_default(),
         secrets: input.secrets,
         targets: input.targets,
         timeout_seconds: input.timeout_seconds.unwrap_or(DEFAULT_STEP_TIMEOUT),
@@ -228,7 +231,10 @@ async fn update_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>,
         name: input.name,
         description: input.description,
         tags: input.tags,
+        inputs: input.inputs,
         steps: input.steps,
+        on_step_failure: input.on_step_failure,
+        output_limit: input.output_limit.unwrap_or_default(),
         secrets: input.secrets,
         targets: input.targets,
         timeout_seconds: input.timeout_seconds.unwrap_or(existing.timeout_seconds),
@@ -245,8 +251,22 @@ async fn delete_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>)
 
 // Runs
 
-async fn start_run(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>) -> ApiResult<Response> {
+/// Optional body of `POST /runbooks/{id}/runs`.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StartRunInput {
+    #[serde(default)]
+    inputs: serde_json::Map<String, serde_json::Value>,
+}
+
+async fn start_run(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>, body: String) -> ApiResult<Response> {
     let rb = st.store.runbook(&id)?.ok_or_else(|| ApiError::not_found("Runbook"))?;
+    let start: StartRunInput = if body.trim().is_empty() {
+        StartRunInput::default()
+    } else {
+        serde_json::from_str(&body).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("Invalid run request: {e}")))?
+    };
+    let inputs = resolve_inputs(&rb.inputs, &start.inputs).map_err(|msg| ApiError::new(StatusCode::BAD_REQUEST, msg))?;
     // Decrypt the secrets this runbook uses; values live only in memory for the run.
     let mut env = Vec::new();
     for name in &rb.secrets {
@@ -257,7 +277,8 @@ async fn start_run(State(st): State<Arc<AppState>>, Extension(user): Extension<C
         env.push((name.clone(), String::from_utf8_lossy(&value).into_owned()));
     }
     let hosts = run_hosts(&st, &rb)?;
-    let run = st.executor.start(Run::new(&rb, &user.0, hosts), env)?;
+    let run = Run::new(&rb, &user.0, hosts, &inputs);
+    let run = st.executor.start(run, RunValues { secrets: env, inputs })?;
     Ok((StatusCode::CREATED, Json(run)).into_response())
 }
 

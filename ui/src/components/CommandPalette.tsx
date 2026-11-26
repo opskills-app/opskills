@@ -42,11 +42,13 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       {
         id: `run-${r.id}`,
         label: `Run "${r.name}"`,
-        hint: "Start a run",
+        hint: r.inputs?.length ? "Asks for inputs" : "Start a run",
         group: "Actions",
         icon: Play,
         run: () => {
-          api.startRun(r.id).then((run) => go(`runs/${run.id}`));
+          // Inputs are asked for on the runbook's page.
+          if (r.inputs?.length) go(`runbooks/${r.id}`);
+          else api.startRun(r.id).then((run) => go(`runs/${run.id}`));
         },
       },
     ]);

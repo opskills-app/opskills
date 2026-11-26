@@ -117,6 +117,22 @@ PostgreSQL, needed for clustering) can replace it without touching the API.
 - Cancellation sends a signal to the running step on each host, then marks the run cancelled.
 - History cleanup runs daily, keeping at least `min_runs_to_keep` per runbook and deleting runs older than `retention_days`.
 
+Since 0.4.0, runbooks have typed inputs and per-step control:
+
+- Inputs (`text`, `number`, `boolean`, `choice`, `secret`) are checked when a run
+  starts. Values travel with the run in memory only; the run record keeps them with
+  secret ones masked.
+- `{{ scope.name }}` references (`inputs`, `host`, `run`, `runbook`) are expanded
+  per host on the server, each into one single-quoted shell word, so the agent
+  protocol is unchanged and older agents keep working. Inputs are also
+  `OPSKILLS_INPUT_<NAME>` environment variables.
+- A step has an optional timeout, `retries` with a delay, and `continue_on_error`.
+  The runbook's `on_step_failure` is `stop` or `finish_then_fail`.
+- `output_limit` lowers the 20,000-line cap and can fail the run instead of
+  truncating; it stops the running step through the same path as a cancel.
+- The job message has `keep_on_failure`, so an agent keeps the run's working folder
+  when a retry or later step will still come. Older agents ignore the field.
+
 ## Hosts and the agent
 
 The agent is the server binary installed as `opskills-agent`; `main` switches on
