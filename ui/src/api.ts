@@ -238,6 +238,53 @@ export interface Host {
   online: boolean;
   builtin: boolean;
   used_by: { id: string; name: string }[];
+  /** Attributes like env or region, from an Admin and inventory sources. */
+  attributes?: Record<string, string>;
+  /** How runs reach it: the agent, or "listed" when only an inventory source lists it. */
+  reach: "agent" | "listed";
+  /** Inventory sources that list it. */
+  sources: { id: string; name: string }[];
+  /** Tags it has from the workspace's tag rules (also in tags). */
+  rule_tags: string[];
+  /** A source that lists it failed its last refresh. */
+  stale: boolean;
+  /** What an Admin set on an enrolled host, without what sources and rules add. */
+  own_tags: string[];
+  own_attributes: Record<string, string>;
+}
+
+/** A host as an inventory source lists it. */
+export interface SourceHost {
+  name: string;
+  hostname?: string;
+  tags?: string[];
+  attributes?: Record<string, string>;
+}
+
+export type SourceKind =
+  | { type: "static"; hosts: SourceHost[] }
+  | { type: "url"; url: string; header?: string | null; secret?: string | null }
+  | { type: "program"; command: string; args?: string[]; config?: Record<string, string>; secrets?: string[] };
+
+export type SourceInput = SourceKind & { name: string; interval_seconds?: number; enabled?: boolean };
+
+export type InventorySource = SourceKind & {
+  id: string;
+  workspace: string;
+  name: string;
+  interval_seconds: number;
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+  updated_by?: string | null;
+  state: { last_attempt: number | null; last_success: number | null; error: string | null; host_count: number };
+  hosts?: (SourceHost & { id: string; first_seen: number })[];
+};
+
+/** Hosts matching the filter get the tags. */
+export interface TagRule {
+  filter: string;
+  tags: string[];
 }
 
 export interface AgentPackage {
@@ -329,7 +376,9 @@ export interface Run {
   on_step_failure?: FailurePolicy;
   output_limit?: OutputLimit;
   rollout?: Rollout;
-  hosts: { id: string; name: string }[];
+  hosts: { id: string; name: string; attributes?: Record<string, string> }[];
+  /** Targeted hosts left out because nothing can reach them yet. */
+  skipped_hosts?: string[];
   steps: StepResult[];
   error: string | null;
   log_lines: number;
@@ -411,6 +460,7 @@ export interface Workspace {
   description: string;
   created_at: number;
   role?: Role;
+  tag_rules?: TagRule[];
 }
 
 export interface User {
@@ -586,7 +636,14 @@ export const api = {
   deleteSharedSecret: (name: string) => request<void>("DELETE", `/shared-secrets/${secretPath(name)}`),
   system: () => request<{ version: string; public_url: string | null; license: string; source_url: string; setup_done: boolean; sign_in?: SignInOptions }>("GET", "/system"),
   hosts: (filter?: string) => request<Host[]>("GET", filter ? `/hosts?filter=${encodeURIComponent(filter)}` : "/hosts"),
-  updateHost: (id: string, h: { name?: string; tags?: string[] }) => request<Host>("PUT", `/hosts/${encodeURIComponent(id)}`, h),
+  updateHost: (id: string, h: { name?: string; tags?: string[]; attributes?: Record<string, string> }) => request<Host>("PUT", `/hosts/${encodeURIComponent(id)}`, h),
+  inventorySources: () => request<InventorySource[]>("GET", "/inventory/sources"),
+  inventorySource: (id: string) => request<InventorySource>("GET", `/inventory/sources/${encodeURIComponent(id)}`),
+  createInventorySource: (s: SourceInput) => request<InventorySource>("POST", "/inventory/sources", s),
+  updateInventorySource: (id: string, s: SourceInput) => request<InventorySource>("PUT", `/inventory/sources/${encodeURIComponent(id)}`, s),
+  deleteInventorySource: (id: string) => request<void>("DELETE", `/inventory/sources/${encodeURIComponent(id)}`),
+  refreshInventorySource: (id: string, acceptEmpty = false) => request<InventorySource>("POST", `/inventory/sources/${encodeURIComponent(id)}/refresh`, { accept_empty: acceptEmpty }),
+  setTagRules: (slug: string, rules: TagRule[]) => request<{ rules: TagRule[] }>("PUT", `/workspaces/${encodeURIComponent(slug)}/tag-rules`, { rules }),
   deleteHost: (id: string) => request<void>("DELETE", `/hosts/${encodeURIComponent(id)}`),
   createEnrollmentToken: () => request<{ token: string; expires_at: number }>("POST", "/hosts/enrollment-tokens"),
   agentPackages: () => request<{ version: string; packages: AgentPackage[] }>("GET", "/hosts/packages"),
