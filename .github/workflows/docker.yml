@@ -51,6 +51,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
           flavor: |
             latest=${{ startsWith(github.ref, 'refs/tags/v') }}
+          # GitHub detects the license as AGPL-3.0; keep the exact SPDX id from the Dockerfile.
+          labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
 
       - name: Log in to Docker Hub
         if: github.event_name != 'pull_request'
