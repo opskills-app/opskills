@@ -488,6 +488,15 @@ impl Store {
         }
     }
 
+    /// Settings > Sign-in; the default (passwords for everyone) when never saved.
+    pub fn sign_in_settings(&self) -> Result<crate::model::SignInSettings> {
+        Ok(self.get(SETTINGS, "sign_in")?.map(|s| serde_json::from_str(&s)).transpose()?.unwrap_or_default())
+    }
+
+    pub fn put_sign_in_settings(&self, s: &crate::model::SignInSettings) -> Result<()> {
+        self.put(SETTINGS, "sign_in", &serde_json::to_string(s)?)
+    }
+
     // Notifications
 
     /// Add a notification result to a run's list, in one transaction.
@@ -633,7 +642,7 @@ impl Store {
     /// password and must choose a new one at sign-in. Everyone is signed out.
     pub fn reset_first_admin(&self, password_hash: &str) -> Result<()> {
         let mut u = self.user(FIRST_ADMIN)?.unwrap_or_else(|| StoredUser {
-            user: User { name: FIRST_ADMIN.into(), admin: true, workspaces: Default::default(), created_at: now_ms(), must_change_password: true, last_sign_in_at: None, password_changed_at: None },
+            user: User { name: FIRST_ADMIN.into(), admin: true, workspaces: Default::default(), created_at: now_ms(), must_change_password: true, last_sign_in_at: None, password_changed_at: None, email: None, oidc: None },
             password_hash: String::new(),
         });
         u.user.admin = true;

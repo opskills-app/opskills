@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { Eye, EyeOff, LogIn } from "lucide-react";
-import { api } from "../api";
+import { Eye, EyeOff, KeyRound, LogIn } from "lucide-react";
+import { api, type SignInOptions } from "../api";
 import { Button, ErrorNote } from "../components/ui";
 
 export function Logo() {
@@ -30,12 +30,21 @@ export function SourceLink({ href, className = "" }: { href: string; className?:
  * Sign-in. Until an admin has replaced the generated password (`setupDone` false), it
  * explains where to find that password; after that it shows nothing about the install.
  */
-export function Login({ onSignedIn, sourceUrl, setupDone }: { onSignedIn: () => void; sourceUrl: string; setupDone: boolean }) {
+/** A message the server sent back from a failed provider sign-in, once. */
+function providerError(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  const e = params.get("sign_in_error");
+  if (e !== null) window.history.replaceState(null, "", window.location.pathname + window.location.hash);
+  return e;
+}
+
+export function Login({ onSignedIn, sourceUrl, setupDone, signIn }: { onSignedIn: () => void; sourceUrl: string; setupDone: boolean; signIn: SignInOptions }) {
   const [username, setUsername] = useState(setupDone ? "" : "admin");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(providerError);
+  const provider = setupDone ? signIn.provider : null;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -61,6 +70,19 @@ export function Login({ onSignedIn, sourceUrl, setupDone }: { onSignedIn: () => 
         <form onSubmit={submit} className="rounded-[28px] bg-surface p-8 shadow-soft">
           <h1 className="text-[22px] font-semibold tracking-tight">Sign in</h1>
           <p className="mt-1 text-sm text-muted">{setupDone ? "Sign in with your OpSkills account." : "Use the admin account created on first start."}</p>
+
+          {provider && (
+            <>
+              <a href="/api/v1/auth/oidc/start" className="mt-6 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent text-sm font-medium text-accent-ink shadow-soft hover:opacity-95">
+                <KeyRound className="size-4" /> Sign in with {provider}
+              </a>
+              <p className="mt-5 flex items-center gap-3 text-xs text-muted">
+                <span className="h-px flex-1 bg-line" />
+                {signIn.passwords === "server_admins" ? "or, for server admins, a password" : "or with a password"}
+                <span className="h-px flex-1 bg-line" />
+              </p>
+            </>
+          )}
 
           <label className="mt-6 block text-sm font-medium" htmlFor="username">
             Username
@@ -98,7 +120,7 @@ export function Login({ onSignedIn, sourceUrl, setupDone }: { onSignedIn: () => 
             </div>
           )}
 
-          <Button variant="primary" type="submit" disabled={busy || !password} className="mt-6 w-full">
+          <Button variant={provider ? "outline" : "primary"} type="submit" disabled={busy || !password} className="mt-6 w-full">
             <LogIn className="size-4" />
             {busy ? "Signing in..." : "Sign in"}
           </Button>

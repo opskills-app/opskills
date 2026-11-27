@@ -87,6 +87,10 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<String> {
     scheme.eq_ignore_ascii_case("bearer").then(|| token.trim().to_string())
 }
 
+/// The password record of an account that signs in only with the provider: no password
+/// ever matches it.
+pub const NO_PASSWORD: &str = "none";
+
 pub fn new_token() -> String {
     hex::encode(random_bytes::<32>())
 }

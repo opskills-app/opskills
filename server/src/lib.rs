@@ -12,6 +12,7 @@ pub mod firststart;
 pub mod hub;
 pub mod model;
 pub mod notify;
+pub mod oidc;
 pub mod schedule;
 pub mod secret_refs;
 pub mod store;

@@ -13,8 +13,8 @@ values never appear in the log, only secret names.
 
 | Area | Events |
 |---|---|
-| Sign-ins | Signed in, failed to sign in (with the name that was tried, and whether the user exists), signed out, changed their password |
-| Users | Added a user (with their workspaces and roles), made someone a server admin or not, reset a password, removed a user |
+| Sign-ins | Signed in (with a password or the sign-in provider), failed to sign in (with the name that was tried and why), signed out, changed their password |
+| Users | Added a user (with their workspaces and roles, or by a first sign-in with the provider), made someone a server admin or not, changed an email, linked to or unlinked from the sign-in provider, reset a password, removed a user |
 | Workspaces | Added, renamed, deleted (with how many runs of history went with it) |
 | Members | Added a member (with the role), changed a member's role (from and to), removed a member |
 | API tokens | Created a token (with when it expires), revoked a token (and whose, when an admin revokes someone else's) |
@@ -24,7 +24,7 @@ values never appear in the log, only secret names.
 | Vault | Added a secret, changed a secret (whether the value was replaced), moved a secret (from where), deleted a secret |
 | Shared secrets | Added, changed, moved or deleted a shared secret; shared it with workspaces or stopped sharing it (which ones) |
 | Hosts | Created an enrollment token, enrolled a host (with its OS and architecture), renamed or tagged a host, shared a host into a workspace or took it out, removed a host |
-| Settings | Changed or turned off the email settings |
+| Settings | Changed or turned off the email settings, changed the sign-in settings |
 
 ## Who did it
 

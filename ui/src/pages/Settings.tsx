@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { Check, KeyRound, Layers, Mail, Plus, RotateCcw, Send, Trash2, UserPlus, X } from "lucide-react";
+import { Check, KeyRound, Layers, Link2Off, LogIn, Mail, Pencil, Plus, RotateCcw, Send, Trash2, UserPlus, X } from "lucide-react";
 import { CopyButton } from "../components/CopyButton";
-import { api, ROLES, SHARED_PREFIX, useData, type ApiToken, type EmailSettings, type Role, type User } from "../api";
+import { api, ROLES, SHARED_PREFIX, useData, type ApiToken, type EmailSettings, type OidcSettings, type Role, type SignInSettings, type User } from "../api";
 import { ROLE_DESCRIPTIONS, ROLE_LABELS, useCan, useIsServerAdmin, useMe, useSession, useWorkspace } from "../session";
 import { MIN_PASSWORD } from "./ChangePassword";
 import { timeAgo } from "../format";
@@ -170,6 +170,154 @@ function ApiTokensCard() {
         </div>
       )}
       {creating && <NewTokenDialog onClose={() => setCreating(false)} onCreated={() => tokens.reload()} />}
+    </Card>
+  );
+}
+
+const blankOidc: OidcSettings = {
+  enabled: true,
+  label: "",
+  issuer: "",
+  client_id: "",
+  client_secret: "",
+  link_by_email: true,
+  create_accounts: false,
+  allowed_domains: [],
+  trust_unverified_email: false,
+};
+
+/** One OIDC provider, set up by server admins after the first sign-in. */
+function SignInCard() {
+  const current = useData(() => api.signInSettings(), []);
+  const shared = useData(() => api.sharedSecrets(), []);
+  const [form, setForm] = useState<SignInSettings | null>(null);
+  const [domains, setDomains] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [test, setTest] = useState<{ busy?: boolean; ok?: string; error?: string }>({});
+
+  const value: SignInSettings = form ?? current.data?.settings ?? { oidc: null, passwords_for_server_admins_only: false };
+  const oidc = value.oidc ?? blankOidc;
+  const set = (patch: Partial<SignInSettings>) => {
+    setSaved(false);
+    setForm({ ...value, ...patch });
+  };
+  const setOidc = (patch: Partial<OidcSettings>) => set({ oidc: { ...oidc, ...patch } });
+  const secrets = (shared.data ?? []).map((s) => SHARED_PREFIX + s.name);
+  const domainText = domains ?? oidc.allowed_domains.join(", ");
+  const redirect = current.data?.redirect_url;
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const allowed = domainText.split(/[\s,]+/).filter(Boolean);
+      const body: SignInSettings = { ...value, oidc: value.oidc || oidc.issuer ? { ...oidc, allowed_domains: allowed } : null };
+      await api.saveSignInSettings(body);
+      setForm(null);
+      setDomains(null);
+      current.reload();
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runTest() {
+    setTest({ busy: true });
+    try {
+      const r = await api.testSignInProvider(oidc.issuer);
+      setTest({ ok: `Found ${r.issuer}: sign-in page ${r.authorization_endpoint}, ${r.keys} signing key${r.keys === 1 ? "" : "s"}.` });
+    } catch (err) {
+      setTest({ error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  const box = (checked: boolean, onChange: (v: boolean) => void, title: string, hint: string) => (
+    <label className="flex gap-3 rounded-xl border border-line p-3 text-sm">
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="mt-0.5 accent-[var(--accent)]" />
+      <span>
+        <span className="font-medium">{title}</span>
+        <span className="block text-xs text-muted">{hint}</span>
+      </span>
+    </label>
+  );
+
+  return (
+    <Card className="mb-4">
+      <CardHeader title="Sign-in" hint="Let people sign in with your identity provider (OpenID Connect), like Okta, Entra ID or Google" />
+      <form onSubmit={save} className="space-y-4 px-6 pb-6 sm:px-8">
+        {(error || current.error) && <ErrorNote>{error ?? current.error}</ErrorNote>}
+        {!current.data?.public_url && current.data && (
+          <ErrorNote>Set the server's public URL first (server.public_url in the config, or OPSKILLS_SERVER__PUBLIC_URL): the provider sends people back to it.</ErrorNote>
+        )}
+        <div className="rounded-xl bg-surface-2 p-3 text-xs text-muted">
+          At your provider, create a web app (OpenID Connect, authorization code) with this redirect URL:{" "}
+          <span className="inline-flex items-center gap-1 font-mono text-ink-2">
+            {redirect ?? "(set the public URL first)"} {redirect && <CopyButton text={redirect} />}
+          </span>
+          . Then put its client secret in the vault under Vault &gt; Shared (it doesn't need to be shared with any workspace).
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <label className="text-xs font-medium text-muted">
+            Button label
+            <input value={oidc.label} onChange={(e) => setOidc({ label: e.target.value })} placeholder="Okta" className={`mt-1.5 ${field} text-ink`} />
+          </label>
+          <label className="text-xs font-medium text-muted">
+            Issuer URL
+            <span className="mt-1.5 flex gap-2">
+              <input value={oidc.issuer} onChange={(e) => setOidc({ issuer: e.target.value })} placeholder="https://example.okta.com" spellCheck={false} className={`${field} font-mono text-ink`} />
+              <Button type="button" size="sm" onClick={runTest} disabled={!oidc.issuer.trim() || test.busy} className="h-11 shrink-0">
+                {test.busy ? "Checking..." : "Check"}
+              </Button>
+            </span>
+          </label>
+          <label className="text-xs font-medium text-muted">
+            Client ID
+            <input value={oidc.client_id} onChange={(e) => setOidc({ client_id: e.target.value })} spellCheck={false} className={`mt-1.5 ${field} font-mono text-ink`} />
+          </label>
+          <label className="text-xs font-medium text-muted">
+            Client secret, a shared secret
+            <select value={oidc.client_secret} onChange={(e) => setOidc({ client_secret: e.target.value })} className={`mt-1.5 ${field} text-ink`}>
+              <option value="">{secrets.length ? "Pick a shared secret" : "No shared secrets yet"}</option>
+              {secrets.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {test.ok && <p className="text-xs text-emerald-600 dark:text-emerald-400">{test.ok}</p>}
+        {test.error && <ErrorNote>{test.error}</ErrorNote>}
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          {box(oidc.enabled, (v) => setOidc({ enabled: v }), "On", "Shows the sign-in button. Off keeps these settings without the button.")}
+          {box(oidc.link_by_email, (v) => setOidc({ link_by_email: v }), "Link accounts by email", "A first sign-in links to the user whose email (Settings > Users) the provider has verified.")}
+          {box(oidc.create_accounts, (v) => setOidc({ create_accounts: v }), "Create accounts on first sign-in", "For the email domains below. New accounts are in no workspace until a workspace Admin adds them.")}
+          {box(oidc.trust_unverified_email, (v) => setOidc({ trust_unverified_email: v }), "Trust emails the provider doesn't mark verified", "Only for providers that never send email_verified, like Entra ID.")}
+        </div>
+        <label className="block text-xs font-medium text-muted">
+          Email domains for new accounts
+          <input value={domainText} onChange={(e) => setDomains(e.target.value)} placeholder="example.com, example.org" spellCheck={false} className={`mt-1.5 ${field} text-ink`} />
+          <span className="mt-1.5 block font-normal">With Google, people must also be in one of these Google Workspace domains.</span>
+        </label>
+        {box(
+          value.passwords_for_server_admins_only,
+          (v) => set({ passwords_for_server_admins_only: v }),
+          "Passwords only for server admins",
+          "Everyone else signs in with the provider. Server admins keep their password, so they can get in if the provider is down.",
+        )}
+        <div className="flex items-center gap-3">
+          <Button variant="primary" type="submit" disabled={busy || !oidc.label.trim() || !oidc.issuer.trim() || !oidc.client_id.trim() || !oidc.client_secret}>
+            <LogIn className="size-3.5" /> {busy ? "Saving..." : "Save"}
+          </Button>
+          {saved && <span className="text-sm text-emerald-600 dark:text-emerald-400">Saved.</span>}
+        </div>
+      </form>
     </Card>
   );
 }
@@ -375,6 +523,11 @@ function AccountCard() {
   return (
     <Card className="mb-4">
       <CardHeader title="Your account" hint={`Signed in as ${me.user}, ${me.admin ? "server admin" : `${ROLE_LABELS[workspace?.role ?? "viewer"]} in ${workspace?.name ?? "this workspace"}`}`} />
+      {!me.password ? (
+        <p className="px-6 pb-6 text-sm text-muted sm:px-8">
+          You sign in with {me.signs_in_with ?? "the sign-in provider"} and have no OpSkills password. Your provider account decides how you sign in.
+        </p>
+      ) : (
       <form onSubmit={submit} className="grid grid-cols-1 gap-4 px-6 pb-6 sm:px-8 md:grid-cols-[1fr_1fr_auto] md:items-end">
         <div>
           <label className="text-sm font-medium" htmlFor="account-current">
@@ -397,6 +550,7 @@ function AccountCard() {
           {!error && !done && <p className="text-xs text-muted">At least {MIN_PASSWORD} characters. Changing it signs you out everywhere else.</p>}
         </div>
       </form>
+      )}
     </Card>
   );
 }
@@ -443,6 +597,7 @@ function RolePicker({ role, onChange }: { role: Role; onChange: (r: Role) => voi
 function NewUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const workspace = useWorkspace();
   const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [serverAdmin, setServerAdmin] = useState(false);
   const [join, setJoin] = useState(true);
   const [role, setRole] = useState<Role>("operator");
@@ -455,7 +610,7 @@ function NewUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
     setBusy(true);
     setError(null);
     try {
-      setCreated(await api.createUser(name, serverAdmin, join && workspace ? { [workspace.slug]: role } : {}));
+      setCreated(await api.createUser(name, serverAdmin, join && workspace ? { [workspace.slug]: role } : {}, email.trim() || undefined));
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -488,6 +643,13 @@ function NewUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
           </label>
           <input id="user-name" required maxLength={64} value={name} onChange={(e) => setName(e.target.value)} placeholder="jane.doe" className={`mt-2 ${field}`} />
           <p className="mt-1.5 text-xs text-muted">Lowercase letters, digits, dots, dashes and underscores. They sign in with it.</p>
+        </div>
+        <div>
+          <label className="text-sm font-medium" htmlFor="user-email">
+            Email <span className="font-normal text-muted">(optional)</span>
+          </label>
+          <input id="user-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="jane.doe@example.com" className={`mt-2 ${field}`} />
+          <p className="mt-1.5 text-xs text-muted">With a sign-in provider set up, their first sign-in there links to this account when the provider has verified this email.</p>
         </div>
         {workspace && (
           <div>
@@ -574,6 +736,14 @@ function UsersCard() {
                       <span>
                         <span className="font-medium">{u.name}</span>
                         {self && <span className="ml-1.5 text-xs text-muted">(you)</span>}
+                        <span className="block text-xs text-muted">
+                          {u.email ?? "No email"}
+                          {u.oidc && (
+                            <span className="ml-1.5 inline-flex items-center gap-1 text-accent" title={`Linked to ${u.oidc.issuer}`}>
+                              <LogIn className="size-3" /> Signs in with the provider
+                            </span>
+                          )}
+                        </span>
                         {u.must_change_password && <span className="block text-xs text-amber-600 dark:text-amber-400">Has a generated password</span>}
                       </span>
                     </span>
@@ -592,6 +762,29 @@ function UsersCard() {
                   </td>
                   <td className="px-3 py-3 text-muted">{u.last_sign_in_at ? timeAgo(u.last_sign_in_at) : "Never"}</td>
                   <td className="px-6 py-3 text-right whitespace-nowrap sm:px-8">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const email = window.prompt(`Email for ${u.name} (empty removes it):`, u.email ?? "");
+                        if (email !== null) act(() => api.setUserEmail(u.name, email));
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted hover:text-ink"
+                      aria-label={`Set the email of ${u.name}`}
+                    >
+                      <Pencil className="size-3.5" /> Email
+                    </button>
+                    {u.oidc && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!window.confirm(`Unlink ${u.name} from their provider account? Their next sign-in there links again by email.`)) return;
+                          act(() => api.unlinkSignIn(u.name));
+                        }}
+                        className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted hover:text-ink"
+                      >
+                        <Link2Off className="size-3.5" /> Unlink
+                      </button>
+                    )}
                     {!self && (
                       <>
                         <button
@@ -974,7 +1167,7 @@ export function SettingsPage() {
   const serverAdmin = useIsServerAdmin();
   return (
     <>
-      <PageHeader title="Settings" subtitle={serverAdmin ? "Your account and tokens, this workspace, and the server's users, workspaces and email." : "Your account and tokens, and this workspace."} />
+      <PageHeader title="Settings" subtitle={serverAdmin ? "Your account and tokens, this workspace, and the server's users, workspaces, sign-in and email." : "Your account and tokens, and this workspace."} />
       <AccountCard />
       <ApiTokensCard />
       <ThisWorkspaceCard />
@@ -985,6 +1178,7 @@ export function SettingsPage() {
           <WorkspacesCard />
           <UsersCard />
           <AllTokensCard />
+          <SignInCard />
           <EmailCard />
         </>
       )}

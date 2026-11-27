@@ -26,6 +26,7 @@ mod users;
 mod audit;
 mod workspaces;
 mod vault_paths;
+mod sign_in;
 
 struct TestServer {
     app: Router,

@@ -31,6 +31,7 @@ mod users;
 mod audit;
 mod workspaces;
 mod shared_secrets;
+mod sign_in;
 
 pub use hosts::{Package, packages, release_url};
 pub use runs::start_runbook;
@@ -51,6 +52,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .merge(audit::routes())
         .merge(workspaces::routes())
         .merge(shared_secrets::routes())
+        .merge(sign_in::routes())
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "No such API endpoint.") })
         .layer(middleware::from_fn_with_state(state, guard))
 }
@@ -161,6 +163,7 @@ const RULES: &[Rules] = &[
     audit::ACCESS,
     workspaces::ACCESS,
     shared_secrets::ACCESS,
+    sign_in::ACCESS,
 ];
 
 /// Every access rule, as `(method, route, rule)`.
@@ -401,6 +404,7 @@ mod tests {
             include_str!("audit.rs"),
             include_str!("workspaces.rs"),
             include_str!("shared_secrets.rs"),
+            include_str!("sign_in.rs"),
         ];
         let route = regex::Regex::new(r#"\.route\("([^"]+)",\s*(.+)\)\s*$"#).unwrap();
         let method = regex::Regex::new(r"\b(get|post|put|delete|patch)\(").unwrap();

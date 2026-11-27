@@ -114,6 +114,31 @@ export interface Notification {
 
 export type WebhookAuth = { type: "bearer"; secret: string } | { type: "basic"; username: string; secret: string };
 
+/** Settings > Sign-in: one OIDC provider. */
+export interface OidcSettings {
+  enabled: boolean;
+  label: string;
+  issuer: string;
+  client_id: string;
+  /** A shared secret, like shared/oidc/CLIENT_SECRET. */
+  client_secret: string;
+  link_by_email: boolean;
+  create_accounts: boolean;
+  allowed_domains: string[];
+  trust_unverified_email: boolean;
+}
+
+export interface SignInSettings {
+  oidc: OidcSettings | null;
+  passwords_for_server_admins_only: boolean;
+}
+
+/** What the sign-in page offers, from /system. */
+export interface SignInOptions {
+  provider: string | null;
+  passwords: "everyone" | "server_admins";
+}
+
 /** SMTP settings made on the Settings page; the password is a vault secret. */
 export interface EmailSettings {
   smtp_host: string;
@@ -373,6 +398,11 @@ export interface Me {
   workspaces: MyWorkspace[];
   token: string | null;
   must_change_password: boolean;
+  email?: string | null;
+  /** False for accounts that sign in only with the provider. */
+  password: boolean;
+  /** The provider's label, when this account is linked to it. */
+  signs_in_with: string | null;
 }
 
 export interface Workspace {
@@ -392,6 +422,10 @@ export interface User {
   must_change_password: boolean;
   last_sign_in_at: number | null;
   password_changed_at: number | null;
+  /** Links the account to the sign-in provider on its first sign-in there. */
+  email?: string;
+  /** The provider account it signs in with, once linked. */
+  oidc?: { issuer: string; subject: string };
 }
 
 export interface ApiToken {
@@ -466,8 +500,15 @@ export const api = {
   me: () => request<Me>("GET", "/auth/me"),
   changePassword: (current_password: string, new_password: string) => request<void>("POST", "/auth/password", { current_password, new_password }),
   users: () => request<User[]>("GET", "/users"),
-  createUser: (name: string, admin: boolean, workspaces: Record<string, Role>) => request<{ user: User; password: string }>("POST", "/users", { name, admin, workspaces }),
+  createUser: (name: string, admin: boolean, workspaces: Record<string, Role>, email?: string) =>
+    request<{ user: User; password: string }>("POST", "/users", { name, admin, workspaces, ...(email ? { email } : {}) }),
   setServerAdmin: (name: string, admin: boolean) => request<User>("PUT", `/users/${encodeURIComponent(name)}`, { admin }),
+  setUserEmail: (name: string, email: string) => request<User>("PUT", `/users/${encodeURIComponent(name)}`, { email }),
+  unlinkSignIn: (name: string) => request<User>("PUT", `/users/${encodeURIComponent(name)}`, { unlink_sign_in: true }),
+  signInSettings: () => request<{ settings: SignInSettings; redirect_url: string | null; public_url: string | null }>("GET", "/settings/sign-in"),
+  saveSignInSettings: (s: SignInSettings) => request<{ settings: SignInSettings; redirect_url: string | null; public_url: string | null }>("PUT", "/settings/sign-in", s),
+  testSignInProvider: (issuer: string) =>
+    request<{ issuer: string; authorization_endpoint: string; token_endpoint: string | null; keys: number; redirect_url: string | null }>("POST", "/settings/sign-in/test", { issuer }),
   resetPassword: (name: string) => request<{ user: User; password: string }>("POST", `/users/${encodeURIComponent(name)}/reset-password`),
   deleteUser: (name: string) => request<void>("DELETE", `/users/${encodeURIComponent(name)}`),
   allTokens: () => request<ApiToken[]>("GET", "/tokens"),
@@ -543,7 +584,7 @@ export const api = {
   updateSharedSecret: (name: string, s: { name?: string; kind?: SecretKind; description?: string; value?: string; all_workspaces?: boolean; workspaces?: string[] }) =>
     request<SharedSecret>("PUT", `/shared-secrets/${secretPath(name)}`, s),
   deleteSharedSecret: (name: string) => request<void>("DELETE", `/shared-secrets/${secretPath(name)}`),
-  system: () => request<{ version: string; public_url: string | null; license: string; source_url: string; setup_done: boolean }>("GET", "/system"),
+  system: () => request<{ version: string; public_url: string | null; license: string; source_url: string; setup_done: boolean; sign_in?: SignInOptions }>("GET", "/system"),
   hosts: (filter?: string) => request<Host[]>("GET", filter ? `/hosts?filter=${encodeURIComponent(filter)}` : "/hosts"),
   updateHost: (id: string, h: { name?: string; tags?: string[] }) => request<Host>("PUT", `/hosts/${encodeURIComponent(id)}`, h),
   deleteHost: (id: string) => request<void>("DELETE", `/hosts/${encodeURIComponent(id)}`),

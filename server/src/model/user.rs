@@ -52,6 +52,27 @@ pub struct User {
     pub last_sign_in_at: Option<u64>,
     #[serde(default)]
     pub password_changed_at: Option<u64>,
+    /// Used to link the account to the sign-in provider on its first sign-in there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// The provider account this user signs in with, once linked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc: Option<OidcLink>,
+}
+
+/// A user's account at the sign-in provider: who issued it and its id there. Emails can
+/// change or be reused; this pair can't.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OidcLink {
+    pub issuer: String,
+    pub subject: String,
+}
+
+/// An email address as users are matched by: trimmed and lowercased, with one `@`.
+pub fn normalize_email(email: &str) -> Result<String, String> {
+    let e = email.trim().to_lowercase();
+    let ok = e.len() <= 254 && e.matches('@').count() == 1 && !e.starts_with('@') && !e.ends_with('@') && !e.chars().any(|c| c.is_whitespace() || c.is_control()) && e.split('@').nth(1).is_some_and(|d| d.contains('.'));
+    if ok { Ok(e) } else { Err(format!("{email:?} is not an email address.")) }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -111,7 +132,7 @@ mod tests {
 
     #[test]
     fn roles_are_per_workspace_and_server_admins_have_all() {
-        let mut u = User { name: "a".into(), admin: false, workspaces: BTreeMap::new(), created_at: 0, must_change_password: false, last_sign_in_at: None, password_changed_at: None };
+        let mut u = User { name: "a".into(), admin: false, workspaces: BTreeMap::new(), created_at: 0, must_change_password: false, last_sign_in_at: None, password_changed_at: None, email: None, oidc: None };
         u.workspaces.insert("ops".into(), Role::Operator);
         assert_eq!(u.role_in("ops"), Some(Role::Operator));
         assert_eq!(u.role_in("payments"), None);

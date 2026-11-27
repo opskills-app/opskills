@@ -53,6 +53,10 @@ server admin. OpSkills shows a generated password once: give it to the person, w
 chooses their own when they first sign in with it. A user with a generated password
 can't do anything else until they have.
 
+You can also give them an **email**. With a sign-in provider set up, like Okta, Entra
+ID or Google, their first sign-in there links to the account with that email, and they
+don't need a password at all. See [Sign-in with your identity provider](sign-in.md).
+
 From the same list, server admins can:
 
 - **make someone a server admin, or not**, which applies at once;
@@ -93,10 +97,10 @@ Webhooks and schedules start runs by themselves; editing them needs the Editor r
 
 | Endpoint | Who | What it does |
 |---|---|---|
-| `GET /auth/me` | anyone signed in | Your name, whether you're a server admin, your workspaces with your role in each, and whether you must choose a password |
+| `GET /auth/me` | anyone signed in | Your name, whether you're a server admin, your workspaces with your role in each, whether you must choose a password, your `email`, whether you have a `password`, and `signs_in_with` (the provider's label, if linked) |
 | `POST /auth/password` | anyone signed in, sessions only | `{"current_password", "new_password"}` |
-| `GET /users`, `POST /users` | server admins, sessions only | List users; add one with `{"name", "admin": false, "workspaces": {"ops": "editor"}}` (the generated password is returned once) |
-| `PUT /users/{name}` | server admins, sessions only | Make someone a server admin, or not: `{"admin": true}` |
+| `GET /users`, `POST /users` | server admins, sessions only | List users; add one with `{"name", "admin": false, "workspaces": {"ops": "editor"}, "email": "jane@example.com"}` (the email is optional; the generated password is returned once) |
+| `PUT /users/{name}` | server admins, sessions only | Any of `{"admin": true}`, `{"email": "jane@example.com"}` (empty removes it) and `{"unlink_sign_in": true}` |
 | `POST /users/{name}/reset-password` | server admins, sessions only | A new generated password, returned once |
 | `DELETE /users/{name}` | server admins, sessions only | Remove a user, their sessions and API tokens |
 | `GET /tokens`, `DELETE /tokens/{id}` | server admins, sessions only | Everyone's API tokens |

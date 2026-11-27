@@ -50,7 +50,29 @@ async fn system(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
         // False until an admin has replaced the generated password; the sign-in page only
         // explains where to find that password while this is false.
         "setup_done": setup_done(&st),
+        // What the sign-in page offers: a provider button, and passwords for everyone or
+        // only for server admins.
+        "sign_in": sign_in_options(&st),
     }))
+}
+
+fn sign_in_options(st: &AppState) -> serde_json::Value {
+    let s = st.store.sign_in_settings().unwrap_or_default();
+    let provider = s.provider().map(|o| o.label.clone());
+    let passwords = if provider.is_some() && s.passwords_for_server_admins_only { "server_admins" } else { "everyone" };
+    json!({ "provider": provider, "passwords": passwords })
+}
+
+/// Sign `stored` in: a new session, their last sign-in time, and the cookie to set.
+pub(super) fn open_session(st: &AppState, stored: &mut crate::model::StoredUser) -> ApiResult<String> {
+    st.store.purge_expired_sessions()?;
+    let token = auth::new_token();
+    let max_age = st.cfg.auth.session_hours * 3600;
+    let now = now_ms();
+    st.store.put_session(&auth::token_hash(&token), &Session { user: stored.user.name.clone(), created_at: now, expires_at: now + max_age * 1000 })?;
+    stored.user.last_sign_in_at = Some(now);
+    st.store.put_user(stored)?;
+    Ok(auth::session_cookie(&token, max_age, st.secure_cookies()))
 }
 
 fn setup_done(st: &AppState) -> bool {
@@ -83,17 +105,16 @@ async fn login(State(st): State<Arc<AppState>>, Json(input): Json<LoginInput>) -
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Wrong username or password."));
     };
     FAILED_LOGINS.store(0, Ordering::Relaxed);
-    st.store.purge_expired_sessions()?;
-    let token = auth::new_token();
-    let max_age = st.cfg.auth.session_hours * 3600;
-    let now = now_ms();
-    st.store.put_session(&auth::token_hash(&token), &Session { user: name.clone(), created_at: now, expires_at: now + max_age * 1000 })?;
-    stored.user.last_sign_in_at = Some(now);
-    st.store.put_user(&stored)?;
+    let settings = st.store.sign_in_settings()?;
+    if let Some(p) = settings.provider().filter(|_| settings.passwords_for_server_admins_only && !stored.user.admin) {
+        audit::record(&st, &By::named(&name), None, "auth.sign_in_failed", None, Some("passwords are for server admins".into()));
+        return Err(ApiError::new(StatusCode::FORBIDDEN, format!("Passwords are only for server admins here. Sign in with {}.", p.label)));
+    }
+    let cookie = open_session(&st, &mut stored)?;
     tracing::info!(user = %name, "signed in");
     audit::record(&st, &By::named(&name), None, "auth.sign_in", None, None);
     let mut res = Json(json!({ "user": name, "admin": stored.user.admin, "must_change_password": stored.user.must_change_password })).into_response();
-    res.headers_mut().insert(header::SET_COOKIE, HeaderValue::from_str(&auth::session_cookie(&token, max_age, st.secure_cookies())).unwrap());
+    res.headers_mut().insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
     Ok(res)
 }
 
@@ -116,7 +137,13 @@ async fn me(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentU
         .into_iter()
         .filter_map(|w| me.role_in(&w.slug).map(|role| json!({ "slug": w.slug, "name": w.name, "role": role })))
         .collect();
-    Ok(Json(json!({ "user": me.name, "admin": me.admin, "workspaces": workspaces, "token": user.token, "must_change_password": me.must_change_password })))
+    let stored = st.store.user(&user.user)?.ok_or_else(|| ApiError::not_found("User"))?;
+    let password = stored.password_hash != auth::NO_PASSWORD;
+    let provider = me.oidc.is_some().then(|| st.store.sign_in_settings().ok().and_then(|s| s.oidc.map(|o| o.label))).flatten();
+    Ok(Json(json!({
+        "user": me.name, "admin": me.admin, "workspaces": workspaces, "token": user.token, "must_change_password": me.must_change_password,
+        "email": me.email, "password": password, "signs_in_with": provider,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -130,6 +157,9 @@ struct PasswordInput {
 async fn change_password(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, body: String) -> ApiResult<StatusCode> {
     let input: PasswordInput = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid request: {e}")))?;
     let mut stored = st.store.user(&user.user)?.ok_or_else(|| ApiError::not_found("User"))?;
+    if stored.password_hash == auth::NO_PASSWORD {
+        return Err(ApiError::new(StatusCode::CONFLICT, "You sign in with the sign-in provider and have no password here. A server admin can give you one."));
+    }
     let (hash, current) = (stored.password_hash.clone(), input.current_password.clone());
     if !tokio::task::spawn_blocking(move || auth::verify_password(&hash, &current)).await.unwrap_or(false) {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "The current password is wrong."));
