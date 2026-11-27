@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, BookOpen, ChevronRight, KeyRound, LayoutGrid, LogOut, Moon, Plus, Search, Server, Settings, Sun } from "lucide-react";
+import { Activity, BookOpen, ChevronRight, KeyRound, LayoutGrid, LogOut, Moon, Plus, ScrollText, Search, Server, Settings, Sun } from "lucide-react";
 import { CommandPalette } from "./components/CommandPalette";
 import { Avatar, Button, cx, Kbd } from "./components/ui";
 import { api, UNAUTHORIZED_EVENT, type Me, type Role } from "./api";
@@ -16,6 +16,7 @@ import { RunDetail } from "./pages/RunDetail";
 import { HostsPage } from "./pages/Hosts";
 import { VaultPage } from "./pages/Vault";
 import { SettingsPage } from "./pages/Settings";
+import { AuditLogPage } from "./pages/AuditLog";
 
 const allNav: { id: string; label: string; icon: typeof LayoutGrid; min?: Role }[] = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
@@ -23,6 +24,7 @@ const allNav: { id: string; label: string; icon: typeof LayoutGrid; min?: Role }
   { id: "runs", label: "Runs", icon: Activity },
   { id: "hosts", label: "Hosts", icon: Server },
   { id: "vault", label: "Vault", icon: KeyRound, min: "editor" },
+  { id: "audit", label: "Audit log", icon: ScrollText, min: "admin" },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -140,6 +142,7 @@ function Shell({ user, role, version, sourceUrl, onSignOut }: { user: string; ro
   else if (section === "runs") page = <RunsPage />;
   else if (section === "hosts") page = <HostsPage />;
   else if (section === "vault") page = <VaultPage />;
+  else if (section === "audit") page = <AuditLogPage />;
   else if (section === "settings") page = <SettingsPage />;
   else page = <Overview />;
 

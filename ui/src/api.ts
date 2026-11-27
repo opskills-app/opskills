@@ -301,6 +301,23 @@ export interface WebhookInput {
 }
 
 /** An API token for automation. Its value is shown only once, when it's created. */
+/** One change in the audit log. */
+export interface AuditEvent {
+  id: string;
+  at: number;
+  actor: string;
+  via?: string;
+  action: string;
+  target?: { kind: string; id: string; name: string };
+  detail?: string;
+}
+
+export interface AuditPage {
+  events: AuditEvent[];
+  next: string | null;
+  retention_days: number;
+}
+
 /** What a user may do; each role includes the ones before it. */
 export type Role = "viewer" | "operator" | "editor" | "admin";
 export const ROLES: Role[] = ["viewer", "operator", "editor", "admin"];
@@ -387,6 +404,11 @@ export const api = {
   resetPassword: (name: string) => request<{ user: User; password: string }>("POST", `/users/${encodeURIComponent(name)}/reset-password`),
   deleteUser: (name: string) => request<void>("DELETE", `/users/${encodeURIComponent(name)}`),
   allTokens: () => request<ApiToken[]>("GET", "/tokens"),
+  audit: (p: { before?: string; action?: string; q?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(p)) if (v !== undefined && v !== "") qs.set(k, String(v));
+    return request<AuditPage>("GET", `/audit${qs.size ? `?${qs}` : ""}`);
+  },
   revokeAnyToken: (id: string) => request<void>("DELETE", `/tokens/${encodeURIComponent(id)}`),
   tokens: () => request<ApiToken[]>("GET", "/me/tokens"),
   createToken: (name: string, expires_in_days: number | null) => request<{ token: ApiToken; value: string }>("POST", "/me/tokens", { name, expires_in_days }),

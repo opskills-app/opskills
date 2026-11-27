@@ -9,13 +9,13 @@ with live output, approvals and a full audit trail.
 
 Website: [opskills.app](https://opskills.app)
 
-> **Status:** v0.12.0 preview. Sign in, keep secrets in an encrypted vault, enroll
+> **Status:** v0.13.0 preview. Sign in, keep secrets in an encrypted vault, enroll
 > your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks with
 > inputs, retries, file copies and calls to other runbooks, and run them on the
 > server or on your hosts, by hand, on a schedule, from a webhook or with an API
 > token, with output streaming live to your browser, and hear how runs went by email
 > or in chat. Give each person their own user with a role (Viewer, Operator, Editor
-> or Admin). An audit log is next.
+> or Admin), and see who changed what in the audit log. Workspaces are next.
 
 ## Install
 
@@ -33,7 +33,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.12.0
+  opskills/opskills:0.13.0
 docker logs opskills 2>&1 | grep 'Admin password'
 ```
 
@@ -45,13 +45,13 @@ use the included [`compose.yaml`](compose.yaml): `docker compose up -d`.
 ### Debian and Ubuntu
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.12.0/opskills_0.12.0_amd64.deb
-sudo apt install ./opskills_0.12.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.13.0/opskills_0.13.0_amd64.deb
+sudo apt install ./opskills_0.13.0_amd64.deb
 sudo systemctl start opskills
 sudo journalctl -u opskills | grep 'Admin password'
 ```
 
-Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.12.0_arm64.deb`
+Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.13.0_arm64.deb`
 on ARM servers (`dpkg --print-architecture` tells you which). All downloads and
 checksums are on the [releases page](https://github.com/opskills-app/opskills/releases/latest).
 The package installs a sandboxed systemd service that runs as the `opskills`
@@ -135,8 +135,8 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   the exact commands:
 
   ```bash
-  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.12.0_amd64.deb
-  sudo apt install ./opskills-agent_0.12.0_amd64.deb
+  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.13.0_amd64.deb
+  sudo apt install ./opskills-agent_0.13.0_amd64.deb
   sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
   sudo systemctl enable --now opskills-agent
   ```
@@ -182,6 +182,9 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   expire, are revoked instantly, and can't manage tokens, users or sign-ins. A token
   acts with its owner's current role, and runs record which token started them.
   Keep tokens in your CI's secret store.
+- Every change is written to the audit log with who made it and how (a user, a
+  token, a schedule, a webhook or an agent); admins read it on the **Audit log** page.
+  Secret values never appear in it. See [Audit log](docs/audit.md).
 - Passwords are hashed with argon2id. Generated passwords (first start, new users,
   resets) must be replaced at the next sign-in. Failed sign-ins are slowed down.
 - Runbooks run commands with the server user's permissions, and as **root** on
@@ -218,6 +221,7 @@ with `--config`). Any setting can be overridden with an environment variable nam
 | `logs.level` | `OPSKILLS_LOGS__LEVEL` | `info` |
 | `auth.session_hours` | `OPSKILLS_AUTH__SESSION_HOURS` | `8` |
 | `runs.max_concurrent` | `OPSKILLS_RUNS__MAX_CONCURRENT` | `4` |
+| `audit.retention_days` | `OPSKILLS_AUDIT__RETENTION_DAYS` | `90` |
 | `hosts.packages_dir` | `OPSKILLS_HOSTS__PACKAGES_DIR` | `/usr/share/opskills/packages` |
 
 The agent packages offered on the Hosts page come from `hosts.packages_dir` when
@@ -248,6 +252,7 @@ curl -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" \
 | `GET /me/tokens`, `POST /me/tokens`, `DELETE /me/tokens/{id}` | List, create (the value is returned once) and revoke your API tokens; signed-in sessions only |
 | `GET /users`, `POST /users`, `PUT`, `DELETE /users/{name}`, `POST /users/{name}/reset-password` | Manage users and roles (admins, sessions only); see [Users and roles](docs/users.md#api) |
 | `GET /tokens`, `DELETE /tokens/{id}` | Everyone's API tokens (admins, sessions only) |
+| `GET /audit?q=&action=&actor=&before=&limit=` | The audit log, newest first (admins); `next` continues it. See [Audit log](docs/audit.md) |
 | `GET /runbooks`, `POST /runbooks` | List and create runbooks |
 | `GET`, `PUT`, `DELETE /runbooks/{id}` | Read, replace and delete a runbook |
 | `GET /runbooks/{id}/schedules` | Each schedule's next times, last run and last error |
