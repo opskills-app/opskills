@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Activity, BookOpen, ChevronRight, KeyRound, LayoutGrid, LogOut, Moon, Plus, ScrollText, Search, Server, Settings, Sun } from "lucide-react";
 import { CommandPalette } from "./components/CommandPalette";
 import { Avatar, Button, cx, Kbd } from "./components/ui";
-import { api, setApiWorkspace, UNAUTHORIZED_EVENT, type Me, type MyWorkspace, type Role } from "./api";
+import { api, setApiWorkspace, UNAUTHORIZED_EVENT, type Me, type MyWorkspace, type Role, type SignInOptions } from "./api";
 import { ROLE_LABELS, SessionContext, type Session } from "./session";
 import { NoWorkspace } from "./pages/NoWorkspace";
 import { ChangePassword } from "./pages/ChangePassword";
@@ -77,6 +77,7 @@ export default function App() {
   const [sourceUrl, setSourceUrl] = useState(SOURCE_URL);
   // Unknown until /system answers; the sign-in page waits for it.
   const [setupDone, setSetupDone] = useState<boolean | undefined>(undefined);
+  const [signIn, setSignIn] = useState<SignInOptions>({ provider: null, passwords: "everyone" });
 
   const loadMe = () => api.me().then(setMe, () => setMe(null));
   const loadSystem = () =>
@@ -86,6 +87,7 @@ export default function App() {
         setVersion(s.version ?? "");
         if (s.source_url) setSourceUrl(s.source_url);
         setSetupDone(s.setup_done !== false);
+        if (s.sign_in) setSignIn(s.sign_in);
       })
       .catch(() => setSetupDone(true));
 
@@ -101,7 +103,7 @@ export default function App() {
   }, []);
 
   if (me === undefined || setupDone === undefined) return <div className="flex min-h-full items-center justify-center text-sm text-muted">Loading...</div>;
-  if (me === null) return <Login key={String(setupDone)} onSignedIn={loadMe} sourceUrl={sourceUrl} setupDone={setupDone} />;
+  if (me === null) return <Login key={String(setupDone)} onSignedIn={loadMe} sourceUrl={sourceUrl} setupDone={setupDone} signIn={signIn} />;
   const signedOut = () => {
     setMe(null);
     loadSystem();
