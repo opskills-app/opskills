@@ -3,6 +3,7 @@ import { Check, CircleCheck, Copy, Download, HardDrive, Pencil, Plus, Server, Se
 import { api, useData, type AgentPackage, type Host } from "../api";
 import { timeAgo } from "../format";
 import { Badge, Button, Card, cx, ErrorNote, IconBubble, Modal, PageHeader, SearchField, Tag, TableHeading } from "../components/ui";
+import { useCan } from "../session";
 
 type Family = "deb" | "rpm";
 type Arch = "amd64" | "arm64";
@@ -399,6 +400,7 @@ function Downloads({ version, packages }: { version: string; packages: AgentPack
 }
 
 export function HostsPage() {
+  const admin = useCan("admin");
   const hosts = useData(() => api.hosts(), [], 5000);
   const pkgs = useData(() => api.agentPackages(), []);
   const serverUrl = useServerUrl();
@@ -430,9 +432,11 @@ export function HostsPage() {
         title="Hosts"
         subtitle="Machines your runbooks run on. Each one runs the OpSkills agent, which connects to this server."
         actions={
-          <Button variant="primary" onClick={() => setAdding(true)}>
-            <Plus className="size-4" /> Add host
-          </Button>
+          admin && (
+            <Button variant="primary" onClick={() => setAdding(true)}>
+              <Plus className="size-4" /> Add host
+            </Button>
+          )
         }
       />
 
@@ -498,7 +502,7 @@ export function HostsPage() {
                 <Badge tone={h.online ? "green" : "red"}>{h.online ? "Online" : "Offline"}</Badge>
               </span>
               <span className="col-span-2 flex justify-end gap-1 lg:col-span-1">
-                {!h.builtin && (
+                {!h.builtin && admin && (
                   <>
                     <Button size="sm" variant="ghost" onClick={() => setEditing(h)} aria-label={`Edit ${h.name}`} title="Rename or tag">
                       <Pencil className="size-3.5" />

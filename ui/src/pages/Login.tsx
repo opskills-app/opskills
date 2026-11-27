@@ -3,7 +3,7 @@ import { Eye, EyeOff, LogIn } from "lucide-react";
 import { api } from "../api";
 import { Button, ErrorNote } from "../components/ui";
 
-function Logo() {
+export function Logo() {
   return (
     <svg viewBox="0 0 36 36" className="size-11" aria-hidden>
       <path d="M18 2.5l13.4 7.75v15.5L18 33.5 4.6 25.75V10.25z" className="fill-none stroke-ink" strokeWidth="2.6" strokeLinejoin="round" />
@@ -26,8 +26,12 @@ export function SourceLink({ href, className = "" }: { href: string; className?:
   );
 }
 
-export function Login({ onSignedIn, sourceUrl }: { onSignedIn: (user: string) => void; sourceUrl: string }) {
-  const [username, setUsername] = useState("admin");
+/**
+ * Sign-in. Until an admin has replaced the generated password (`setupDone` false), it
+ * explains where to find that password; after that it shows nothing about the install.
+ */
+export function Login({ onSignedIn, sourceUrl, setupDone }: { onSignedIn: () => void; sourceUrl: string; setupDone: boolean }) {
+  const [username, setUsername] = useState(setupDone ? "" : "admin");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -38,8 +42,8 @@ export function Login({ onSignedIn, sourceUrl }: { onSignedIn: (user: string) =>
     setBusy(true);
     setError(null);
     try {
-      const res = await api.login(username, password);
-      onSignedIn(res.user);
+      await api.login(username, password);
+      onSignedIn();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-in failed.");
     } finally {
@@ -56,7 +60,7 @@ export function Login({ onSignedIn, sourceUrl }: { onSignedIn: (user: string) =>
         </div>
         <form onSubmit={submit} className="rounded-[28px] bg-surface p-8 shadow-soft">
           <h1 className="text-[22px] font-semibold tracking-tight">Sign in</h1>
-          <p className="mt-1 text-sm text-muted">Use the admin account created on first start.</p>
+          <p className="mt-1 text-sm text-muted">{setupDone ? "Sign in with your OpSkills account." : "Use the admin account created on first start."}</p>
 
           <label className="mt-6 block text-sm font-medium" htmlFor="username">
             Username
@@ -64,6 +68,7 @@ export function Login({ onSignedIn, sourceUrl }: { onSignedIn: (user: string) =>
           <input
             id="username"
             autoComplete="username"
+            autoFocus={setupDone}
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             className="mt-2 h-11 w-full rounded-xl bg-surface-2 px-4 text-sm outline-none focus:ring-2 focus:ring-accent"
@@ -77,7 +82,7 @@ export function Login({ onSignedIn, sourceUrl }: { onSignedIn: (user: string) =>
               id="password"
               type={show ? "text" : "password"}
               autoComplete="current-password"
-              autoFocus
+              autoFocus={!setupDone}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="h-full min-w-0 flex-1 bg-transparent px-4 font-mono text-sm outline-none"
@@ -99,23 +104,27 @@ export function Login({ onSignedIn, sourceUrl }: { onSignedIn: (user: string) =>
           </Button>
         </form>
 
-        <div className="mt-6 rounded-2xl bg-surface/70 p-5 text-xs leading-relaxed text-muted">
-          <p className="font-medium text-ink-2">Where is the password?</p>
-          <p className="mt-1">It was printed in the server log, on the first start only:</p>
-          <pre className="mt-2 overflow-x-auto rounded-lg bg-surface-2 p-3 font-mono text-[11px] text-ink-2">
-            {"docker logs opskills 2>&1 | grep 'Admin password'\nsudo journalctl -u opskills | grep 'Admin password'"}
-          </pre>
-          <p className="mt-2">
-            With Docker, <code className="font-mono text-ink-2">opskills</code> is the container's name. If you named it differently, use that name: <code className="font-mono text-ink-2">docker ps</code> lists them.
-          </p>
-          <p className="mt-2">
-            Nothing printed, or lost it? See{" "}
-            <a className="font-medium text-accent" href="https://github.com/opskills-app/opskills/blob/main/docs/install.md#troubleshooting" target="_blank" rel="noreferrer">
-              resetting the admin password
-            </a>
-            .
-          </p>
-        </div>
+        {setupDone ? (
+          <p className="mt-6 text-center text-xs text-muted">Forgot your password? Ask an admin to reset it.</p>
+        ) : (
+          <div className="mt-6 rounded-2xl bg-surface/70 p-5 text-xs leading-relaxed text-muted">
+            <p className="font-medium text-ink-2">Where is the password?</p>
+            <p className="mt-1">It was printed in the server log, on the first start only:</p>
+            <pre className="mt-2 overflow-x-auto rounded-lg bg-surface-2 p-3 font-mono text-[11px] text-ink-2">
+              {"docker logs opskills 2>&1 | grep 'Admin password'\nsudo journalctl -u opskills | grep 'Admin password'"}
+            </pre>
+            <p className="mt-2">
+              With Docker, <code className="font-mono text-ink-2">opskills</code> is the container's name. If you named it differently, use that name: <code className="font-mono text-ink-2">docker ps</code> lists them.
+            </p>
+            <p className="mt-2">
+              Nothing printed, or lost it? See{" "}
+              <a className="font-medium text-accent" href="https://github.com/opskills-app/opskills/blob/main/docs/install.md#troubleshooting" target="_blank" rel="noreferrer">
+                resetting the admin password
+              </a>
+              .
+            </p>
+          </div>
+        )}
         <SourceLink href={sourceUrl} className="mt-6 text-center" />
       </div>
     </div>

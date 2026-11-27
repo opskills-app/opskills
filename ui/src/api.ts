@@ -301,6 +301,27 @@ export interface WebhookInput {
 }
 
 /** An API token for automation. Its value is shown only once, when it's created. */
+/** What a user may do; each role includes the ones before it. */
+export type Role = "viewer" | "operator" | "editor" | "admin";
+export const ROLES: Role[] = ["viewer", "operator", "editor", "admin"];
+
+/** The signed-in user. */
+export interface Me {
+  user: string;
+  role: Role;
+  token: string | null;
+  must_change_password: boolean;
+}
+
+export interface User {
+  name: string;
+  role: Role;
+  created_at: number;
+  must_change_password: boolean;
+  last_sign_in_at: number | null;
+  password_changed_at: number | null;
+}
+
 export interface ApiToken {
   id: string;
   name: string;
@@ -358,11 +379,19 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
-  me: () => request<{ user: string; token: string | null }>("GET", "/auth/me"),
+  me: () => request<Me>("GET", "/auth/me"),
+  changePassword: (current_password: string, new_password: string) => request<void>("POST", "/auth/password", { current_password, new_password }),
+  users: () => request<User[]>("GET", "/users"),
+  createUser: (name: string, role: Role) => request<{ user: User; password: string }>("POST", "/users", { name, role }),
+  updateUser: (name: string, role: Role) => request<User>("PUT", `/users/${encodeURIComponent(name)}`, { role }),
+  resetPassword: (name: string) => request<{ user: User; password: string }>("POST", `/users/${encodeURIComponent(name)}/reset-password`),
+  deleteUser: (name: string) => request<void>("DELETE", `/users/${encodeURIComponent(name)}`),
+  allTokens: () => request<ApiToken[]>("GET", "/tokens"),
+  revokeAnyToken: (id: string) => request<void>("DELETE", `/tokens/${encodeURIComponent(id)}`),
   tokens: () => request<ApiToken[]>("GET", "/me/tokens"),
   createToken: (name: string, expires_in_days: number | null) => request<{ token: ApiToken; value: string }>("POST", "/me/tokens", { name, expires_in_days }),
   revokeToken: (id: string) => request<void>("DELETE", `/me/tokens/${encodeURIComponent(id)}`),
-  login: (username: string, password: string) => request<{ user: string }>("POST", "/auth/login", { username, password }),
+  login: (username: string, password: string) => request<{ user: string; role: Role; must_change_password: boolean }>("POST", "/auth/login", { username, password }),
   logout: () => request<void>("POST", "/auth/logout"),
   runbooks: () => request<Runbook[]>("GET", "/runbooks"),
   runbook: (id: string) => request<Runbook>("GET", `/runbooks/${encodeURIComponent(id)}`),
@@ -400,7 +429,7 @@ export const api = {
   updateSecret: (name: string, s: { kind?: SecretKind; description?: string; value?: string }) =>
     request<Secret>("PUT", `/secrets/${encodeURIComponent(name)}`, s),
   deleteSecret: (name: string) => request<void>("DELETE", `/secrets/${encodeURIComponent(name)}`),
-  system: () => request<{ version: string; public_url: string | null; license: string; source_url: string }>("GET", "/system"),
+  system: () => request<{ version: string; public_url: string | null; license: string; source_url: string; setup_done: boolean }>("GET", "/system"),
   hosts: (filter?: string) => request<Host[]>("GET", filter ? `/hosts?filter=${encodeURIComponent(filter)}` : "/hosts"),
   updateHost: (id: string, h: { name?: string; tags?: string[] }) => request<Host>("PUT", `/hosts/${encodeURIComponent(id)}`, h),
   deleteHost: (id: string) => request<void>("DELETE", `/hosts/${encodeURIComponent(id)}`),

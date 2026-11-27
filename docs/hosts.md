@@ -50,8 +50,8 @@ the right address in the commands it shows.
    `amd64` they look like this:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.11.0_amd64.deb
-   sudo apt install ./opskills-agent_0.11.0_amd64.deb
+   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.12.0_amd64.deb
+   sudo apt install ./opskills-agent_0.12.0_amd64.deb
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -59,8 +59,8 @@ the right address in the commands it shows.
    And for RHEL, Rocky, Alma or Fedora on `x86_64`:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.11.0-1.x86_64.rpm
-   sudo dnf install ./opskills-agent-0.11.0-1.x86_64.rpm
+   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.12.0-1.x86_64.rpm
+   sudo dnf install ./opskills-agent-0.12.0-1.x86_64.rpm
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -105,17 +105,18 @@ curl -fsS -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" "$OPSKILLS/api/v1/h
 # {"token":"3f9c...","expires_at":1764201600000}
 ```
 
-Without an API token, sign in as `admin` instead and send the session cookie plus
-the `X-OpSkills-Request: 1` header on every change, as `deploy/enroll-hosts.sh` does
-when no token is set.
+Enrolling needs the Admin role, so use an admin's token. Without an API token, sign
+in as an admin instead and send the session cookie plus the `X-OpSkills-Request: 1`
+header on every change, as `deploy/enroll-hosts.sh` does when no token is set.
 
 The [`deploy/`](../deploy/) folder has three ready-made ways to use it. Each one
 installs the agent from your OpSkills server and is safe to run again.
 
 ### Over SSH
 
-[`deploy/enroll-hosts.sh`](../deploy/enroll-hosts.sh) asks for the admin password,
-then for each host creates a token and runs the one-line installer over SSH. Set the
+[`deploy/enroll-hosts.sh`](../deploy/enroll-hosts.sh) asks for the password of an
+admin (`OPSKILLS_USER`, default `admin`; or set `OPSKILLS_TOKEN` to an admin's API
+token), then for each host creates a token and runs the one-line installer over SSH. Set the
 three variables at the top (server address, hosts, tags) and run it from a machine
 that can SSH to the hosts and use `sudo` there:
 
@@ -127,8 +128,8 @@ sh deploy/enroll-hosts.sh
 
 [`deploy/ansible/deploy-opskills-agent.yml`](../deploy/ansible/deploy-opskills-agent.yml)
 enrolls every host in the `opskills_hosts` group that isn't enrolled yet, upgrades
-the agent on the others, and keeps the service running. Keep the admin password in
-Ansible Vault:
+the agent on the others, and keeps the service running. It signs in as an admin
+(`opskills_user`, default `admin`); keep that password in Ansible Vault:
 
 ```bash
 cp deploy/ansible/inventory.example.ini inventory.ini        # list your hosts

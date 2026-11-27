@@ -3,6 +3,7 @@ import { ArrowRight, BookOpen, Play, Plus, Search } from "lucide-react";
 import { api, type Runbook } from "../api";
 import { go } from "../router";
 import { cx, Kbd } from "./ui";
+import { useCan } from "../session";
 
 interface Item {
   id: string;
@@ -27,6 +28,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     api.runbooks().then(setRunbooks, () => setRunbooks([]));
   }, [open]);
 
+  const canEdit = useCan("editor");
+  const canRun = useCan("operator");
   const items = useMemo<Item[]>(() => {
     const nav: Item[] = [
       ["overview", "Overview"],
@@ -35,9 +38,11 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       ["hosts", "Hosts"],
       ["vault", "Vault"],
       ["settings", "Settings"],
-    ].map(([id, label]) => ({ id: `nav-${id}`, label: `Go to ${label}`, hint: "Navigate", group: "Navigation", icon: ArrowRight, run: () => go(id) }));
+    ]
+      .filter(([id]) => id !== "vault" || canEdit)
+      .map(([id, label]) => ({ id: `nav-${id}`, label: `Go to ${label}`, hint: "Navigate", group: "Navigation", icon: ArrowRight, run: () => go(id) }));
     const create: Item = { id: "new", label: "New runbook", hint: "Create", group: "Actions", icon: Plus, run: () => go("runbooks/new") };
-    const rb: Item[] = runbooks.flatMap((r) => [
+    const rb: Item[] = runbooks.flatMap((r): Item[] => [
       { id: `open-${r.id}`, label: r.name, hint: r.tags.join(", ") || `${r.steps.length} steps`, group: "Runbooks", icon: BookOpen, run: () => go(`runbooks/${r.id}`) },
       {
         id: `run-${r.id}`,
@@ -52,8 +57,8 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         },
       },
     ]);
-    return [...nav, create, ...rb];
-  }, [runbooks]);
+    return [...nav, ...(canEdit ? [create] : []), ...rb.filter((i) => canRun || !i.id.startsWith("run-"))];
+  }, [runbooks, canEdit, canRun]);
 
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
