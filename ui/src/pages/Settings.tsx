@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from "react";
-import { Check, KeyRound, Mail, Plus, RotateCcw, Send, Trash2, UserPlus, X } from "lucide-react";
+import { Check, KeyRound, Layers, Mail, Plus, RotateCcw, Send, Trash2, UserPlus, X } from "lucide-react";
 import { CopyButton } from "../components/CopyButton";
 import { api, ROLES, useData, type ApiToken, type EmailSettings, type Role, type User } from "../api";
-import { ROLE_DESCRIPTIONS, ROLE_LABELS, useCan, useMe } from "../session";
+import { ROLE_DESCRIPTIONS, ROLE_LABELS, useCan, useIsServerAdmin, useMe, useSession, useWorkspace } from "../session";
 import { MIN_PASSWORD } from "./ChangePassword";
 import { timeAgo } from "../format";
 import { Avatar, Button, Card, CardHeader, ErrorNote, Modal, PageHeader } from "../components/ui";
@@ -49,7 +49,7 @@ function NewTokenDialog({ onClose, onCreated }: { onClose: () => void; onCreated
         </div>
         <p className="mt-5 text-sm font-medium">Use it</p>
         <p className="mt-1 text-xs text-muted">
-          Send it as a Bearer token. It can do what your role allows, except manage tokens, sign-ins and users, and runs it starts show its name. If your role changes, so does what it can do.
+          Send it as a Bearer token, with <span className="font-mono">?workspace=</span> for a workspace other than Default. It can do what your role allows in each workspace, except manage tokens, sign-ins, users and members, and runs it starts show its name. If your roles change, so does what it can do.
         </p>
         <div className="mt-2 flex items-start gap-2">
           <pre className="scroll-thin min-w-0 flex-1 overflow-x-auto rounded-xl bg-term px-4 py-3 font-mono text-xs text-term-ink">{example}</pre>
@@ -344,6 +344,7 @@ function EmailCard() {
 /** Change your own password. Other sessions are signed out. */
 function AccountCard() {
   const me = useMe();
+  const workspace = useWorkspace();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [busy, setBusy] = useState(false);
@@ -370,7 +371,7 @@ function AccountCard() {
   if (!me) return null;
   return (
     <Card className="mb-4">
-      <CardHeader title="Your account" hint={`Signed in as ${me.user}, ${ROLE_LABELS[me.role]}`} />
+      <CardHeader title="Your account" hint={`Signed in as ${me.user}, ${me.admin ? "server admin" : `${ROLE_LABELS[workspace?.role ?? "viewer"]} in ${workspace?.name ?? "this workspace"}`}`} />
       <form onSubmit={submit} className="grid grid-cols-1 gap-4 px-6 pb-6 sm:px-8 md:grid-cols-[1fr_1fr_auto] md:items-end">
         <div>
           <label className="text-sm font-medium" htmlFor="account-current">
@@ -412,8 +413,35 @@ function PasswordShown({ title, user, password, onClose }: { title: string; user
   );
 }
 
+/** "server admin", or "Editor in Ops, Viewer in Default". */
+function memberships(u: User, names: Record<string, string>): string {
+  const parts = Object.entries(u.workspaces).map(([slug, role]) => `${ROLE_LABELS[role]} in ${names[slug] ?? slug}`);
+  if (u.admin) parts.unshift("Server admin");
+  return parts.length ? parts.join(", ") : "Not in a workspace yet";
+}
+
+function RolePicker({ role, onChange }: { role: Role; onChange: (r: Role) => void }) {
+  return (
+    <div className="space-y-2">
+      {ROLES.map((r) => (
+        <label key={r} className={`flex cursor-pointer gap-3 rounded-xl border p-3 text-sm ${role === r ? "border-accent bg-accent/5" : "border-line"}`}>
+          <input type="radio" name="role" checked={role === r} onChange={() => onChange(r)} className="mt-0.5 accent-[var(--accent)]" />
+          <span>
+            <span className="font-medium">{ROLE_LABELS[r]}</span>
+            <span className="block text-xs text-muted">{ROLE_DESCRIPTIONS[r]}</span>
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+/** A server admin adds an account, optionally to the current workspace. */
 function NewUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const workspace = useWorkspace();
   const [name, setName] = useState("");
+  const [serverAdmin, setServerAdmin] = useState(false);
+  const [join, setJoin] = useState(true);
   const [role, setRole] = useState<Role>("operator");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -424,7 +452,7 @@ function NewUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
     setBusy(true);
     setError(null);
     try {
-      setCreated(await api.createUser(name, role));
+      setCreated(await api.createUser(name, serverAdmin, join && workspace ? { [workspace.slug]: role } : {}));
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -458,33 +486,41 @@ function NewUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
           <input id="user-name" required maxLength={64} value={name} onChange={(e) => setName(e.target.value)} placeholder="jane.doe" className={`mt-2 ${field}`} />
           <p className="mt-1.5 text-xs text-muted">Lowercase letters, digits, dots, dashes and underscores. They sign in with it.</p>
         </div>
-        <div>
-          <span className="text-sm font-medium">Role</span>
-          <div className="mt-2 space-y-2">
-            {ROLES.map((r) => (
-              <label key={r} className={`flex cursor-pointer gap-3 rounded-xl border p-3 text-sm ${role === r ? "border-accent bg-accent/5" : "border-line"}`}>
-                <input type="radio" name="role" checked={role === r} onChange={() => setRole(r)} className="mt-0.5 accent-[var(--accent)]" />
-                <span>
-                  <span className="font-medium">{ROLE_LABELS[r]}</span>
-                  <span className="block text-xs text-muted">{ROLE_DESCRIPTIONS[r]}</span>
-                </span>
-              </label>
-            ))}
+        {workspace && (
+          <div>
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input type="checkbox" checked={join} onChange={(e) => setJoin(e.target.checked)} className="accent-[var(--accent)]" />
+              Add to {workspace.name}
+            </label>
+            {join && (
+              <div className="mt-3">
+                <RolePicker role={role} onChange={setRole} />
+              </div>
+            )}
           </div>
-        </div>
-        <p className="text-xs text-muted">OpSkills generates a password to give them. They replace it when they first sign in.</p>
+        )}
+        <label className="flex gap-3 rounded-xl border border-line p-3 text-sm">
+          <input type="checkbox" checked={serverAdmin} onChange={(e) => setServerAdmin(e.target.checked)} className="mt-0.5 accent-[var(--accent)]" />
+          <span>
+            <span className="font-medium">Server admin</span>
+            <span className="block text-xs text-muted">Manages accounts, workspaces, email settings and everyone's API tokens, and is Admin in every workspace.</span>
+          </span>
+        </label>
+        <p className="text-xs text-muted">OpSkills generates a password to give them. They replace it when they first sign in. Workspace Admins can add them to other workspaces.</p>
       </form>
     </Modal>
   );
 }
 
-/** Admins add users, change roles, reset passwords and remove users. */
+/** Server admins add accounts, choose other server admins, reset passwords and remove accounts. */
 function UsersCard() {
   const me = useMe();
   const users = useData(() => api.users(), []);
+  const spaces = useData(() => api.workspaces(), []);
   const [adding, setAdding] = useState(false);
   const [shown, setShown] = useState<{ user: string; password: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const names = Object.fromEntries((spaces.data ?? []).map((w) => [w.slug, w.name]));
 
   async function act(f: () => Promise<unknown>) {
     setError(null);
@@ -501,7 +537,7 @@ function UsersCard() {
     <Card className="mb-4">
       <CardHeader
         title="Users"
-        hint="Who can sign in, and what their role allows"
+        hint="Everyone who can sign in to this server"
         action={
           <Button size="sm" variant="primary" onClick={() => setAdding(true)}>
             <UserPlus className="size-3.5" /> Add user
@@ -514,11 +550,12 @@ function UsersCard() {
         </div>
       )}
       <div className="scroll-thin overflow-x-auto">
-        <table className="w-full min-w-[640px] text-sm">
+        <table className="w-full min-w-[720px] text-sm">
           <thead>
             <tr className="border-y border-line bg-surface-2 text-left text-xs text-muted">
               <th className="px-6 py-3 font-medium sm:px-8">User</th>
-              <th className="px-3 py-3 font-medium">Role</th>
+              <th className="px-3 py-3 font-medium">Workspaces</th>
+              <th className="px-3 py-3 font-medium">Server admin</th>
               <th className="px-3 py-3 font-medium">Last sign-in</th>
               <th className="px-6 py-3 sm:px-8" />
             </tr>
@@ -538,21 +575,17 @@ function UsersCard() {
                       </span>
                     </span>
                   </td>
+                  <td className="px-3 py-3 text-muted">{memberships({ ...u, admin: false }, names)}</td>
                   <td className="px-3 py-3">
-                    <select
-                      aria-label={`Role of ${u.name}`}
-                      value={u.role}
+                    <input
+                      type="checkbox"
+                      aria-label={`${u.name} is a server admin`}
+                      checked={u.admin}
                       disabled={self}
-                      title={self ? "Another admin can change your role" : undefined}
-                      onChange={(e) => act(() => api.updateUser(u.name, e.target.value as Role))}
-                      className="h-8 rounded-lg border border-line bg-surface px-2 text-sm disabled:opacity-60"
-                    >
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>
-                          {ROLE_LABELS[r]}
-                        </option>
-                      ))}
-                    </select>
+                      title={self ? "Another server admin can change this" : undefined}
+                      onChange={(e) => act(() => api.setServerAdmin(u.name, e.target.checked))}
+                      className="size-4 accent-[var(--accent)] disabled:opacity-60"
+                    />
                   </td>
                   <td className="px-3 py-3 text-muted">{u.last_sign_in_at ? timeAgo(u.last_sign_in_at) : "Never"}</td>
                   <td className="px-6 py-3 text-right whitespace-nowrap sm:px-8">
@@ -571,7 +604,7 @@ function UsersCard() {
                         <button
                           type="button"
                           onClick={() => {
-                            if (!window.confirm(`Remove ${u.name}? They are signed out and their API tokens stop working.`)) return;
+                            if (!window.confirm(`Remove ${u.name}? They are signed out, leave every workspace, and their API tokens stop working.`)) return;
                             act(() => api.deleteUser(u.name));
                           }}
                           className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted hover:text-rose-600"
@@ -594,20 +627,269 @@ function UsersCard() {
   );
 }
 
+/** Server admins add and delete workspaces. */
+function WorkspacesCard() {
+  const session = useSession();
+  const spaces = useData(() => api.workspaces(), []);
+  const [slug, setSlug] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function create(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.createWorkspace(slug, name, "");
+      setSlug("");
+      setName("");
+      spaces.reload();
+      session?.reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(ws: { slug: string; name: string }) {
+    if (!window.confirm(`Delete the workspace ${ws.name}? Its run history is deleted too. It must have no runbooks, secrets or hosts of its own.`)) return;
+    setError(null);
+    try {
+      await api.deleteWorkspace(ws.slug);
+      spaces.reload();
+      if (session?.workspace.slug === ws.slug) session.switchTo("default");
+      session?.reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <Card className="mb-4">
+      <CardHeader title="Workspaces" hint="Separate runbooks, runs, vault and hosts, each with its own members" />
+      {(error || spaces.error) && (
+        <div className="px-6 pb-4 sm:px-8">
+          <ErrorNote>{error ?? spaces.error}</ErrorNote>
+        </div>
+      )}
+      <ul className="divide-y divide-line border-y border-line">
+        {(spaces.data ?? []).map((w) => (
+          <li key={w.slug} className="flex items-center gap-3 px-6 py-3 text-sm sm:px-8">
+            <Layers className="size-4 text-muted" />
+            <span className="min-w-0 flex-1">
+              <span className="font-medium">{w.name}</span> <span className="font-mono text-xs text-muted">{w.slug}</span>
+            </span>
+            {w.slug !== "default" && (
+              <button type="button" onClick={() => remove(w)} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted hover:text-rose-600" aria-label={`Delete ${w.name}`}>
+                <Trash2 className="size-3.5" /> Delete
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      <form onSubmit={create} className="grid grid-cols-1 gap-3 px-6 py-5 sm:px-8 md:grid-cols-[1fr_1fr_auto] md:items-end">
+        <div>
+          <label className="text-sm font-medium" htmlFor="ws-name">
+            Name
+          </label>
+          <input id="ws-name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} placeholder="Payments team" className={`mt-2 ${field}`} />
+        </div>
+        <div>
+          <label className="text-sm font-medium" htmlFor="ws-slug">
+            Id
+          </label>
+          <input id="ws-slug" value={slug} maxLength={40} onChange={(e) => setSlug(e.target.value.toLowerCase())} placeholder="payments" className={`mt-2 font-mono ${field}`} />
+        </div>
+        <Button variant="primary" type="submit" disabled={busy || !slug.trim() || !name.trim()}>
+          <Plus className="size-4" /> {busy ? "Adding..." : "Add workspace"}
+        </Button>
+        <p className="text-xs text-muted md:col-span-3">The id is used in the API (<span className="font-mono">?workspace=payments</span>) and can't change; the name can.</p>
+      </form>
+    </Card>
+  );
+}
+
+/** The current workspace's name and description; its Admins can change them. */
+function ThisWorkspaceCard() {
+  const session = useSession();
+  const admin = useCan("admin");
+  const ws = useData(() => api.workspace(session?.workspace.slug ?? "default"), [session?.workspace.slug]);
+  const [name, setName] = useState<string | null>(null);
+  const [description, setDescription] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const current = ws.data?.workspace;
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    if (!current) return;
+    setError(null);
+    setSaved(false);
+    try {
+      await api.updateWorkspace(current.slug, name ?? current.name, description ?? current.description);
+      setSaved(true);
+      ws.reload();
+      session?.reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  if (!current) return null;
+  const counts = ws.data ? `${ws.data.runbooks} runbook(s), ${ws.data.hosts} host(s), ${ws.data.members} member(s)` : "";
+  return (
+    <Card className="mb-4">
+      <CardHeader title={`Workspace: ${current.name}`} hint={`Id ${current.slug}. ${counts}`} />
+      {admin ? (
+        <form onSubmit={save} className="grid grid-cols-1 gap-3 px-6 pb-6 sm:px-8 md:grid-cols-[1fr_2fr_auto] md:items-end">
+          <div>
+            <label className="text-sm font-medium" htmlFor="this-ws-name">
+              Name
+            </label>
+            <input id="this-ws-name" value={name ?? current.name} maxLength={60} onChange={(e) => setName(e.target.value)} className={`mt-2 ${field}`} />
+          </div>
+          <div>
+            <label className="text-sm font-medium" htmlFor="this-ws-description">
+              Description
+            </label>
+            <input id="this-ws-description" value={description ?? current.description} maxLength={300} onChange={(e) => setDescription(e.target.value)} placeholder="What this team runs" className={`mt-2 ${field}`} />
+          </div>
+          <Button type="submit">Save</Button>
+          <div className="md:col-span-3">
+            {error && <ErrorNote>{error}</ErrorNote>}
+            {saved && <p className="text-sm text-emerald-600 dark:text-emerald-400">Saved.</p>}
+          </div>
+        </form>
+      ) : (
+        current.description && <p className="px-6 pb-6 text-sm text-muted sm:px-8">{current.description}</p>
+      )}
+    </Card>
+  );
+}
+
+/** Who's in the current workspace. Its Admins add existing accounts, set roles and remove members. */
+function MembersCard() {
+  const session = useSession();
+  const me = useMe();
+  const admin = useCan("admin");
+  const slug = session?.workspace.slug ?? "default";
+  const members = useData(() => api.members(slug), [slug]);
+  const addable = useData(() => (admin ? api.addableUsers(slug) : Promise.resolve([] as string[])), [slug, admin]);
+  const [who, setWho] = useState("");
+  const [role, setRole] = useState<Role>("operator");
+  const [error, setError] = useState<string | null>(null);
+
+  async function act(f: () => Promise<unknown>) {
+    setError(null);
+    try {
+      await f();
+      members.reload();
+      addable.reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const list = members.data?.members ?? [];
+  const candidates = addable.data ?? [];
+  return (
+    <Card className="mb-4">
+      <CardHeader title="Members" hint={`Who can see ${session?.workspace.name ?? "this workspace"}, and their role here`} />
+      {(error || members.error) && (
+        <div className="px-6 pb-4 sm:px-8">
+          <ErrorNote>{error ?? members.error}</ErrorNote>
+        </div>
+      )}
+      <ul className="divide-y divide-line border-y border-line">
+        {list.map((m) => {
+          const self = m.name === me?.user;
+          return (
+            <li key={m.name} className="flex items-center gap-3 px-6 py-3 text-sm sm:px-8">
+              <Avatar name={m.name} size="size-7" />
+              <span className="min-w-0 flex-1 font-medium">
+                {m.name}
+                {self && <span className="ml-1.5 text-xs font-normal text-muted">(you)</span>}
+              </span>
+              {admin && !self ? (
+                <>
+                  <select aria-label={`Role of ${m.name}`} value={m.role} onChange={(e) => act(() => api.setMember(slug, m.name, e.target.value as Role))} className="h-8 rounded-lg border border-line bg-surface px-2 text-sm">
+                    {ROLES.map((r) => (
+                      <option key={r} value={r}>
+                        {ROLE_LABELS[r]}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => window.confirm(`Remove ${m.name} from this workspace?`) && act(() => api.removeMember(slug, m.name))}
+                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted hover:text-rose-600"
+                    aria-label={`Remove ${m.name} from the workspace`}
+                  >
+                    <Trash2 className="size-3.5" /> Remove
+                  </button>
+                </>
+              ) : (
+                <span className="text-muted">{ROLE_LABELS[m.role]}</span>
+              )}
+            </li>
+          );
+        })}
+        {list.length === 0 && <li className="px-6 py-3 text-sm text-muted sm:px-8">No members yet.</li>}
+      </ul>
+      {admin && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            act(async () => {
+              await api.setMember(slug, who, role);
+              setWho("");
+            });
+          }}
+          className="flex flex-col gap-3 px-6 py-4 sm:flex-row sm:items-center sm:px-8"
+        >
+          <select aria-label="User to add" value={who} onChange={(e) => setWho(e.target.value)} className="h-10 min-w-0 flex-1 rounded-xl bg-surface-2 px-3 text-sm">
+            <option value="">{candidates.length ? "Add an existing user..." : "Everyone is already a member"}</option>
+            {candidates.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          <select aria-label="Role for the new member" value={role} onChange={(e) => setRole(e.target.value as Role)} className="h-10 rounded-xl bg-surface-2 px-3 text-sm">
+            {ROLES.map((r) => (
+              <option key={r} value={r}>
+                {ROLE_LABELS[r]}
+              </option>
+            ))}
+          </select>
+          <Button type="submit" disabled={!who}>
+            <UserPlus className="size-3.5" /> Add
+          </Button>
+        </form>
+      )}
+      {members.data && members.data.server_admins.length > 0 && (
+        <p className="px-6 pb-4 text-xs text-muted sm:px-8">Server admins can act as Admin here too: {members.data.server_admins.join(", ")}.</p>
+      )}
+    </Card>
+  );
+}
+
 const permissions: [string, Role][] = [
   ["See runbooks, runs, output and hosts", "viewer"],
   ["Start, retry and cancel runs", "operator"],
   ["Edit runbooks, with schedules, webhooks and notifications", "editor"],
   ["Manage vault secrets", "editor"],
-  ["Enroll, tag and remove hosts", "admin"],
-  ["Manage users, email settings and everyone's API tokens", "admin"],
+  ["Enroll, tag, share and remove hosts", "admin"],
+  ["Manage members and the workspace's name", "admin"],
 ];
 
 function RolesCard() {
   const rank = (r: Role) => ROLES.indexOf(r);
   return (
     <Card className="mb-4">
-      <CardHeader title="Roles" hint="Each role can do everything the roles to its left can" />
+      <CardHeader title="Roles" hint="What each role can do in a workspace; each includes the roles to its left" />
       <div className="scroll-thin overflow-x-auto">
         <table className="w-full min-w-[560px] text-sm">
           <thead>
@@ -635,7 +917,7 @@ function RolesCard() {
         </table>
       </div>
       <p className="px-6 py-4 text-xs text-muted sm:px-8">
-        Editors can make a runbook run any command, as root, on every host it targets. Give that role only to people you'd trust with root on those hosts.
+        Editors can make a runbook run any command, as root, on every host it targets. Give that role only to people you'd trust with root on those hosts. Server admins also manage accounts, workspaces, email settings and everyone's API tokens, and are Admin in every workspace.
       </p>
     </Card>
   );
@@ -686,21 +968,23 @@ function AllTokensCard() {
 }
 
 export function SettingsPage() {
-  const admin = useCan("admin");
+  const serverAdmin = useIsServerAdmin();
   return (
     <>
-      <PageHeader title="Settings" subtitle={admin ? "Your account, API tokens, users and roles, and email." : "Your account and API tokens."} />
+      <PageHeader title="Settings" subtitle={serverAdmin ? "Your account and tokens, this workspace, and the server's users, workspaces and email." : "Your account and tokens, and this workspace."} />
       <AccountCard />
       <ApiTokensCard />
-      {admin && (
+      <ThisWorkspaceCard />
+      <MembersCard />
+      <RolesCard />
+      {serverAdmin && (
         <>
+          <WorkspacesCard />
           <UsersCard />
-          <RolesCard />
           <AllTokensCard />
           <EmailCard />
         </>
       )}
-      {!admin && <RolesCard />}
     </>
   );
 }

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Check, CircleCheck, Copy, Download, HardDrive, Pencil, Plus, Server, ServerCog, ServerOff, Trash2, TriangleAlert } from "lucide-react";
+import { Check, CircleCheck, Copy, Download, HardDrive, LogOut, Pencil, Plus, Server, ServerCog, ServerOff, Share2, Trash2, TriangleAlert } from "lucide-react";
 import { api, useData, type AgentPackage, type Host } from "../api";
 import { timeAgo } from "../format";
 import { Badge, Button, Card, cx, ErrorNote, IconBubble, Modal, PageHeader, SearchField, Tag, TableHeading } from "../components/ui";
-import { useCan } from "../session";
+import { useCan, useMe, useWorkspace } from "../session";
 
 type Family = "deb" | "rpm";
 type Arch = "amd64" | "arm64";
@@ -399,8 +399,68 @@ function Downloads({ version, packages }: { version: string; packages: AgentPack
   );
 }
 
+/** Share a host with another workspace you're an Admin of. */
+function ShareHost({ host, onClose, onShared }: { host: Host; onClose: () => void; onShared: () => void }) {
+  const me = useMe();
+  const choices = (me?.workspaces ?? []).filter((w) => w.role === "admin" && !host.workspaces.includes(w.slug));
+  const [slug, setSlug] = useState(choices[0]?.slug ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.shareHost(host.id, slug);
+      onShared();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={`Share ${host.name}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form="share-host" disabled={busy || !slug}>
+            <Share2 className="size-3.5" /> {busy ? "Sharing..." : "Share"}
+          </Button>
+        </>
+      }
+    >
+      <form id="share-host" onSubmit={submit} className="space-y-4">
+        {error && <ErrorNote>{error}</ErrorNote>}
+        <p className="text-sm text-muted">
+          Runbooks in the other workspace can then run on this host too, with its current tags. It stays in this workspace. Changing or removing a shared host needs Admin in every workspace it's in.
+        </p>
+        {choices.length ? (
+          <select aria-label="Workspace to share with" value={slug} onChange={(e) => setSlug(e.target.value)} className="h-11 w-full rounded-xl bg-surface-2 px-3 text-sm">
+            {choices.map((w) => (
+              <option key={w.slug} value={w.slug}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <p className="text-sm">You aren't an Admin of another workspace it could join.</p>
+        )}
+      </form>
+    </Modal>
+  );
+}
+
 export function HostsPage() {
   const admin = useCan("admin");
+  const workspace = useWorkspace();
+  const [sharing, setSharing] = useState<Host | null>(null);
   const hosts = useData(() => api.hosts(), [], 5000);
   const pkgs = useData(() => api.agentPackages(), []);
   const serverUrl = useServerUrl();
@@ -414,6 +474,17 @@ export function HostsPage() {
   const online = enrolled.filter((h) => h.online).length;
   const list = all.filter((h) => `${h.name} ${h.hostname} ${h.os} ${h.arch} ${h.tags.join(" ")}`.toLowerCase().includes(q.toLowerCase()));
   const reload = hosts.reload;
+
+  async function unshare(h: Host) {
+    if (!workspace || !window.confirm(`Take ${h.name} out of ${workspace.name}? It stays in its other workspaces.`)) return;
+    setError(null);
+    try {
+      await api.unshareHost(h.id, workspace.slug);
+      reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   async function remove(h: Host) {
     if (!window.confirm(`Remove ${h.name}? Its agent loses access right away and stops. To add it back, enroll it again.`)) return;
@@ -464,7 +535,7 @@ export function HostsPage() {
         <TableHeading title="All hosts" subtitle={enrolled.length ? `${enrolled.length} enrolled, ${online} online` : "Add a host to run runbooks on other machines"}>
           <SearchField value={q} onChange={setQ} />
         </TableHeading>
-        <div className="hidden grid-cols-[minmax(0,1.3fr)_minmax(0,1.1fr)_minmax(0,0.8fr)_100px_110px_96px] gap-6 border-y border-line px-10 py-4 text-sm font-medium text-muted lg:grid">
+        <div className="hidden grid-cols-[minmax(0,1.3fr)_minmax(0,1.1fr)_minmax(0,0.8fr)_100px_110px_150px] gap-6 border-y border-line px-10 py-4 text-sm font-medium text-muted lg:grid">
           <span>Host</span>
           <span>System</span>
           <span>Tags</span>
@@ -475,7 +546,7 @@ export function HostsPage() {
         <ul className="px-6 pb-2 sm:px-10">
           {list.length === 0 && <li className="py-10 text-center text-sm text-muted">{hosts.loading ? "Loading..." : "No hosts match."}</li>}
           {list.map((h) => (
-            <li key={h.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 gap-y-2 border-b border-line py-4 text-sm last:border-0 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1.1fr)_minmax(0,0.8fr)_100px_110px_96px]">
+            <li key={h.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 gap-y-2 border-b border-line py-4 text-sm last:border-0 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,0.7fr)_90px_100px_150px]">
               <span className="flex min-w-0 items-center gap-3">
                 <span className={cx("flex size-9 shrink-0 items-center justify-center rounded-full", h.builtin ? "bg-accent text-accent-ink" : "bg-accent-soft text-accent")}>
                   <Server className="size-4" />
@@ -484,6 +555,12 @@ export function HostsPage() {
                   <span className="block truncate font-medium">{h.name}</span>
                   <span className="block truncate text-xs text-muted">
                     {h.builtin ? `Built in · ${h.hostname}` : h.hostname}
+                    {!h.builtin && (h.workspaces.length > 1 || h.shared_elsewhere) && (
+                      <span className="font-medium text-accent" title={h.workspaces.length > 1 ? `Also in ${h.workspaces.filter((w) => w !== workspace?.slug).join(", ")}${h.shared_elsewhere ? " and others" : ""}` : "Also in other workspaces"}>
+                        {" "}
+                        · Shared
+                      </span>
+                    )}
                     <span className="lg:hidden"> · {h.os}</span>
                   </span>
                 </span>
@@ -507,6 +584,14 @@ export function HostsPage() {
                     <Button size="sm" variant="ghost" onClick={() => setEditing(h)} aria-label={`Edit ${h.name}`} title="Rename or tag">
                       <Pencil className="size-3.5" />
                     </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setSharing(h)} aria-label={`Share ${h.name}`} title="Share with another workspace">
+                      <Share2 className="size-3.5" />
+                    </Button>
+                    {(h.workspaces.length > 1 || h.shared_elsewhere) && (
+                      <Button size="sm" variant="ghost" onClick={() => unshare(h)} aria-label={`Take ${h.name} out of this workspace`} title="Take out of this workspace">
+                        <LogOut className="size-3.5" />
+                      </Button>
+                    )}
                     <Button size="sm" variant="ghost" onClick={() => remove(h)} aria-label={`Remove ${h.name}`} title="Remove" className="hover:text-rose-600">
                       <Trash2 className="size-3.5" />
                     </Button>
@@ -521,6 +606,16 @@ export function HostsPage() {
       {pkgs.data && <Downloads version={pkgs.data.version} packages={pkgs.data.packages} />}
 
       {adding && pkgs.data && <AddHost packages={pkgs.data.packages} serverUrl={serverUrl} onClose={() => setAdding(false)} onEnrolled={reload} />}
+      {sharing && (
+        <ShareHost
+          host={sharing}
+          onClose={() => setSharing(null)}
+          onShared={() => {
+            setSharing(null);
+            reload();
+          }}
+        />
+      )}
       {editing && (
         <EditHost
           host={editing}

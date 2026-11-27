@@ -7,7 +7,7 @@ import { RunNotices } from "../components/Notifications";
 import { StartRunDialog } from "../components/StartRun";
 import { go } from "../router";
 import { useRunNow } from "./Runbooks";
-import { useCan } from "../session";
+import { useCan, useFollowWorkspace } from "../session";
 
 /** Hosts of a finished run that didn't finish well, as the server counts them for a retry. */
 function unfinishedHosts(run: Run) {
@@ -95,6 +95,7 @@ const barTone: Record<string, string> = {
 
 export function RunDetail({ id }: { id: string }) {
   const { run, lines, error } = useRunStream(id);
+  useFollowWorkspace(run?.workspace);
   const active = !!run && isActive(run.status);
   const now = useNow(active);
   const [stepFilter, setStepFilter] = useState<number | null>(null);

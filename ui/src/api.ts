@@ -161,6 +161,7 @@ export function runsOnServer(t: Targets | undefined) {
 
 export interface Runbook {
   id: string;
+  workspace: string;
   name: string;
   description: string;
   tags: string[];
@@ -198,6 +199,10 @@ export interface RunbookInput {
 export interface Host {
   id: string;
   name: string;
+  /** The workspaces it's in that you can see. */
+  workspaces: string[];
+  /** It's also in workspaces you don't belong to. */
+  shared_elsewhere?: boolean;
   hostname: string;
   os: string;
   arch: string;
@@ -254,6 +259,7 @@ export const MASK = "••••••";
 
 export interface Run {
   id: string;
+  workspace: string;
   runbook_id: string;
   runbook_name: string;
   status: RunStatus;
@@ -308,6 +314,7 @@ export interface AuditEvent {
   actor: string;
   via?: string;
   action: string;
+  workspace?: string;
   target?: { kind: string; id: string; name: string };
   detail?: string;
 }
@@ -318,21 +325,40 @@ export interface AuditPage {
   retention_days: number;
 }
 
-/** What a user may do; each role includes the ones before it. */
+/** What a user may do in a workspace; each role includes the ones before it. */
 export type Role = "viewer" | "operator" | "editor" | "admin";
 export const ROLES: Role[] = ["viewer", "operator", "editor", "admin"];
+
+/** A workspace you can see, with your role in it. */
+export interface MyWorkspace {
+  slug: string;
+  name: string;
+  role: Role;
+}
 
 /** The signed-in user. */
 export interface Me {
   user: string;
-  role: Role;
+  /** Server admins manage accounts, workspaces, email and everyone's tokens, and are Admin everywhere. */
+  admin: boolean;
+  workspaces: MyWorkspace[];
   token: string | null;
   must_change_password: boolean;
 }
 
+export interface Workspace {
+  slug: string;
+  name: string;
+  description: string;
+  created_at: number;
+  role?: Role;
+}
+
 export interface User {
   name: string;
-  role: Role;
+  admin: boolean;
+  /** Role per workspace id. */
+  workspaces: Record<string, Role>;
   created_at: number;
   must_change_password: boolean;
   last_sign_in_at: number | null;
@@ -368,11 +394,23 @@ export class ApiError extends Error {
 
 export const UNAUTHORIZED_EVENT = "opskills:unauthorized";
 
+/** The workspace the app is showing. Requests carry it as `?workspace=`, unless they name one. */
+let currentWorkspace = "default";
+
+export function setApiWorkspace(slug: string) {
+  currentWorkspace = slug;
+}
+
+function withWorkspace(path: string): string {
+  if (/[?&]workspace=/.test(path)) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}workspace=${encodeURIComponent(currentWorkspace)}`;
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (method !== "GET") headers["X-OpSkills-Request"] = "1";
-  const res = await fetch(`/api/v1${path}`, {
+  const res = await fetch(`/api/v1${withWorkspace(path)}`, {
     method,
     credentials: "same-origin",
     headers,
@@ -399,21 +437,40 @@ export const api = {
   me: () => request<Me>("GET", "/auth/me"),
   changePassword: (current_password: string, new_password: string) => request<void>("POST", "/auth/password", { current_password, new_password }),
   users: () => request<User[]>("GET", "/users"),
-  createUser: (name: string, role: Role) => request<{ user: User; password: string }>("POST", "/users", { name, role }),
-  updateUser: (name: string, role: Role) => request<User>("PUT", `/users/${encodeURIComponent(name)}`, { role }),
+  createUser: (name: string, admin: boolean, workspaces: Record<string, Role>) => request<{ user: User; password: string }>("POST", "/users", { name, admin, workspaces }),
+  setServerAdmin: (name: string, admin: boolean) => request<User>("PUT", `/users/${encodeURIComponent(name)}`, { admin }),
   resetPassword: (name: string) => request<{ user: User; password: string }>("POST", `/users/${encodeURIComponent(name)}/reset-password`),
   deleteUser: (name: string) => request<void>("DELETE", `/users/${encodeURIComponent(name)}`),
   allTokens: () => request<ApiToken[]>("GET", "/tokens"),
-  audit: (p: { before?: string; action?: string; q?: string; limit?: number }) => {
+  /** Everything for server admins (`workspace` empty), or one workspace. */
+  audit: (p: { before?: string; action?: string; q?: string; limit?: number; workspace?: string }) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(p)) if (v !== undefined && v !== "") qs.set(k, String(v));
-    return request<AuditPage>("GET", `/audit${qs.size ? `?${qs}` : ""}`);
+    qs.set("workspace", p.workspace ?? "");
+    return request<AuditPage>("GET", `/audit?${qs}`);
   },
+  /** One workspace's events, for its Admins. */
+  workspaceAudit: (slug: string, p: { before?: string; action?: string; q?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(p)) if (v !== undefined && v !== "") qs.set(k, String(v));
+    return request<AuditPage>("GET", `/workspaces/${encodeURIComponent(slug)}/audit${qs.size ? `?${qs}` : ""}`);
+  },
+  workspaces: () => request<Workspace[]>("GET", "/workspaces"),
+  workspace: (slug: string) => request<{ workspace: Workspace; runbooks: number; hosts: number; members: number }>("GET", `/workspaces/${encodeURIComponent(slug)}`),
+  createWorkspace: (slug: string, name: string, description: string) => request<Workspace>("POST", "/workspaces", { slug, name, description }),
+  updateWorkspace: (slug: string, name: string, description: string) => request<Workspace>("PUT", `/workspaces/${encodeURIComponent(slug)}`, { name, description }),
+  deleteWorkspace: (slug: string) => request<void>("DELETE", `/workspaces/${encodeURIComponent(slug)}`),
+  members: (slug: string) => request<{ members: { name: string; role: Role }[]; server_admins: string[] }>("GET", `/workspaces/${encodeURIComponent(slug)}/members`),
+  addableUsers: (slug: string) => request<string[]>("GET", `/workspaces/${encodeURIComponent(slug)}/addable-users`),
+  setMember: (slug: string, name: string, role: Role) => request<{ name: string; role: Role }>("PUT", `/workspaces/${encodeURIComponent(slug)}/members/${encodeURIComponent(name)}`, { role }),
+  removeMember: (slug: string, name: string) => request<void>("DELETE", `/workspaces/${encodeURIComponent(slug)}/members/${encodeURIComponent(name)}`),
+  shareHost: (id: string, slug: string) => request<Host>("PUT", `/hosts/${encodeURIComponent(id)}/workspaces/${encodeURIComponent(slug)}`),
+  unshareHost: (id: string, slug: string) => request<void>("DELETE", `/hosts/${encodeURIComponent(id)}/workspaces/${encodeURIComponent(slug)}`),
   revokeAnyToken: (id: string) => request<void>("DELETE", `/tokens/${encodeURIComponent(id)}`),
   tokens: () => request<ApiToken[]>("GET", "/me/tokens"),
   createToken: (name: string, expires_in_days: number | null) => request<{ token: ApiToken; value: string }>("POST", "/me/tokens", { name, expires_in_days }),
   revokeToken: (id: string) => request<void>("DELETE", `/me/tokens/${encodeURIComponent(id)}`),
-  login: (username: string, password: string) => request<{ user: string; role: Role; must_change_password: boolean }>("POST", "/auth/login", { username, password }),
+  login: (username: string, password: string) => request<{ user: string; admin: boolean; must_change_password: boolean }>("POST", "/auth/login", { username, password }),
   logout: () => request<void>("POST", "/auth/logout"),
   runbooks: () => request<Runbook[]>("GET", "/runbooks"),
   runbook: (id: string) => request<Runbook>("GET", `/runbooks/${encodeURIComponent(id)}`),
