@@ -38,15 +38,16 @@ impl By {
     }
 }
 
-/// Record one change. A failure to write is logged, not returned: the change itself
-/// already happened.
-pub fn record(st: &AppState, by: &By, action: &str, target: Option<AuditTarget>, detail: Option<String>) {
+/// Record one change, in `workspace` (none for server-wide changes). A failure to write
+/// is logged, not returned: the change itself already happened.
+pub fn record(st: &AppState, by: &By, workspace: Option<&str>, action: &str, target: Option<AuditTarget>, detail: Option<String>) {
     let event = AuditEvent {
         id: uuid::Uuid::now_v7().to_string(),
         at: now_ms(),
         actor: by.actor.clone(),
         via: by.via.clone(),
         action: action.into(),
+        workspace: workspace.map(str::to_string),
         target,
         detail,
     };

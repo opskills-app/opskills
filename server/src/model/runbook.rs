@@ -511,6 +511,9 @@ pub fn resolve_inputs(defs: &[InputDef], given: &serde_json::Map<String, serde_j
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Runbook {
     pub id: String,
+    /// Set when it's created; runbooks don't move between workspaces.
+    #[serde(default = "default_workspace")]
+    pub workspace: String,
     pub name: String,
     pub description: String,
     pub tags: Vec<String>,

@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth;
-use crate::model::{Role, now_ms, validate_password};
+use crate::model::{now_ms, validate_password};
 use crate::store::Session;
 use crate::audit::{self, By};
 use crate::model::AuditTarget;
@@ -54,7 +54,7 @@ async fn system(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
 }
 
 fn setup_done(st: &AppState) -> bool {
-    st.store.users().map(|users| users.iter().any(|u| u.role == Role::Admin && !u.must_change_password)).unwrap_or(false)
+    st.store.users().map(|users| users.iter().any(|u| u.admin && !u.must_change_password)).unwrap_or(false)
 }
 
 #[derive(Deserialize)]
@@ -79,7 +79,7 @@ async fn login(State(st): State<Arc<AppState>>, Json(input): Json<LoginInput>) -
         tokio::time::sleep(Duration::from_millis(500 * fails)).await;
         tracing::warn!(username = %input.username, "failed sign-in");
         let tried: String = name.chars().filter(|c| !c.is_control()).take(64).collect();
-        audit::record(&st, &By::named(&tried), "auth.sign_in_failed", None, Some(if stored_exists { "wrong password" } else { "no such user" }.into()));
+        audit::record(&st, &By::named(&tried), None, "auth.sign_in_failed", None, Some(if stored_exists { "wrong password" } else { "no such user" }.into()));
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Wrong username or password."));
     };
     FAILED_LOGINS.store(0, Ordering::Relaxed);
@@ -91,8 +91,8 @@ async fn login(State(st): State<Arc<AppState>>, Json(input): Json<LoginInput>) -
     stored.user.last_sign_in_at = Some(now);
     st.store.put_user(&stored)?;
     tracing::info!(user = %name, "signed in");
-    audit::record(&st, &By::named(&name), "auth.sign_in", None, None);
-    let mut res = Json(json!({ "user": name, "role": stored.user.role, "must_change_password": stored.user.must_change_password })).into_response();
+    audit::record(&st, &By::named(&name), None, "auth.sign_in", None, None);
+    let mut res = Json(json!({ "user": name, "admin": stored.user.admin, "must_change_password": stored.user.must_change_password })).into_response();
     res.headers_mut().insert(header::SET_COOKIE, HeaderValue::from_str(&auth::session_cookie(&token, max_age, st.secure_cookies())).unwrap());
     Ok(res)
 }
@@ -101,15 +101,22 @@ async fn logout(State(st): State<Arc<AppState>>, Extension(user): Extension<Curr
     if let Some(token) = auth::cookie_token(req.headers()) {
         st.store.delete_session(&auth::token_hash(&token))?;
     }
-    audit::record(&st, &By::user(&user), "auth.sign_out", None, None);
+    audit::record(&st, &By::user(&user), None, "auth.sign_out", None, None);
     let mut res = StatusCode::NO_CONTENT.into_response();
     res.headers_mut().insert(header::SET_COOKIE, HeaderValue::from_str(&auth::clear_cookie(st.secure_cookies())).unwrap());
     Ok(res)
 }
 
+/// Who you are: whether you're a server admin, and your role in each workspace you can see.
 async fn me(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>) -> ApiResult<Json<serde_json::Value>> {
-    let must_change = st.store.user(&user.user)?.is_some_and(|u| u.user.must_change_password);
-    Ok(Json(json!({ "user": user.user, "role": user.role, "token": user.token, "must_change_password": must_change })))
+    let me = st.store.user(&user.user)?.ok_or_else(|| ApiError::not_found("User"))?.user;
+    let workspaces: Vec<serde_json::Value> = st
+        .store
+        .workspaces()?
+        .into_iter()
+        .filter_map(|w| me.role_in(&w.slug).map(|role| json!({ "slug": w.slug, "name": w.name, "role": role })))
+        .collect();
+    Ok(Json(json!({ "user": me.name, "admin": me.admin, "workspaces": workspaces, "token": user.token, "must_change_password": me.must_change_password })))
 }
 
 #[derive(Deserialize)]
@@ -138,6 +145,6 @@ async fn change_password(State(st): State<Arc<AppState>>, Extension(user): Exten
     st.store.put_user(&stored)?;
     st.store.delete_sessions_of(&user.user, user.session.as_deref())?;
     tracing::info!(user = %user.user, "password changed");
-    audit::record(&st, &By::user(&user), "auth.password_change", Some(AuditTarget::new("user", &user.user, &user.user)), None);
+    audit::record(&st, &By::user(&user), None, "auth.password_change", Some(AuditTarget::new("user", &user.user, &user.user)), None);
     Ok(StatusCode::NO_CONTENT)
 }

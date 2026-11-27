@@ -11,7 +11,7 @@ use serde_json::json;
 use crate::model::now_ms;
 use crate::model::Role;
 use crate::web::AppState;
-use super::{Access, ApiError, ApiResult, bad};
+use super::{Access, ApiError, ApiResult, Scope, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -20,8 +20,8 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
 }
 
 pub(super) const ACCESS: &[(&str, &str, Access)] = &[
-    ("GET", "/runbooks/{id}/schedules", Access::Role(Role::Viewer)),
-    ("POST", "/schedules/preview", Access::Role(Role::Editor)),
+    ("GET", "/runbooks/{id}/schedules", Access::Role(Role::Viewer, Scope::Runbook)),
+    ("POST", "/schedules/preview", Access::User),
 ];
 
 /// What the scheduler knows about each of a runbook's schedules.

@@ -3,12 +3,24 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::{DEFAULT_WORKSPACE, default_workspace};
+
+/// What a secret's encryption is bound to, so a sealed value can't be moved to another
+/// name or workspace: `<workspace>/<name>`. Secrets of `default` keep the bare name they
+/// were sealed with before there were workspaces.
+pub fn secret_binding(workspace: &str, name: &str) -> String {
+    if workspace == DEFAULT_WORKSPACE { name.to_string() } else { format!("{workspace}/{name}") }
+}
+
 
 
 /// Metadata of a vault secret. The value is never part of this type.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Secret {
     pub name: String,
+    /// Names are unique within a workspace.
+    #[serde(default = "default_workspace")]
+    pub workspace: String,
     pub kind: String,
     pub description: String,
     pub created_at: u64,

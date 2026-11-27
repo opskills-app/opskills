@@ -69,7 +69,7 @@ async fn agent_enroll(State(st): State<Arc<AppState>>, body: String) -> ApiResul
     let info = input.info.clean();
     let name = validate_host_name(input.name.as_deref().filter(|n| !n.trim().is_empty()).unwrap_or(&info.hostname)).map_err(bad)?;
     let tags = clean_tags(&input.tags).map_err(bad)?;
-    if !st.store.take_enrollment_token(&auth::token_hash(input.token.trim()))? {
+    let Some(token) = st.store.take_enrollment_token(&auth::token_hash(input.token.trim()))? else {
         let fails = FAILED_ENROLLMENTS.fetch_add(1, Ordering::Relaxed).min(9) + 1;
         tokio::time::sleep(Duration::from_millis(500 * fails)).await;
         tracing::warn!(hostname = %info.hostname, "enrollment with an invalid token");
@@ -77,7 +77,7 @@ async fn agent_enroll(State(st): State<Arc<AppState>>, body: String) -> ApiResul
             StatusCode::UNAUTHORIZED,
             "This enrollment token is not valid: it was already used or has expired. Create a new one on the Hosts page.",
         ));
-    }
+    };
     FAILED_ENROLLMENTS.store(0, Ordering::Relaxed);
     // Keep names unique: web-1, web-1 (2), ...
     let taken: Vec<String> = st.store.hosts()?.into_iter().map(|h| h.name.to_lowercase()).collect();
@@ -97,13 +97,15 @@ async fn agent_enroll(State(st): State<Arc<AppState>>, body: String) -> ApiResul
         arch: info.arch,
         agent_version: info.version,
         tags,
+        // The workspace the token was made in.
+        workspaces: vec![token.workspace.clone()],
         enrolled_at: now,
         last_seen: now,
     };
     st.store.put_host(&StoredHost { host: host.clone(), secret_hash: auth::token_hash(&secret) })?;
     st.hub.touch(&host.id);
     tracing::info!(host_id = %host.id, name = %host.name, "host enrolled");
-    audit::record(&st, &By::system(format!("agent {}", host.name)), "host.enroll", Some(AuditTarget::new("host", &host.id, &host.name)), Some(format!("{} {}", host.os, host.arch)));
+    audit::record(&st, &By::system(format!("agent {}", host.name)), Some(&token.workspace), "host.enroll", Some(AuditTarget::new("host", &host.id, &host.name)), Some(format!("{} {}", host.os, host.arch)));
     Ok((StatusCode::CREATED, Json(json!({ "host_id": host.id, "name": host.name, "secret": secret }))).into_response())
 }
 

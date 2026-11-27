@@ -12,6 +12,7 @@ mod webhook;
 mod token;
 mod secret;
 mod user;
+mod workspace;
 
 pub use audit::*;
 pub use schedule::*;
@@ -23,6 +24,7 @@ pub use webhook::*;
 pub use token::*;
 pub use secret::*;
 pub use user::*;
+pub use workspace::*;
 
 /// Serde default for flags that start out on.
 fn yes() -> bool {

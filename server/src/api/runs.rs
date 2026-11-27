@@ -23,7 +23,7 @@ use crate::model::Role;
 use crate::audit::{self, By};
 use crate::model::AuditTarget;
 use crate::web::AppState;
-use super::{Access, ApiError, ApiResult, CurrentUser};
+use super::{Access, ApiError, ApiResult, CurrentUser, InWorkspace, Scope};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -37,13 +37,13 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
 }
 
 pub(super) const ACCESS: &[(&str, &str, Access)] = &[
-    ("POST", "/runbooks/{id}/runs", Access::Role(Role::Operator)),
-    ("GET", "/runs", Access::Role(Role::Viewer)),
-    ("GET", "/runs/{id}", Access::Role(Role::Viewer)),
-    ("GET", "/runs/{id}/logs", Access::Role(Role::Viewer)),
-    ("GET", "/runs/{id}/events", Access::Role(Role::Viewer)),
-    ("POST", "/runs/{id}/cancel", Access::Role(Role::Operator)),
-    ("POST", "/runs/{id}/retry", Access::Role(Role::Operator)),
+    ("POST", "/runbooks/{id}/runs", Access::Role(Role::Operator, Scope::Runbook)),
+    ("GET", "/runs", Access::Role(Role::Viewer, Scope::Query)),
+    ("GET", "/runs/{id}", Access::Role(Role::Viewer, Scope::Run)),
+    ("GET", "/runs/{id}/logs", Access::Role(Role::Viewer, Scope::Run)),
+    ("GET", "/runs/{id}/events", Access::Role(Role::Viewer, Scope::Run)),
+    ("POST", "/runs/{id}/cancel", Access::Role(Role::Operator, Scope::Run)),
+    ("POST", "/runs/{id}/retry", Access::Role(Role::Operator, Scope::Run)),
 ];
 
 /// Optional body of `POST /runbooks/{id}/runs`.
@@ -78,7 +78,7 @@ pub fn start_runbook(st: &AppState, rb: &Runbook, given: &serde_json::Map<String
     let mut run = Run::new(rb, &by.label(), hosts, &values.inputs);
     run.trigger = trigger.into();
     let run = st.executor.start(run, values)?;
-    audit::record(st, by, "run.start", Some(AuditTarget::new("run", &run.id, &rb.name)), Some(format!("{trigger} run")));
+    audit::record(st, by, Some(&rb.workspace), "run.start", Some(AuditTarget::new("run", &run.id, &rb.name)), Some(format!("{trigger} run")));
     Ok(run)
 }
 
@@ -92,7 +92,8 @@ fn run_hosts(st: &AppState, rb: &Runbook) -> ApiResult<Vec<RunHost>> {
     if rb.targets.hosts.iter().any(|h| h == LOCAL_HOST_ID) {
         out.push(local);
     }
-    for h in st.store.hosts()? {
+    // Only the hosts of the runbook's workspace.
+    for h in st.store.hosts()?.into_iter().filter(|h| h.workspaces.contains(&rb.workspace)) {
         if rb.targets.includes(&h) {
             out.push(RunHost { id: h.id, name: h.name });
         }
@@ -109,9 +110,9 @@ struct RunsQuery {
     limit: Option<usize>,
 }
 
-async fn list_runs(State(st): State<Arc<AppState>>, Query(q): Query<RunsQuery>) -> ApiResult<Json<Vec<Run>>> {
+async fn list_runs(State(st): State<Arc<AppState>>, Extension(InWorkspace(ws)): Extension<InWorkspace>, Query(q): Query<RunsQuery>) -> ApiResult<Json<Vec<Run>>> {
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
-    Ok(Json(st.store.runs(q.runbook_id.as_deref(), limit)?))
+    Ok(Json(st.store.runs(Some(&ws), q.runbook_id.as_deref(), limit)?))
 }
 
 async fn get_run(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<Json<Run>> {
@@ -146,7 +147,7 @@ async fn retry_run(State(st): State<Arc<AppState>>, Extension(user): Extension<C
     }
     let mut kept = Vec::new();
     for h in hosts.drain(..) {
-        if h.id == LOCAL_HOST_ID || st.store.stored_host(&h.id)?.is_some() {
+        if h.id == LOCAL_HOST_ID || st.store.stored_host(&h.id)?.is_some_and(|s| s.host.workspaces.contains(&rb.workspace)) {
             kept.push(h);
         }
     }
@@ -179,7 +180,7 @@ async fn retry_run(State(st): State<Arc<AppState>>, Extension(user): Extension<C
     run.retry_of = Some(earlier.id.clone());
     let run = st.executor.start(run, values)?;
     tracing::info!(run_id = %run.id, retry_of = %earlier.id, hosts = run.hosts.len(), "retrying unfinished hosts");
-    audit::record(&st, &By::user(&user), "run.retry", Some(AuditTarget::new("run", &run.id, &rb.name)), Some(format!("{} host(s) of run {}", run.hosts.len(), earlier.id)));
+    audit::record(&st, &By::user(&user), Some(&rb.workspace), "run.retry", Some(AuditTarget::new("run", &run.id, &rb.name)), Some(format!("{} host(s) of run {}", run.hosts.len(), earlier.id)));
     Ok((StatusCode::CREATED, Json(run)).into_response())
 }
 
@@ -188,7 +189,7 @@ async fn cancel_run(State(st): State<Arc<AppState>>, Extension(user): Extension<
     if run.status.is_finished() || !st.executor.cancel(&id) {
         return Err(ApiError::new(StatusCode::CONFLICT, "This run has already finished."));
     }
-    audit::record(&st, &By::user(&user), "run.cancel", Some(AuditTarget::new("run", &id, &run.runbook_name)), None);
+    audit::record(&st, &By::user(&user), Some(&run.workspace), "run.cancel", Some(AuditTarget::new("run", &id, &run.runbook_name)), None);
     Ok(StatusCode::ACCEPTED)
 }
 

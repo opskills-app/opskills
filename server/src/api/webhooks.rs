@@ -20,7 +20,7 @@ use crate::audit::{self, By};
 use crate::model::AuditTarget;
 use crate::web::AppState;
 use super::runs::start_runbook;
-use super::{Access, ApiError, ApiResult, CurrentUser, bad};
+use super::{Access, ApiError, ApiResult, CurrentUser, InWorkspace, Scope, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -31,11 +31,11 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
 }
 
 pub(super) const ACCESS: &[(&str, &str, Access)] = &[
-    ("GET", "/runbooks/{id}/webhooks", Access::Role(Role::Viewer)),
-    ("POST", "/runbooks/{id}/webhooks", Access::Role(Role::Editor)),
-    ("PUT", "/webhooks/{id}", Access::Role(Role::Editor)),
-    ("DELETE", "/webhooks/{id}", Access::Role(Role::Editor)),
-    ("POST", "/webhooks/{id}/rotate", Access::Role(Role::Editor)),
+    ("GET", "/runbooks/{id}/webhooks", Access::Role(Role::Viewer, Scope::Runbook)),
+    ("POST", "/runbooks/{id}/webhooks", Access::Role(Role::Editor, Scope::Runbook)),
+    ("PUT", "/webhooks/{id}", Access::Role(Role::Editor, Scope::Webhook)),
+    ("DELETE", "/webhooks/{id}", Access::Role(Role::Editor, Scope::Webhook)),
+    ("POST", "/webhooks/{id}/rotate", Access::Role(Role::Editor, Scope::Webhook)),
     ("POST", "/hooks/{token}", Access::OwnCredential),
 ];
 
@@ -116,12 +116,12 @@ async fn create_webhook(State(st): State<Arc<AppState>>, Extension(user): Extens
     }
     st.store.put_webhook(&stored)?;
     tracing::info!(webhook_id = %hook_id, runbook = %rb.name, "webhook created");
-    audit::record(&st, &By::user(&user), "webhook.create", Some(AuditTarget::new("webhook", &hook_id, &stored.hook.name)), Some(format!("on runbook {:?}", rb.name)));
+    audit::record(&st, &By::user(&user), Some(&rb.workspace), "webhook.create", Some(AuditTarget::new("webhook", &hook_id, &stored.hook.name)), Some(format!("on runbook {:?}", rb.name)));
     // The token (part of the URL) and the signing secret are shown only now.
     Ok((StatusCode::CREATED, Json(json!({ "webhook": stored.hook, "token": token, "signing_secret": signing_secret }))).into_response())
 }
 
-async fn update_webhook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>, body: String) -> ApiResult<Json<serde_json::Value>> {
+async fn update_webhook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Extension(InWorkspace(ws)): Extension<InWorkspace>, Path(id): Path<String>, body: String) -> ApiResult<Json<serde_json::Value>> {
     let current = st.store.webhook(&id)?.ok_or_else(|| ApiError::not_found("Webhook"))?;
     let input: WebhookInput = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid webhook: {e}")))?;
     let (_, name) = check_webhook_input(&st, &current.hook.runbook_id, &input, Some(&id))?;
@@ -149,12 +149,12 @@ async fn update_webhook(State(st): State<Arc<AppState>>, Extension(user): Extens
     })?;
     let (hook, signing_secret) = updated.ok_or_else(|| ApiError::not_found("Webhook"))?;
     let detail = format!("{}, {}", if hook.enabled { "on" } else { "off" }, if hook.signed { "signed" } else { "not signed" });
-    audit::record(&st, &By::user(&user), "webhook.update", Some(AuditTarget::new("webhook", &id, &hook.name)), Some(detail));
+    audit::record(&st, &By::user(&user), Some(&ws), "webhook.update", Some(AuditTarget::new("webhook", &id, &hook.name)), Some(detail));
     Ok(Json(json!({ "webhook": hook, "signing_secret": signing_secret })))
 }
 
 /// Give a webhook a new URL; the old one stops working at once.
-async fn rotate_webhook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>) -> ApiResult<Json<serde_json::Value>> {
+async fn rotate_webhook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Extension(InWorkspace(ws)): Extension<InWorkspace>, Path(id): Path<String>) -> ApiResult<Json<serde_json::Value>> {
     let secret = hex::encode(crate::firststart::random_bytes::<32>());
     let hash = auth::token_hash(&secret);
     let name = st.store.update_webhook(&id, |h| {
@@ -162,16 +162,16 @@ async fn rotate_webhook(State(st): State<Arc<AppState>>, Extension(user): Extens
         h.hook.name.clone()
     })?
     .ok_or_else(|| ApiError::not_found("Webhook"))?;
-    audit::record(&st, &By::user(&user), "webhook.rotate", Some(AuditTarget::new("webhook", &id, &name)), Some("new URL; the old one stopped working".into()));
+    audit::record(&st, &By::user(&user), Some(&ws), "webhook.rotate", Some(AuditTarget::new("webhook", &id, &name)), Some("new URL; the old one stopped working".into()));
     Ok(Json(json!({ "token": format!("{}{id}_{secret}", auth::WEBHOOK_PREFIX) })))
 }
 
-async fn delete_webhook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+async fn delete_webhook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Extension(InWorkspace(ws)): Extension<InWorkspace>, Path(id): Path<String>) -> ApiResult<StatusCode> {
     let name = st.store.webhook(&id)?.map(|h| h.hook.name).unwrap_or_default();
     if !st.store.delete_webhook(&id)? {
         return Err(ApiError::not_found("Webhook"));
     }
-    audit::record(&st, &By::user(&user), "webhook.delete", Some(AuditTarget::new("webhook", &id, &name)), None);
+    audit::record(&st, &By::user(&user), Some(&ws), "webhook.delete", Some(AuditTarget::new("webhook", &id, &name)), None);
     Ok(StatusCode::NO_CONTENT)
 }
 

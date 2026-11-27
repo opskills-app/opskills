@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::config::{Config, Email};
 use crate::executor::{human_duration, run_number};
-use crate::model::{HeaderPart, Notification, NotifyEvent, Piece, Run, Status, WebhookAuth, header_parts, now_ms, placeholders};
+use crate::model::{DEFAULT_WORKSPACE, HeaderPart, Notification, NotifyEvent, Piece, Run, Status, WebhookAuth, header_parts, now_ms, placeholders, secret_binding};
 use crate::store::Store;
 use crate::vault::{Sealed, Vault};
 
@@ -114,10 +114,10 @@ impl Notifier {
         }
     }
 
-    /// The value of a vault secret.
-    pub fn secret_value(&self, name: &str) -> Result<String, String> {
-        let stored = self.store.secret(name).map_err(|e| e.to_string())?.ok_or_else(|| format!("the vault has no secret named {name}"))?;
-        let value = self.vault.open(name, &Sealed { nonce: stored.nonce, ciphertext: stored.ciphertext }).map_err(|e| format!("opening {name}: {e}"))?;
+    /// The value of a vault secret of `workspace`.
+    pub fn secret_value(&self, workspace: &str, name: &str) -> Result<String, String> {
+        let stored = self.store.secret(workspace, name).map_err(|e| e.to_string())?.ok_or_else(|| format!("the vault has no secret named {name}"))?;
+        let value = self.vault.open(&secret_binding(workspace, name), &Sealed { nonce: stored.nonce, ciphertext: stored.ciphertext }).map_err(|e| format!("opening {name}: {e}"))?;
         Ok(String::from_utf8_lossy(&value).into_owned())
     }
 
@@ -134,7 +134,7 @@ impl Notifier {
         }
         let s = self.store.email_settings().map_err(|e| e.to_string())?.ok_or("Email isn't set up on this server. Set it up under Settings > Email.")?;
         let credentials = match (&s.username, &s.password_secret) {
-            (Some(u), Some(secret)) => Some((u.clone(), self.secret_value(secret).map_err(|e| format!("SMTP password: {e}"))?)),
+            (Some(u), Some(secret)) => Some((u.clone(), self.secret_value(DEFAULT_WORKSPACE, secret).map_err(|e| format!("SMTP password: {e}"))?)),
             _ => None,
         };
         Ok(Smtp { host: s.smtp_host, port: s.smtp_port, security: s.security, credentials, from: s.from })
@@ -142,7 +142,7 @@ impl Notifier {
 
     /// The extra headers of a webhook notification, with secrets filled in.
     /// Returns the headers, and the secret values in them (to keep out of errors).
-    fn webhook_headers(&self, n: &Notification) -> Result<(Headers, Vec<String>), String> {
+    fn webhook_headers(&self, n: &Notification, workspace: &str) -> Result<(Headers, Vec<String>), String> {
         let mut out = Vec::new();
         let mut secrets = Vec::new();
         for h in &n.headers {
@@ -151,7 +151,7 @@ impl Notifier {
                 match part {
                     HeaderPart::Text(t) => value.push_str(&t),
                     HeaderPart::Secret(name) => {
-                        let v = self.secret_value(&name).map_err(|e| format!("header {}: {e}", h.name))?;
+                        let v = self.secret_value(workspace, &name).map_err(|e| format!("header {}: {e}", h.name))?;
                         value.push_str(&v);
                         secrets.push(v);
                     }
@@ -160,7 +160,7 @@ impl Notifier {
             out.push((h.name.clone(), value));
         }
         if let Some(auth) = &n.auth {
-            let secret = self.secret_value(auth.secret()).map_err(|e| format!("sign-in: {e}"))?;
+            let secret = self.secret_value(workspace, auth.secret()).map_err(|e| format!("sign-in: {e}"))?;
             let value = match auth {
                 WebhookAuth::Bearer { .. } => format!("Bearer {secret}"),
                 WebhookAuth::Basic { username, .. } => format!("Basic {}", base64(format!("{username}:{secret}").as_bytes())),
@@ -193,7 +193,7 @@ impl Notifier {
         tokio::task::spawn_blocking(move || {
             let msg = me.compose(&run, event, None);
             for n in &wanted {
-                let result = me.deliver(n, &msg);
+                let result = me.deliver(n, &run.workspace, &msg);
                 me.record(&run.id, n, event, result);
             }
         });
@@ -216,7 +216,7 @@ impl Notifier {
                             return;
                         }
                         let msg = me.compose(&run, NotifyEvent::Slow, Some(secs));
-                        let result = me.deliver(&n, &msg);
+                        let result = me.deliver(&n, &run.workspace, &msg);
                         me.record(&run.id, &n, NotifyEvent::Slow, result);
                     })
                     .await;
@@ -239,7 +239,7 @@ impl Notifier {
     }
 
     /// A test message to check a target before saving the runbook.
-    pub fn send_test(&self, n: &Notification) -> Result<(), String> {
+    pub fn send_test(&self, n: &Notification, workspace: &str) -> Result<(), String> {
         let text = "This is a test notification from OpSkills. If you can read this, notifications for this runbook will reach you.".to_string();
         let msg = Message {
             event: "test",
@@ -268,15 +268,16 @@ impl Notifier {
                 "output_tail": ["This is a test notification."],
             }),
         };
-        self.deliver(n, &msg)
+        self.deliver(n, workspace, &msg)
     }
 
-    pub fn deliver(&self, n: &Notification, msg: &Message) -> Result<(), String> {
+    /// Send one notification; its secrets come from `workspace`.
+    pub fn deliver(&self, n: &Notification, workspace: &str, msg: &Message) -> Result<(), String> {
         match &n.webhook {
             Some(url) => {
-                let (headers, mut secrets) = self.webhook_headers(n)?;
+                let (headers, mut secrets) = self.webhook_headers(n, workspace)?;
                 let body = match &n.body {
-                    Some(template) => self.render_body(template, &msg.json, &mut secrets)?,
+                    Some(template) => self.render_body(template, &msg.json, workspace, &mut secrets)?,
                     None => msg.json.to_string(),
                 };
                 // Keep secret values out of anything recorded.
@@ -288,13 +289,13 @@ impl Notifier {
 
     /// Fill in a custom body. A string that is just one placeholder takes the value
     /// as it is (a number stays a number); otherwise values are written into the text.
-    fn render_body(&self, template: &str, data: &serde_json::Value, secrets: &mut Vec<String>) -> Result<String, String> {
+    fn render_body(&self, template: &str, data: &serde_json::Value, workspace: &str, secrets: &mut Vec<String>) -> Result<String, String> {
         let mut doc: serde_json::Value = serde_json::from_str(template).map_err(|e| format!("the body isn't JSON: {e}"))?;
-        self.fill(&mut doc, data, secrets)?;
+        self.fill(&mut doc, data, workspace, secrets)?;
         Ok(doc.to_string())
     }
 
-    fn fill(&self, v: &mut serde_json::Value, data: &serde_json::Value, secrets: &mut Vec<String>) -> Result<(), String> {
+    fn fill(&self, v: &mut serde_json::Value, data: &serde_json::Value, workspace: &str, secrets: &mut Vec<String>) -> Result<(), String> {
         use serde_json::Value;
         match v {
             Value::String(s) => {
@@ -304,7 +305,7 @@ impl Notifier {
                 }
                 let mut lookup = |var: &str| -> Result<Value, String> {
                     if let Some(name) = var.strip_prefix("secrets.") {
-                        let value = self.secret_value(name).map_err(|e| format!("body: {e}"))?;
+                        let value = self.secret_value(workspace, name).map_err(|e| format!("body: {e}"))?;
                         secrets.push(value.clone());
                         return Ok(Value::String(value));
                     }
@@ -330,12 +331,12 @@ impl Notifier {
             }
             Value::Array(a) => {
                 for x in a {
-                    self.fill(x, data, secrets)?;
+                    self.fill(x, data, workspace, secrets)?;
                 }
             }
             Value::Object(m) => {
                 for x in m.values_mut() {
-                    self.fill(x, data, secrets)?;
+                    self.fill(x, data, workspace, secrets)?;
                 }
             }
             _ => {}

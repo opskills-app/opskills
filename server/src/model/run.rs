@@ -52,6 +52,9 @@ pub struct ParentRef {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Run {
     pub id: String,
+    /// The runbook's workspace when the run started.
+    #[serde(default = "default_workspace")]
+    pub workspace: String,
     pub runbook_id: String,
     pub runbook_name: String,
     pub status: Status,
@@ -127,6 +130,7 @@ impl Run {
             output_limit: runbook.output_limit,
             rollout: runbook.rollout,
             id: uuid::Uuid::now_v7().to_string(),
+            workspace: runbook.workspace.clone(),
             runbook_id: runbook.id.clone(),
             runbook_name: runbook.name.clone(),
             status: Status::Queued,

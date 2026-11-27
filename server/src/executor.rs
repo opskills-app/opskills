@@ -166,10 +166,10 @@ impl Executor {
         let inputs = resolve_inputs(&rb.inputs, given).map_err(StartError::BadInput)?;
         let mut secrets = Vec::new();
         for name in &rb.secrets {
-            let stored = self.store.secret(name)?.ok_or_else(|| {
+            let stored = self.store.secret(&rb.workspace, name)?.ok_or_else(|| {
                 StartError::Conflict(format!("The runbook \"{}\" uses the secret {name}, which is no longer in the vault. Add it again or edit the runbook.", rb.name))
             })?;
-            let value = self.vault.open(name, &Sealed { nonce: stored.nonce, ciphertext: stored.ciphertext })?;
+            let value = self.vault.open(&crate::model::secret_binding(&rb.workspace, name), &Sealed { nonce: stored.nonce, ciphertext: stored.ciphertext })?;
             secrets.push((name.clone(), String::from_utf8_lossy(&value).into_owned()));
         }
         Ok(RunValues { secrets, inputs })
@@ -542,6 +542,7 @@ impl Executor {
             .store
             .runbook(&call.runbook)
             .map_err(|e| e.to_string())?
+            .filter(|rb| rb.workspace == parent.workspace)
             .ok_or("The called runbook no longer exists. Edit this runbook to call another one.")?;
         let given: serde_json::Map<String, serde_json::Value> =
             call.inputs.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(template::expand_plain(v, values)))).collect();
