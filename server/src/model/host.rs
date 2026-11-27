@@ -1,6 +1,8 @@
 //! Hosts with the OpSkills agent, and enrollment tokens.
 
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::{default_workspace, default_workspaces};
@@ -23,6 +25,11 @@ pub struct Host {
     pub tags: Vec<String>,
     pub enrolled_at: u64,
     pub last_seen: u64,
+    /// Set by Admins, like env or region: for filters (`env:prod`) and commands
+    /// (`{{ host.attr.env }}`). Inventory sources and tag rules add more when hosts are
+    /// listed; those aren't stored here.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: BTreeMap<String, String>,
 }
 
 /// What the store keeps: the host plus the SHA-256 of its agent secret.

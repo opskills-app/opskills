@@ -4,7 +4,8 @@
 //! A term is `key:value`, with several values separated by commas (any of them may
 //! match), `*` matching any run of characters and `?` any one character. A leading
 //! `!` turns a term around. A term without a key matches the host's name. Matching
-//! ignores case. Keys: `tags`, `name`, `hostname`, `os`, `arch`.
+//! ignores case. Keys: `tags`, `name`, `hostname`, `os`, `arch`, and any attribute, like
+//! `env:prod`; a host without the attribute doesn't match.
 
 use crate::model::Host;
 
@@ -15,7 +16,7 @@ const MAX_TERMS: usize = 20;
 #[derive(Clone, Debug, PartialEq)]
 struct Term {
     negate: bool,
-    key: &'static str,
+    key: String,
     /// Lower-case glob patterns; the term matches when any of them does.
     values: Vec<String>,
 }
@@ -39,10 +40,12 @@ impl HostFilter {
             let (key, values) = match rest.split_once(':') {
                 Some((k, v)) => {
                     let k = k.to_ascii_lowercase();
-                    let key = KEYS.iter().find(|known| **known == k).ok_or_else(|| format!("{k:?} is not a host filter key. Use {}.", KEYS.join(", ")))?;
-                    (*key, v)
+                    if !KEYS.contains(&k.as_str()) {
+                        crate::model::validate_attribute_key(&k).map_err(|_| format!("{k:?} is not a host filter key. Use {}, or an attribute name like env.", KEYS.join(", ")))?;
+                    }
+                    (k, v)
                 }
-                None => ("name", rest),
+                None => ("name".to_string(), rest),
             };
             let values: Vec<String> = values.split(',').map(|v| v.trim().to_lowercase()).collect();
             if values.iter().any(String::is_empty) {
@@ -68,13 +71,13 @@ impl Term {
             let field = field.to_lowercase();
             self.values.iter().any(|v| glob(v, &field))
         };
-        match self.key {
+        match self.key.as_str() {
             "tags" => host.tags.iter().any(|t| any(t)),
             "name" => any(&host.name),
             "hostname" => any(&host.hostname),
             "os" => any(&host.os),
             "arch" => any(&host.arch),
-            _ => false,
+            attr => host.attributes.get(attr).is_some_and(|v| any(v)),
         }
     }
 }
@@ -119,7 +122,19 @@ mod tests {
             tags: tags.iter().map(|t| t.to_string()).collect(),
             enrolled_at: 0,
             last_seen: 0,
+            attributes: [("env".to_string(), if name.starts_with("db") { "prod" } else { "staging" }.to_string())].into(),
         }
+    }
+
+    #[test]
+    fn attributes_can_be_filtered_on() {
+        let hosts = [host("web-1", "Debian", "amd64", &[]), host("db-1", "Debian", "amd64", &[])];
+        let pick = |f: &str| hosts.iter().filter(|h| HostFilter::parse(f).unwrap().matches(h)).map(|h| h.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(pick("env:prod"), ["db-1"]);
+        assert_eq!(pick("env:stag*"), ["web-1"]);
+        assert_eq!(pick("!env:prod"), ["web-1"]);
+        assert!(pick("region:eu").is_empty(), "a host without the attribute doesn't match");
+        assert_eq!(pick("!region:eu"), ["web-1", "db-1"]);
     }
 
     #[test]
@@ -154,7 +169,7 @@ mod tests {
 
     #[test]
     fn bad_filters_are_explained() {
-        for bad in ["color:blue", "tags:", "tags:web,", &"x ".repeat(21), &"a".repeat(501)] {
+        for bad in ["-color:blue", "c!olor:x", "tags:", "env:", "tags:web,", &"x ".repeat(21), &"a".repeat(501)] {
             assert!(HostFilter::parse(bad).is_err(), "{bad}");
         }
         assert_eq!(HostFilter::parse("  ").unwrap(), HostFilter::default());

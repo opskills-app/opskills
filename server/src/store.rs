@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{ApiToken, AuditEvent, DEFAULT_WORKSPACE, EnrollmentToken, FIRST_ADMIN, Host, LogLine, Role, Run, Runbook, Secret, SharedSecret, Status, StoredApiToken, StoredHost, StoredSecret, StoredSharedSecret, StoredUser, StoredWebhook, User, Webhook, Workspace, now_ms};
+use crate::model::{ApiToken, AuditEvent, DEFAULT_WORKSPACE, EnrollmentToken, FIRST_ADMIN, Host, LogLine, Role, Run, Runbook, InventorySource, Secret, SharedSecret, SourceState, Status, StoredApiToken, StoredHost, StoredSecret, StoredSharedSecret, StoredUser, StoredWebhook, User, Webhook, Workspace, now_ms};
 
 const RUNBOOKS: TableDefinition<&str, &str> = TableDefinition::new("runbooks");
 const RUNS: TableDefinition<&str, &str> = TableDefinition::new("runs");
@@ -46,17 +46,21 @@ const WORKSPACES: TableDefinition<&str, &str> = TableDefinition::new("workspaces
 /// Key: a shared secret's full name. Value: its metadata, who it's shared with, and the
 /// AES-256-GCM ciphertext.
 const SHARED_SECRETS: TableDefinition<&str, &str> = TableDefinition::new("shared_secrets");
+/// Key: inventory source id. Value: the source.
+const INVENTORY_SOURCES: TableDefinition<&str, &str> = TableDefinition::new("inventory_sources");
+/// Key: inventory source id. Value: what its last refreshes found.
+const SOURCE_STATE: TableDefinition<&str, &str> = TableDefinition::new("source_state");
 /// Key: "schema_version". Value: the version number.
 const META: TableDefinition<&str, &str> = TableDefinition::new("meta");
 
 /// The schema this build writes. Each step in `MIGRATIONS` moves the database up by one.
-pub const SCHEMA_VERSION: u64 = 3;
+pub const SCHEMA_VERSION: u64 = 4;
 
 type Migration = fn(&redb::WriteTransaction, &Path) -> Result<()>;
 
 /// `(version it produces, what it does, the change)`, in order.
 const MIGRATIONS: &[(u64, &str, Migration)] =
-    &[(1, "users and roles", migrate_users), (2, "workspaces", migrate_workspaces), (3, "vault folders and shared secrets", migrate_shared_secrets)];
+    &[(1, "users and roles", migrate_users), (2, "workspaces", migrate_workspaces), (3, "vault folders and shared secrets", migrate_shared_secrets), (4, "inventory", migrate_inventory)];
 
 /// Version 1: users. The single admin of earlier versions becomes the user `admin`, with
 /// the password in `admin.hash`.
@@ -82,7 +86,7 @@ fn migrate_users(w: &redb::WriteTransaction, data_dir: &Path) -> Result<()> {
 fn migrate_workspaces(w: &redb::WriteTransaction, _data_dir: &Path) -> Result<()> {
     let mut spaces = w.open_table(WORKSPACES)?;
     if spaces.get(DEFAULT_WORKSPACE)?.is_none() {
-        let default = Workspace { slug: DEFAULT_WORKSPACE.into(), name: "Default".into(), description: String::new(), created_at: now_ms() };
+        let default = Workspace { slug: DEFAULT_WORKSPACE.into(), name: "Default".into(), description: String::new(), tag_rules: vec![], created_at: now_ms() };
         spaces.insert(DEFAULT_WORKSPACE, serde_json::to_string(&default)?.as_str())?;
     }
     let mut users = w.open_table(USERS)?;
@@ -113,6 +117,15 @@ fn migrate_workspaces(w: &redb::WriteTransaction, _data_dir: &Path) -> Result<()
 /// older server refuses the database instead of misreading names with folders.
 fn migrate_shared_secrets(w: &redb::WriteTransaction, _data_dir: &Path) -> Result<()> {
     w.open_table(SHARED_SECRETS)?;
+    Ok(())
+}
+
+/// Version 4: inventory sources, host attributes and tag rules. New tables; hosts and
+/// workspaces read their new fields as empty. The version changes so an older server,
+/// which would drop host attributes when it saves a host, refuses the database.
+fn migrate_inventory(w: &redb::WriteTransaction, _data_dir: &Path) -> Result<()> {
+    w.open_table(INVENTORY_SOURCES)?;
+    w.open_table(SOURCE_STATE)?;
     Ok(())
 }
 
@@ -186,6 +199,8 @@ impl Store {
             w.open_table(USERS)?;
             w.open_table(AUDIT)?;
             w.open_table(SHARED_SECRETS)?;
+            w.open_table(INVENTORY_SOURCES)?;
+            w.open_table(SOURCE_STATE)?;
             w.open_table(WORKSPACES)?;
         }
         // Every migration and the new version commit together, or not at all.
@@ -383,6 +398,43 @@ impl Store {
         }
         w.commit()?;
         Ok(())
+    }
+
+    // Inventory sources
+
+    pub fn put_inventory_source(&self, s: &InventorySource) -> Result<()> {
+        self.put(INVENTORY_SOURCES, &s.id, &serde_json::to_string(s)?)
+    }
+
+    pub fn inventory_source(&self, id: &str) -> Result<Option<InventorySource>> {
+        Ok(self.get(INVENTORY_SOURCES, id)?.map(|s| serde_json::from_str(&s)).transpose()?)
+    }
+
+    /// Every source, oldest first.
+    pub fn inventory_sources(&self) -> Result<Vec<InventorySource>> {
+        let mut list: Vec<InventorySource> = self.values(INVENTORY_SOURCES)?.iter().filter_map(|s| serde_json::from_str(s).ok()).collect();
+        list.sort_by_key(|s| s.created_at);
+        Ok(list)
+    }
+
+    /// Remove a source and what it found.
+    pub fn delete_inventory_source(&self, id: &str) -> Result<bool> {
+        let w = self.db.begin_write()?;
+        let found = {
+            let found = w.open_table(INVENTORY_SOURCES)?.remove(id)?.is_some();
+            w.open_table(SOURCE_STATE)?.remove(id)?;
+            found
+        };
+        w.commit()?;
+        Ok(found)
+    }
+
+    pub fn source_state(&self, id: &str) -> Result<SourceState> {
+        Ok(self.get(SOURCE_STATE, id)?.map(|s| serde_json::from_str(&s)).transpose()?.unwrap_or_default())
+    }
+
+    pub fn put_source_state(&self, id: &str, s: &SourceState) -> Result<()> {
+        self.put(SOURCE_STATE, id, &serde_json::to_string(s)?)
     }
 
     // Shared secrets
@@ -735,6 +787,19 @@ impl Store {
         let mut removed = 0;
         {
             w.open_table(WORKSPACES)?.remove(slug)?;
+            // The workspace's inventory sources and what they found.
+            let mut sources = w.open_table(INVENTORY_SOURCES)?;
+            let ids: Vec<String> = sources
+                .iter()?
+                .filter_map(|r| r.ok())
+                .filter_map(|(k, v)| serde_json::from_str::<InventorySource>(v.value()).ok().filter(|s| s.workspace == slug).map(|_| k.value().to_string()))
+                .collect();
+            let mut states = w.open_table(SOURCE_STATE)?;
+            for id in &ids {
+                sources.remove(id.as_str())?;
+                states.remove(id.as_str())?;
+            }
+            drop((sources, states));
             let mut runs = w.open_table(RUNS)?;
             let ids: Vec<String> = runs
                 .iter()?

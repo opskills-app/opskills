@@ -74,34 +74,46 @@ pub fn start_runbook(st: &AppState, rb: &Runbook, given: &serde_json::Map<String
         StartError::Conflict(m) => ApiError::new(StatusCode::CONFLICT, m),
         StartError::Internal(e) => e.into(),
     })?;
-    let hosts = run_hosts(st, rb)?;
+    let (hosts, skipped) = run_hosts(st, rb)?;
     let mut run = Run::new(rb, &by.label(), hosts, &values.inputs);
     run.trigger = trigger.into();
+    run.skipped_hosts = skipped;
     let run = st.executor.start(run, values)?;
     audit::record(st, by, Some(&rb.workspace), "run.start", Some(AuditTarget::new("run", &run.id, &rb.name)), Some(format!("{trigger} run")));
     Ok(run)
 }
 
-/// The hosts a run of `rb` goes to, in order: the server first if targeted, then hosts by name.
-fn run_hosts(st: &AppState, rb: &Runbook) -> ApiResult<Vec<RunHost>> {
-    let local = RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into() };
+/// The hosts a run of `rb` goes to, in order: the server first if targeted, then the
+/// workspace's hosts by its targets, with their attributes. Targeted hosts nothing can
+/// reach yet (listed only by an inventory source) are left out and named.
+fn run_hosts(st: &AppState, rb: &Runbook) -> ApiResult<(Vec<RunHost>, Vec<String>)> {
+    let local = RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into(), attributes: Default::default() };
     if rb.targets.is_server() {
-        return Ok(vec![local]);
+        return Ok((vec![local], vec![]));
     }
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     if rb.targets.hosts.iter().any(|h| h == LOCAL_HOST_ID) {
         out.push(local);
     }
-    // Only the hosts of the runbook's workspace.
-    for h in st.store.hosts()?.into_iter().filter(|h| h.workspaces.contains(&rb.workspace)) {
-        if rb.targets.includes(&h) {
-            out.push(RunHost { id: h.id, name: h.name });
+    // Only the hosts of the runbook's workspace, as its inventory lists them.
+    for h in crate::inventory::workspace_hosts(st, &rb.workspace)? {
+        if rb.targets.includes(&h.host) {
+            match h.reach {
+                crate::inventory::Reach::Agent => out.push(RunHost { id: h.host.id, name: h.host.name, attributes: h.host.attributes }),
+                crate::inventory::Reach::Listed => skipped.push(h.host.name),
+            }
         }
     }
     if out.is_empty() {
-        return Err(ApiError::new(StatusCode::CONFLICT, "No hosts match this runbook's targets. Enroll a host or edit the runbook."));
+        let why = if skipped.is_empty() {
+            "No hosts match this runbook's targets. Enroll a host or edit the runbook.".to_string()
+        } else {
+            format!("The hosts this runbook targets ({}) are only listed by an inventory source; nothing can reach them yet. Install the agent on them.", skipped.join(", "))
+        };
+        return Err(ApiError::new(StatusCode::CONFLICT, why));
     }
-    Ok(out)
+    Ok((out, skipped))
 }
 
 #[derive(Deserialize)]

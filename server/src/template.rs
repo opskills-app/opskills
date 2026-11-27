@@ -1,8 +1,8 @@
 //! Text helpers for runbooks: duration strings, shell quoting and step templates.
 //!
 //! A step command can refer to run values with `{{ inputs.name }}`, `{{ host.name }}`,
-//! `{{ host.id }}`, `{{ run.id }}`, `{{ run.started_by }}`, `{{ runbook.id }}` and
-//! `{{ runbook.name }}`. Each one becomes a single, already quoted shell word, so a
+//! `{{ host.id }}`, `{{ host.attr.<key> }}` (empty when the host lacks that attribute),
+//! `{{ run.id }}`, `{{ run.started_by }}`, `{{ runbook.id }}` and `{{ runbook.name }}`. Each one becomes a single, already quoted shell word, so a
 //! value can never turn into extra commands. Text that doesn't match that exact
 //! shape, such as `{{.Names}}` in a `docker ps --format` argument, is left alone.
 
@@ -86,7 +86,7 @@ pub fn shell_quote(value: &str) -> String {
 
 fn pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\{\{\s*(inputs|host|run|runbook)\.([A-Za-z0-9_]+)\s*\}\}").unwrap())
+    RE.get_or_init(|| Regex::new(r"\{\{\s*(inputs|host|run|runbook)\.(attr\.[A-Za-z0-9._-]+|[A-Za-z0-9_]+)\s*\}\}").unwrap())
 }
 
 /// Every `(scope, name)` a command refers to, in order of appearance.
@@ -102,6 +102,8 @@ pub fn check(command: &str, inputs: &[String]) -> Result<(), String> {
     for (scope, name) in references(command) {
         let known = match scope.as_str() {
             "inputs" => inputs.contains(&name),
+            // Any attribute; a host without it gets an empty value.
+            "host" if name.strip_prefix("attr.").is_some_and(|k| crate::model::validate_attribute_key(k).is_ok()) => true,
             _ => BUILT_IN.iter().any(|(s, names)| *s == scope && names.contains(&name.as_str())),
         };
         if !known {
@@ -112,11 +114,18 @@ pub fn check(command: &str, inputs: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// A reference's value: `host.attr.<key>` is empty for a host without that attribute.
+fn lookup(values: &BTreeMap<String, String>, scope: &str, name: &str) -> Option<String> {
+    let key = format!("{scope}.{name}");
+    let attr = scope == "host" && name.strip_prefix("attr.").is_some_and(|k| crate::model::validate_attribute_key(k).is_ok());
+    values.get(&key).cloned().or_else(|| attr.then(String::new))
+}
+
 /// Replace every reference with its quoted value. `values` is keyed by `scope.name`.
 pub fn expand(command: &str, values: &BTreeMap<String, String>) -> String {
     pattern()
-        .replace_all(command, |c: &regex::Captures| match values.get(&format!("{}.{}", &c[1], &c[2])) {
-            Some(v) => shell_quote(v),
+        .replace_all(command, |c: &regex::Captures| match lookup(values, &c[1], &c[2]) {
+            Some(v) => shell_quote(&v),
             None => c[0].to_string(),
         })
         .into_owned()
@@ -126,13 +135,24 @@ pub fn expand(command: &str, values: &BTreeMap<String, String>) -> String {
 /// inputs of a called runbook. Never use this for a shell command.
 pub fn expand_plain(text: &str, values: &BTreeMap<String, String>) -> String {
     pattern()
-        .replace_all(text, |c: &regex::Captures| values.get(&format!("{}.{}", &c[1], &c[2])).cloned().unwrap_or_else(|| c[0].to_string()))
+        .replace_all(text, |c: &regex::Captures| lookup(values, &c[1], &c[2]).unwrap_or_else(|| c[0].to_string()))
         .into_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_attributes_expand_and_missing_ones_are_empty() {
+        let mut v = BTreeMap::new();
+        v.insert("host.attr.env".to_string(), "prod's".to_string());
+        assert_eq!(expand("deploy {{ host.attr.env }} [{{host.attr.nope}}]", &v), "deploy 'prod'\\''s' ['']");
+        assert_eq!(expand_plain("env={{ host.attr.env }}", &v), "env=prod's");
+        assert!(check("{{ host.attr.region }}", &[]).is_ok());
+        assert!(check("{{ host.attr.Region }}", &[]).is_err(), "attribute names are lowercase");
+        assert!(check("{{ host.nope }}", &[]).is_err());
+    }
 
     #[test]
     fn durations() {

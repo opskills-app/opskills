@@ -58,6 +58,7 @@ fn fill_route(route: &str, ids: &HashMap<&str, String>) -> String {
             ("{id}", "runs") => ids["run"].clone(),
             ("{id}", "webhooks") => ids["webhook"].clone(),
             ("{id}", "hosts") => ids["host"].clone(),
+            ("{id}", "sources") => ids["source"].clone(),
             ("{id}", _) | ("{token}", _) => "x".into(),
             ("{slug}", _) => "default".into(),
             ("{*name}", "secrets") => "FIXTURE".into(),
@@ -91,6 +92,9 @@ async fn every_route_enforces_its_rule() {
     ids.insert("webhook", hook.json()["webhook"]["id"].as_str().unwrap().to_string());
     assert_eq!(add_secret(&s, &admin, "FIXTURE", "fixture-value").await.status, StatusCode::CREATED);
     ids.insert("host", enroll(&s, &admin, "fixture-host", json!([])).await.0);
+    let src = call(&s.app, "POST", "/api/v1/inventory/sources", Some(json!({"name": "Fixture", "type": "static", "hosts": []})), Some(&admin), true).await;
+    assert_eq!(src.status, StatusCode::CREATED, "{}", src.body);
+    ids.insert("source", src.json()["id"].as_str().unwrap().to_string());
 
     let below = |r: Role| match r {
         Role::Viewer => None,
