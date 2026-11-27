@@ -9,9 +9,10 @@
   become: true
   # Variables (set them in the inventory, a vars file or with -e):
   #   opskills_url       the address hosts use to reach OpSkills (required)
-  #   opskills_user      a user with the Admin role (optional, default admin)
+  #   opskills_user      a user with the Admin role in the workspace (optional, default admin)
   #   opskills_password  that user's password, kept in Ansible Vault (required)
   #   opskills_tags      tags for the host, comma separated (optional, per host or group)
+  #   opskills_workspace the workspace hosts join (optional, default default)
 
   tasks:
     - name: Check whether the host is already enrolled
@@ -35,7 +36,7 @@
 
     - name: Create an enrollment token for this host
       ansible.builtin.uri:
-        url: "{{ opskills_url }}/api/v1/hosts/enrollment-tokens"
+        url: "{{ opskills_url }}/api/v1/hosts/enrollment-tokens?workspace={{ opskills_workspace | default('default') }}"
         method: POST
         headers:
           X-OpSkills-Request: "1"

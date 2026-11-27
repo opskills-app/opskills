@@ -4,15 +4,16 @@ set -eu
 OPSKILLS=https://opskills.example.com   # the address hosts use to reach OpSkills
 HOSTS="web-1 web-2 db-1"                # SSH names of the hosts
 TAGS=prod                               # tags for all of them (optional)
+WORKSPACE=${OPSKILLS_WORKSPACE:-default} # the workspace the hosts join
 
-# Enrolling hosts needs the Admin role. Use an admin's API token from Settings > API
+# Enrolling hosts needs the Admin role in the workspace. Use an admin's API token from Settings > API
 # tokens if OPSKILLS_TOKEN is set; otherwise sign in as an admin (OPSKILLS_USER,
 # default admin), keeping the session cookie in a temporary file.
 JAR=$(mktemp)
 trap 'rm -f "$JAR"' EXIT
 if [ -n "${OPSKILLS_TOKEN:-}" ]; then
     new_token() {
-        curl -fsS -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" "$OPSKILLS/api/v1/hosts/enrollment-tokens"
+        curl -fsS -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" "$OPSKILLS/api/v1/hosts/enrollment-tokens?workspace=$WORKSPACE"
     }
 else
     USER_NAME=${OPSKILLS_USER:-admin}
@@ -22,7 +23,7 @@ else
         curl -fsS -c "$JAR" -o /dev/null -H 'X-OpSkills-Request: 1' \
             -H 'Content-Type: application/json' --data-binary @- "$OPSKILLS/api/v1/auth/login"
     new_token() {
-        curl -fsS -b "$JAR" -X POST -H 'X-OpSkills-Request: 1' "$OPSKILLS/api/v1/hosts/enrollment-tokens"
+        curl -fsS -b "$JAR" -X POST -H 'X-OpSkills-Request: 1' "$OPSKILLS/api/v1/hosts/enrollment-tokens?workspace=$WORKSPACE"
     }
 fi
 

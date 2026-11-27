@@ -4,7 +4,7 @@
 # Then open http://localhost:8080
 services:
   opskills:
-    image: opskills/opskills:0.13.0
+    image: opskills/opskills:0.14.0
     container_name: opskills
     restart: unless-stopped
     ports:
