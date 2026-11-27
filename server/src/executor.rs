@@ -29,7 +29,7 @@ use crate::model::{
 };
 use crate::store::Store;
 use crate::template;
-use crate::vault::{Sealed, Vault};
+use crate::vault::Vault;
 
 /// Why a run could not be started.
 #[derive(Debug)]
@@ -89,6 +89,8 @@ pub type SecretEnv = Vec<(String, String)>;
 pub struct RunValues {
     /// Vault secrets, as environment variables.
     pub secrets: SecretEnv,
+    /// The same values by the runbook's reference, for copy steps.
+    pub secret_refs: Vec<(String, String)>,
     pub inputs: Vec<InputValue>,
 }
 
@@ -165,14 +167,15 @@ impl Executor {
     pub fn prepare(&self, rb: &Runbook, given: &serde_json::Map<String, serde_json::Value>) -> Result<RunValues, StartError> {
         let inputs = resolve_inputs(&rb.inputs, given).map_err(StartError::BadInput)?;
         let mut secrets = Vec::new();
-        for name in &rb.secrets {
-            let stored = self.store.secret(&rb.workspace, name)?.ok_or_else(|| {
-                StartError::Conflict(format!("The runbook \"{}\" uses the secret {name}, which is no longer in the vault. Add it again or edit the runbook.", rb.name))
-            })?;
-            let value = self.vault.open(&crate::model::secret_binding(&rb.workspace, name), &Sealed { nonce: stored.nonce, ciphertext: stored.ciphertext })?;
-            secrets.push((name.clone(), String::from_utf8_lossy(&value).into_owned()));
+        let mut secret_refs = Vec::new();
+        for reference in &rb.secrets {
+            let resolved = crate::model::resolve_secret_ref(reference, &inputs);
+            let value = crate::secret_refs::value(&self.store, &self.vault, &rb.workspace, &resolved)
+                .map_err(|e| StartError::Conflict(format!("The runbook \"{}\" can't use the secret {resolved}: {e}. Add it again or edit the runbook.", rb.name)))?;
+            secrets.push((crate::model::secret_env_name(&resolved).to_string(), value.clone()));
+            secret_refs.push((reference.clone(), value));
         }
-        Ok(RunValues { secrets, inputs })
+        Ok(RunValues { secrets, secret_refs, inputs })
     }
 
     /// Subscribe to a live run. Returns the lines so far and a receiver for what follows,
@@ -659,7 +662,7 @@ fn copy_script(copy: &CopyStep, values: &BTreeMap<String, String>, run_values: &
     let content = match (&copy.content, &copy.secret) {
         (Some(c), _) => template::expand_plain(c, values),
         (None, Some(name)) => run_values
-            .secrets
+            .secret_refs
             .iter()
             .find(|(n, _)| n == name)
             .map(|(_, v)| v.clone())

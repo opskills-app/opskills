@@ -52,11 +52,12 @@ async fn put_email_settings(State(st): State<Arc<AppState>>, Extension(user): Ex
     }
     let mut s: crate::model::EmailSettings = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid email settings: {e}")))?;
     s.validate().map_err(bad)?;
-    // Email is server-wide; its password is a secret of the default workspace.
+    // Email is server-wide: its password is a shared secret, or (as before shared
+    // secrets) a secret of the default workspace.
     if let Some(name) = &s.password_secret
-        && st.store.secret(crate::model::DEFAULT_WORKSPACE, name)?.is_none()
+        && let Err(why) = crate::secret_refs::server_check(&st.store, name)?
     {
-        return Err(bad(format!("The Default workspace's vault has no secret named {name}. Add the password there first.")));
+        return Err(bad(why));
     }
     st.store.put_email_settings(Some(&s))?;
     tracing::info!(smtp_host = %s.smtp_host, "email settings saved");
@@ -107,8 +108,8 @@ async fn test_notification(State(st): State<Arc<AppState>>, Extension(InWorkspac
         return Err(ApiError::new(StatusCode::CONFLICT, "Email isn't set up on this server yet. Set it up under Settings > Email."));
     }
     for name in n.secret_refs() {
-        if st.store.secret(&ws, &name)?.is_none() {
-            return Err(bad(format!("The vault has no secret named {name}.")));
+        if let Err(why) = crate::secret_refs::check(&st.store, &ws, &name)? {
+            return Err(bad(why));
         }
     }
     let notifier = st.notifier.clone();

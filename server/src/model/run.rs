@@ -140,7 +140,7 @@ impl Run {
             started_at: None,
             finished_at: None,
             timeout_seconds: runbook.timeout_seconds,
-            secrets: runbook.secrets.clone(),
+            secrets: runbook.secrets.iter().map(|r| resolve_secret_ref(r, inputs)).collect(),
             steps: hosts
                 .iter()
                 .flat_map(|h| {

@@ -126,7 +126,7 @@ pub fn header_parts(value: &str) -> Result<Vec<HeaderPart>, String> {
             Piece::Text(t) => Ok(HeaderPart::Text(t)),
             Piece::Var(v) => {
                 let name = v.strip_prefix("secrets.").ok_or_else(|| format!("only {{{{ secrets.NAME }}}} can be used in a header, not {{{{ {v} }}}}."))?;
-                validate_secret_name(name)?;
+                validate_secret_ref(name)?;
                 Ok(HeaderPart::Secret(name.to_string()))
             }
         })
@@ -159,7 +159,7 @@ const BODY_VARS: &[&str] = &[
 
 fn check_body_var(v: &str) -> Result<(), String> {
     if let Some(name) = v.strip_prefix("secrets.") {
-        return validate_secret_name(name);
+        return validate_secret_ref(name);
     }
     if let Some(name) = v.strip_prefix("run.inputs.")
         && !name.is_empty()
@@ -250,7 +250,7 @@ impl EmailSettings {
             return Err("Give both a user name and a password secret, or neither.".into());
         }
         if let Some(s) = &self.password_secret {
-            validate_secret_name(s)?;
+            validate_secret_ref(s)?;
         }
         self.from = self.from.trim().to_string();
         self.from.parse::<lettre::message::Mailbox>().map_err(|_| format!("{:?} is not a sender address. Use one like OpSkills <opskills@example.com>.", self.from))?;
@@ -324,7 +324,7 @@ impl Notification {
             header_parts(&h.value).map_err(|e| format!("{}: {e}", h.name))?;
         }
         if let Some(auth) = &mut self.auth {
-            validate_secret_name(auth.secret())?;
+            validate_secret_ref(auth.secret())?;
             if let WebhookAuth::Basic { username, .. } = auth {
                 *username = username.trim().to_string();
                 if username.is_empty() || username.len() > 200 || username.contains(':') || username.chars().any(char::is_control) {

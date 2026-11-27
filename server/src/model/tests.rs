@@ -170,3 +170,35 @@ fn validation_normalizes_and_rejects() {
     bad_timeout.timeout_seconds = Some(0);
     assert!(bad_timeout.validate().is_err());
 }
+
+#[test]
+fn secret_paths_and_references() {
+    for ok in ["DB_PASSWORD", "prod/DB_PASSWORD", "prod/db-1/eu.west/DB_PASSWORD", "a/b/c/d/e/KEY"] {
+        assert!(validate_secret_path(ok).is_ok(), "{ok}");
+    }
+    for bad in ["prod/db_password", "Prod/KEY", "a/b/c/d/e/f/KEY", "/KEY", "prod//KEY", ".hidden/KEY", "../KEY", "prod/", "pro d/KEY"] {
+        assert!(validate_secret_path(bad).is_err(), "{bad}");
+    }
+    assert!(validate_workspace_secret_path("shared/KEY").is_err());
+    assert!(validate_workspace_secret_path("sharedx/KEY").is_ok());
+    assert_eq!(SecretRef::parse("shared/smtp/PASS"), Ok(SecretRef::Shared("smtp/PASS".into())));
+    assert_eq!(SecretRef::parse("prod/PASS"), Ok(SecretRef::Workspace("prod/PASS".into())));
+    assert_eq!(secret_env_name("shared/smtp/PASS"), "PASS");
+}
+
+#[test]
+fn no_two_secrets_share_an_encryption_binding() {
+    // Before folders, these were the only bindings; they must not change.
+    assert_eq!(secret_binding("default", "DB_PASSWORD"), "DB_PASSWORD");
+    assert_eq!(secret_binding("ops", "DB_PASSWORD"), "ops/DB_PASSWORD");
+    let all = [
+        secret_binding("default", "ops/DB_PASSWORD"),
+        secret_binding("ops", "DB_PASSWORD"),
+        secret_binding("default", "DB_PASSWORD"),
+        secret_binding("ops", "x/DB_PASSWORD"),
+        shared_secret_binding("ops/DB_PASSWORD"),
+        shared_secret_binding("DB_PASSWORD"),
+    ];
+    let unique: std::collections::BTreeSet<_> = all.iter().collect();
+    assert_eq!(unique.len(), all.len(), "{all:?}");
+}

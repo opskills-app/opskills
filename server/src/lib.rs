@@ -13,6 +13,7 @@ pub mod hub;
 pub mod model;
 pub mod notify;
 pub mod schedule;
+pub mod secret_refs;
 pub mod store;
 pub mod template;
 pub mod vault;
