@@ -255,13 +255,21 @@ pub fn workspace_hosts(st: &AppState, ws: &str) -> anyhow::Result<Vec<InvHost>> 
         .filter(|h| h.workspaces.iter().any(|w| w == ws))
         .map(|host| InvHost { host, reach: Reach::Agent, sources: vec![], rule_tags: vec![], stale: false })
         .collect();
-    let enrolled = out.len();
+    // Enrolled hosts by lowercase hostname and name; the first host in order wins a key.
+    let mut by_key: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, h) in out.iter().enumerate() {
+        for k in [&h.host.hostname, &h.host.name] {
+            if !k.is_empty() {
+                by_key.entry(k.to_lowercase()).or_insert(i);
+            }
+        }
+    }
     for src in st.store.inventory_sources()?.into_iter().filter(|s| s.workspace == ws && s.enabled) {
         let state = st.store.source_state(&src.id)?;
         let stale = state.error.is_some();
         for rec in state.hosts {
             let key = if rec.host.hostname.is_empty() { rec.host.name.to_lowercase() } else { rec.host.hostname.to_lowercase() };
-            let found = out[..enrolled].iter_mut().find(|h| h.host.hostname.to_lowercase() == key || h.host.name.to_lowercase() == key);
+            let found = by_key.get(&key).map(|&i| &mut out[i]);
             match found {
                 Some(h) => {
                     for t in &rec.host.tags {
