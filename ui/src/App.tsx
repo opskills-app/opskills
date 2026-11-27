@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { Activity, BookOpen, ChevronRight, KeyRound, LayoutGrid, LogOut, Moon, Plus, ScrollText, Search, Server, Settings, Sun } from "lucide-react";
 import { CommandPalette } from "./components/CommandPalette";
 import { Avatar, Button, cx, Kbd } from "./components/ui";
-import { api, UNAUTHORIZED_EVENT, type Me, type Role } from "./api";
-import { ROLE_LABELS, SessionContext } from "./session";
+import { api, setApiWorkspace, UNAUTHORIZED_EVENT, type Me, type MyWorkspace, type Role } from "./api";
+import { ROLE_LABELS, SessionContext, type Session } from "./session";
+import { NoWorkspace } from "./pages/NoWorkspace";
 import { ChangePassword } from "./pages/ChangePassword";
 import { go, useRoute } from "./router";
 import { Login, SourceLink, SOURCE_URL } from "./pages/Login";
@@ -24,11 +25,28 @@ const allNav: { id: string; label: string; icon: typeof LayoutGrid; min?: Role }
   { id: "runs", label: "Runs", icon: Activity },
   { id: "hosts", label: "Hosts", icon: Server },
   { id: "vault", label: "Vault", icon: KeyRound, min: "editor" },
+  // Server admins see every workspace's log; a workspace's Admins see its own.
   { id: "audit", label: "Audit log", icon: ScrollText, min: "admin" },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
 const rank = (r: Role) => ["viewer", "operator", "editor", "admin"].indexOf(r);
+
+const WORKSPACE_KEY = "opskills-workspace";
+
+function storedWorkspace(): string | null {
+  try {
+    return localStorage.getItem(WORKSPACE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** The workspace to show: the last one used in this browser, else Default, else the first. */
+function pickWorkspace(me: Me, wanted: string | null): MyWorkspace | null {
+  const find = (slug: string | null) => me.workspaces.find((w) => w.slug === slug);
+  return find(wanted) ?? find(storedWorkspace()) ?? find("default") ?? me.workspaces[0] ?? null;
+}
 
 function Logo({ className = "size-9" }: { className?: string }) {
   return (
@@ -54,6 +72,7 @@ function useTheme() {
 
 export default function App() {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
+  const [wanted, setWanted] = useState<string | null>(null);
   const [version, setVersion] = useState("");
   const [sourceUrl, setSourceUrl] = useState(SOURCE_URL);
   // Unknown until /system answers; the sign-in page waits for it.
@@ -99,14 +118,66 @@ export default function App() {
         sourceUrl={sourceUrl}
       />
     );
+  const workspace = pickWorkspace(me, wanted);
+  if (!workspace) return <NoWorkspace me={me} onReload={loadMe} onSignOut={signedOut} sourceUrl={sourceUrl} />;
+  setApiWorkspace(workspace.slug);
+  const session: Session = {
+    me,
+    workspace,
+    switchTo: (slug, stay) => {
+      try {
+        localStorage.setItem(WORKSPACE_KEY, slug);
+      } catch {
+        /* storage unavailable */
+      }
+      setApiWorkspace(slug);
+      setWanted(slug);
+      if (!stay) go("overview");
+    },
+    reload: loadMe,
+  };
   return (
-    <SessionContext.Provider value={me}>
-      <Shell user={me.user} role={me.role} version={version} sourceUrl={sourceUrl} onSignOut={signedOut} />
+    <SessionContext.Provider value={session}>
+      <Shell session={session} version={version} sourceUrl={sourceUrl} onSignOut={signedOut} />
     </SessionContext.Provider>
   );
 }
 
-function Shell({ user, role, version, sourceUrl, onSignOut }: { user: string; role: Role; version: string; sourceUrl: string; onSignOut: () => void }) {
+/** Switch workspaces; a plain label when there's only one. */
+function WorkspaceSwitcher({ session, className }: { session: Session; className?: string }) {
+  const { me, workspace } = session;
+  if (me.workspaces.length < 2)
+    return (
+      <div className={cx("flex h-11 items-center gap-2.5 rounded-xl bg-surface-2 px-3 text-sm font-medium", className)}>
+        <span className="size-2.5 shrink-0 rounded-full bg-emerald-500" />
+        <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
+      </div>
+    );
+  return (
+    <label className={cx("relative flex h-11 items-center gap-2.5 rounded-xl bg-surface-2 px-3 text-sm font-medium", className)}>
+      <span className="size-2.5 shrink-0 rounded-full bg-emerald-500" />
+      <span className="sr-only">Workspace</span>
+      <select
+        aria-label="Workspace"
+        value={workspace.slug}
+        onChange={(e) => session.switchTo(e.target.value)}
+        className="min-w-0 flex-1 cursor-pointer appearance-none truncate bg-transparent pr-6 outline-none"
+      >
+        {me.workspaces.map((w) => (
+          <option key={w.slug} value={w.slug}>
+            {w.name}
+          </option>
+        ))}
+      </select>
+      <ChevronRight className="pointer-events-none absolute right-3 size-4 rotate-90 text-muted" />
+    </label>
+  );
+}
+
+function Shell({ session, version, sourceUrl, onSignOut }: { session: Session; version: string; sourceUrl: string; onSignOut: () => void }) {
+  const { me, workspace } = session;
+  const user = me.user;
+  const role = workspace.role;
   const nav = allNav.filter((n) => !n.min || rank(role) >= rank(n.min));
   const canEdit = rank(role) >= rank("editor");
   const route = useRoute();
@@ -155,10 +226,7 @@ function Shell({ user, role, version, sourceUrl, onSignOut }: { user: string; ro
           {version && <span className="mt-2 self-end text-[10px] font-medium text-muted">v{version}</span>}
         </a>
 
-        <div className="mt-8 flex h-11 items-center gap-2.5 rounded-xl bg-surface-2 px-3 text-sm font-medium">
-          <span className="size-2.5 rounded-full bg-emerald-500" />
-          <span className="flex-1">Default workspace</span>
-        </div>
+        <WorkspaceSwitcher session={session} className="mt-8" />
 
         <nav className="mt-6 space-y-2">
           {nav.map((n) => {
@@ -198,7 +266,7 @@ function Shell({ user, role, version, sourceUrl, onSignOut }: { user: string; ro
           <Avatar name={user} size="size-10" />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-medium">{user}</span>
-            <span className="block text-xs text-muted">{ROLE_LABELS[role]}</span>
+            <span className="block text-xs text-muted">{me.admin ? "Server admin" : ROLE_LABELS[role]}</span>
           </span>
           <button onClick={signOut} className="rounded-lg p-2 text-muted hover:bg-surface-2 hover:text-ink" aria-label="Sign out" title="Sign out">
             <LogOut className="size-4" />
@@ -243,7 +311,11 @@ function Shell({ user, role, version, sourceUrl, onSignOut }: { user: string; ro
           )}
         </header>
 
-        <main className="w-full max-w-[1320px] flex-1 px-4 pt-2 pb-10 sm:px-8 lg:px-12">{page}</main>
+        <WorkspaceSwitcher session={session} className="mx-4 mb-2 sm:mx-8 lg:hidden" />
+        {/* Pages load the current workspace's data; switching starts them fresh. */}
+        <main key={workspace.slug} className="w-full max-w-[1320px] flex-1 px-4 pt-2 pb-10 sm:px-8 lg:px-12">
+          {page}
+        </main>
         <SourceLink href={sourceUrl} className="px-4 pb-4 text-center lg:hidden" />
 
         <nav className="sticky bottom-0 z-20 flex justify-around bg-surface/95 py-2 shadow-soft backdrop-blur lg:hidden">

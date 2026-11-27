@@ -31,22 +31,25 @@ async fn changes_are_recorded_with_who_and_how() {
     let r = bearer_call(&s.app, "POST", &format!("/api/v1/runbooks/{rb}/runs"), None, &token).await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
     user_with_role(&s, &c, "ops", "operator").await;
-    let r = call(&s.app, "PUT", "/api/v1/users/ops", Some(json!({"role": "viewer"})), Some(&c), true).await;
+    let r = call(&s.app, "PUT", "/api/v1/workspaces/default/members/ops", Some(json!({"role": "viewer"})), Some(&c), true).await;
     assert_eq!(r.status, StatusCode::OK);
 
     let log = audit_log(&s, &c, "").await;
     let got = actions(&log);
     for want in [
         "auth.sign_in_failed", "auth.sign_in", "runbook.create", "runbook.update", "run.start", "secret.create", "secret.update",
-        "token.create", "user.create", "auth.password_change", "user.role_change",
+        "token.create", "user.create", "member.add", "auth.password_change", "member.role_change",
     ] {
         assert!(got.iter().any(|a| a == want), "{want} missing from {got:?}");
     }
     // Newest first.
-    assert_eq!(got[0], "user.role_change");
+    assert_eq!(got[0], "member.role_change");
     let events = log["events"].as_array().unwrap();
     let find = |action: &str| events.iter().find(|e| e["action"] == action).unwrap().clone();
-    assert_eq!(find("user.role_change")["detail"], "role operator to viewer");
+    assert_eq!(find("member.role_change")["detail"], "role operator to viewer");
+    assert_eq!(find("member.role_change")["workspace"], "default");
+    assert_eq!(find("user.create")["detail"], "operator in default");
+    assert!(find("auth.sign_in").get("workspace").is_none(), "sign-ins are server-wide");
     assert_eq!(find("runbook.update")["detail"], "renamed from \"Deploy\"");
     assert_eq!(find("auth.sign_in_failed")["detail"], "wrong password");
     let by_token = events.iter().find(|e| e["action"] == "run.start" && e["via"] == "token ci").expect("run started by the token");
@@ -105,6 +108,7 @@ async fn old_events_are_removed_after_the_retention_period() {
         actor: "admin".into(),
         via: None,
         action: "runbook.delete".into(),
+        workspace: None,
         target: None,
         detail: None,
     };

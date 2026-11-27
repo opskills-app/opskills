@@ -12,13 +12,14 @@ use anyhow::{Context, Result};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{ApiToken, AuditEvent, EnrollmentToken, FIRST_ADMIN, Host, LogLine, Role, Run, Runbook, Secret, Status, StoredApiToken, StoredHost, StoredSecret, StoredUser, StoredWebhook, User, Webhook, now_ms};
+use crate::model::{ApiToken, AuditEvent, DEFAULT_WORKSPACE, EnrollmentToken, FIRST_ADMIN, Host, LogLine, Role, Run, Runbook, Secret, Status, StoredApiToken, StoredHost, StoredSecret, StoredUser, StoredWebhook, User, Webhook, Workspace, now_ms};
 
 const RUNBOOKS: TableDefinition<&str, &str> = TableDefinition::new("runbooks");
 const RUNS: TableDefinition<&str, &str> = TableDefinition::new("runs");
 /// Key: "<run id>/<12-digit sequence number>".
 const LOGS: TableDefinition<&str, &str> = TableDefinition::new("logs");
-/// Key: secret name. Value: metadata plus the AES-256-GCM ciphertext, never plaintext.
+/// Key: "<workspace>/<secret name>". Value: metadata plus the AES-256-GCM ciphertext,
+/// never plaintext.
 const SECRETS: TableDefinition<&str, &str> = TableDefinition::new("secrets");
 /// Key: host id. Value: host plus the hash of its agent secret.
 const HOSTS: TableDefinition<&str, &str> = TableDefinition::new("hosts");
@@ -40,16 +41,18 @@ const SCHEDULE_STATE: TableDefinition<&str, &str> = TableDefinition::new("schedu
 const USERS: TableDefinition<&str, &str> = TableDefinition::new("users");
 /// Key: event id (UUID v7, time-ordered). Value: the audit event.
 const AUDIT: TableDefinition<&str, &str> = TableDefinition::new("audit");
+/// Key: workspace slug. Value: the workspace.
+const WORKSPACES: TableDefinition<&str, &str> = TableDefinition::new("workspaces");
 /// Key: "schema_version". Value: the version number.
 const META: TableDefinition<&str, &str> = TableDefinition::new("meta");
 
 /// The schema this build writes. Each step in `MIGRATIONS` moves the database up by one.
-pub const SCHEMA_VERSION: u64 = 1;
+pub const SCHEMA_VERSION: u64 = 2;
 
 type Migration = fn(&redb::WriteTransaction, &Path) -> Result<()>;
 
 /// `(version it produces, what it does, the change)`, in order.
-const MIGRATIONS: &[(u64, &str, Migration)] = &[(1, "users and roles", migrate_users)];
+const MIGRATIONS: &[(u64, &str, Migration)] = &[(1, "users and roles", migrate_users), (2, "workspaces", migrate_workspaces)];
 
 /// Version 1: users. The single admin of earlier versions becomes the user `admin`, with
 /// the password in `admin.hash`.
@@ -59,12 +62,50 @@ fn migrate_users(w: &redb::WriteTransaction, data_dir: &Path) -> Result<()> {
         return Ok(());
     }
     let Ok(hash) = std::fs::read_to_string(data_dir.join("admin.hash")) else { return Ok(()) };
-    let admin = StoredUser {
-        user: User { name: FIRST_ADMIN.into(), role: Role::Admin, created_at: now_ms(), must_change_password: false, last_sign_in_at: None, password_changed_at: None },
-        password_hash: hash.trim().to_string(),
-    };
-    users.insert(FIRST_ADMIN, serde_json::to_string(&admin)?.as_str())?;
+    // The shape version 1 wrote; version 2 turns `role` into workspace roles.
+    let admin = serde_json::json!({
+        "name": FIRST_ADMIN, "role": "admin", "created_at": now_ms(), "must_change_password": false,
+        "last_sign_in_at": null, "password_changed_at": null, "password_hash": hash.trim(),
+    });
+    users.insert(FIRST_ADMIN, admin.to_string().as_str())?;
     Ok(())
+}
+
+/// Version 2: workspaces. Everything so far belongs to the workspace `default`: runbooks,
+/// runs, hosts and enrollment tokens read their missing workspace as `default`; vault
+/// secrets move to keys `default/<name>`. Admins become server admins, and every user
+/// keeps their role in `default`.
+fn migrate_workspaces(w: &redb::WriteTransaction, _data_dir: &Path) -> Result<()> {
+    let mut spaces = w.open_table(WORKSPACES)?;
+    if spaces.get(DEFAULT_WORKSPACE)?.is_none() {
+        let default = Workspace { slug: DEFAULT_WORKSPACE.into(), name: "Default".into(), description: String::new(), created_at: now_ms() };
+        spaces.insert(DEFAULT_WORKSPACE, serde_json::to_string(&default)?.as_str())?;
+    }
+    let mut users = w.open_table(USERS)?;
+    let old: Vec<(String, String)> = users.iter()?.map(|r| r.map(|(k, v)| (k.value().to_string(), v.value().to_string()))).collect::<Result<_, _>>()?;
+    for (name, json) in old {
+        let mut v: serde_json::Value = serde_json::from_str(&json)?;
+        let Some(role) = v.as_object_mut().and_then(|o| o.remove("role")) else { continue };
+        v["admin"] = serde_json::Value::Bool(role == "admin");
+        v["workspaces"] = serde_json::json!({ DEFAULT_WORKSPACE: role });
+        users.insert(name.as_str(), v.to_string().as_str())?;
+    }
+    let mut secrets = w.open_table(SECRETS)?;
+    let old: Vec<(String, String)> = secrets.iter()?.map(|r| r.map(|(k, v)| (k.value().to_string(), v.value().to_string()))).collect::<Result<_, _>>()?;
+    for (name, json) in old {
+        if name.contains('/') {
+            continue;
+        }
+        let mut v: serde_json::Value = serde_json::from_str(&json)?;
+        v["workspace"] = serde_json::Value::String(DEFAULT_WORKSPACE.into());
+        secrets.remove(name.as_str())?;
+        secrets.insert(secret_key(DEFAULT_WORKSPACE, &name).as_str(), v.to_string().as_str())?;
+    }
+    Ok(())
+}
+
+fn secret_key(workspace: &str, name: &str) -> String {
+    format!("{workspace}/{name}")
 }
 
 fn schema_version(db: &Database) -> Result<u64> {
@@ -132,6 +173,7 @@ impl Store {
             w.open_table(SETTINGS)?;
             w.open_table(USERS)?;
             w.open_table(AUDIT)?;
+            w.open_table(WORKSPACES)?;
         }
         // Every migration and the new version commit together, or not at all.
         for (to, what, migrate) in MIGRATIONS {
@@ -215,15 +257,16 @@ impl Store {
         })
     }
 
-    /// Newest first, optionally for one runbook.
-    pub fn runs(&self, runbook_id: Option<&str>, limit: usize) -> Result<Vec<Run>> {
+    /// Newest first, optionally only in one workspace and for one runbook.
+    pub fn runs(&self, workspace: Option<&str>, runbook_id: Option<&str>, limit: usize) -> Result<Vec<Run>> {
         let r = self.db.begin_read()?;
         let t = r.open_table(RUNS)?;
         let mut out = Vec::new();
         for item in t.iter()?.rev() {
             let (_, v) = item?;
             if let Ok(run) = serde_json::from_str::<Run>(v.value())
-                && runbook_id.is_none_or(|id| run.runbook_id == id) {
+                && runbook_id.is_none_or(|id| run.runbook_id == id)
+                && workspace.is_none_or(|w| run.workspace == w) {
                     out.push(run);
                     if out.len() >= limit {
                         break;
@@ -296,23 +339,25 @@ impl Store {
     // Secrets
 
     pub fn put_secret(&self, s: &StoredSecret) -> Result<()> {
-        self.put(SECRETS, &s.meta.name, &serde_json::to_string(s)?)
+        self.put(SECRETS, &secret_key(&s.meta.workspace, &s.meta.name), &serde_json::to_string(s)?)
     }
 
-    pub fn secret(&self, name: &str) -> Result<Option<StoredSecret>> {
-        Ok(match self.get(SECRETS, name)? {
+    pub fn secret(&self, workspace: &str, name: &str) -> Result<Option<StoredSecret>> {
+        Ok(match self.get(SECRETS, &secret_key(workspace, name))? {
             Some(s) => Some(serde_json::from_str(&s)?),
             None => None,
         })
     }
 
-    /// Metadata of every secret, by name.
-    pub fn secrets(&self) -> Result<Vec<Secret>> {
-        Ok(self.values(SECRETS)?.iter().filter_map(|s| serde_json::from_str::<StoredSecret>(s).ok()).map(|s| s.meta).collect())
+    /// Metadata of every secret in a workspace, by name.
+    pub fn secrets(&self, workspace: &str) -> Result<Vec<Secret>> {
+        let mut list: Vec<Secret> = self.values(SECRETS)?.iter().filter_map(|s| serde_json::from_str::<StoredSecret>(s).ok()).map(|s| s.meta).filter(|m| m.workspace == workspace).collect();
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(list)
     }
 
-    pub fn delete_secret(&self, name: &str) -> Result<bool> {
-        self.remove(SECRETS, name)
+    pub fn delete_secret(&self, workspace: &str, name: &str) -> Result<bool> {
+        self.remove(SECRETS, &secret_key(workspace, name))
     }
 
     // Hosts
@@ -343,16 +388,14 @@ impl Store {
         self.put(ENROLLMENT, token_hash, &serde_json::to_string(t)?)
     }
 
-    /// Use up an enrollment token: true if it existed and had not expired. Either way it's gone.
-    pub fn take_enrollment_token(&self, token_hash: &str) -> Result<bool> {
+    /// Use up an enrollment token: the token if it existed and had not expired. Either way
+    /// it's gone.
+    pub fn take_enrollment_token(&self, token_hash: &str) -> Result<Option<EnrollmentToken>> {
         let w = self.db.begin_write()?;
         let valid = {
             let mut t = w.open_table(ENROLLMENT)?;
             let removed = t.remove(token_hash)?.map(|v| v.value().to_string());
-            match removed {
-                Some(s) => serde_json::from_str::<EnrollmentToken>(&s).map(|e| e.expires_at > now_ms()).unwrap_or(false),
-                None => false,
-            }
+            removed.and_then(|s| serde_json::from_str::<EnrollmentToken>(&s).ok()).filter(|e| e.expires_at > now_ms())
         };
         w.commit()?;
         Ok(valid)
@@ -525,14 +568,15 @@ impl Store {
         w.commit()?;
         Ok(existed)
     }
-    /// After a new password from `admin.hash`: the `admin` user exists, is an Admin, has that
+    /// After a new password from `admin.hash`: the `admin` user exists, is a server admin, has that
     /// password and must choose a new one at sign-in. Everyone is signed out.
     pub fn reset_first_admin(&self, password_hash: &str) -> Result<()> {
         let mut u = self.user(FIRST_ADMIN)?.unwrap_or_else(|| StoredUser {
-            user: User { name: FIRST_ADMIN.into(), role: Role::Admin, created_at: now_ms(), must_change_password: true, last_sign_in_at: None, password_changed_at: None },
+            user: User { name: FIRST_ADMIN.into(), admin: true, workspaces: Default::default(), created_at: now_ms(), must_change_password: true, last_sign_in_at: None, password_changed_at: None },
             password_hash: String::new(),
         });
-        u.user.role = Role::Admin;
+        u.user.admin = true;
+        u.user.workspaces.insert(DEFAULT_WORKSPACE.into(), Role::Admin);
         u.user.must_change_password = true;
         u.password_hash = password_hash.trim().to_string();
         self.put_user(&u)?;
@@ -593,6 +637,66 @@ impl Store {
                 }
                 keep
             })?;
+        }
+        w.commit()?;
+        Ok(removed)
+    }
+
+
+    // Workspaces
+
+    pub fn workspace(&self, slug: &str) -> Result<Option<Workspace>> {
+        self.get(WORKSPACES, slug)?.map(|s| serde_json::from_str(&s).map_err(Into::into)).transpose()
+    }
+    pub fn put_workspace(&self, ws: &Workspace) -> Result<()> {
+        self.put(WORKSPACES, &ws.slug, &serde_json::to_string(ws)?)
+    }
+    /// Every workspace, `default` first, then by name.
+    pub fn workspaces(&self) -> Result<Vec<Workspace>> {
+        let mut list: Vec<Workspace> = self.values(WORKSPACES)?.iter().map(|s| serde_json::from_str(s)).collect::<Result<_, _>>()?;
+        list.sort_by_key(|w| (w.slug != DEFAULT_WORKSPACE, w.name.to_lowercase()));
+        Ok(list)
+    }
+    /// Remove a workspace in one transaction: its run history (runs, output, notices),
+    /// everyone's membership, and its place on shared hosts. The caller checks first that
+    /// it has no runbooks, secrets or hosts of its own. Returns the number of runs removed.
+    pub fn delete_workspace(&self, slug: &str) -> Result<usize> {
+        let w = self.db.begin_write()?;
+        let mut removed = 0;
+        {
+            w.open_table(WORKSPACES)?.remove(slug)?;
+            let mut runs = w.open_table(RUNS)?;
+            let ids: Vec<String> = runs
+                .iter()?
+                .filter_map(|r| r.ok())
+                .filter_map(|(k, v)| serde_json::from_str::<Run>(v.value()).ok().filter(|run| run.workspace == slug).map(|_| k.value().to_string()))
+                .collect();
+            let mut logs = w.open_table(LOGS)?;
+            let mut notices = w.open_table(NOTICES)?;
+            for id in &ids {
+                runs.remove(id.as_str())?;
+                notices.remove(id.as_str())?;
+                let (start, end) = (format!("{id}/"), format!("{id}/~"));
+                logs.retain_in(start.as_str()..end.as_str(), |_, _| false)?;
+                removed += 1;
+            }
+            let mut users = w.open_table(USERS)?;
+            let all: Vec<(String, String)> = users.iter()?.map(|r| r.map(|(k, v)| (k.value().to_string(), v.value().to_string()))).collect::<Result<_, _>>()?;
+            for (name, json) in all {
+                let mut u: StoredUser = serde_json::from_str(&json)?;
+                if u.user.workspaces.remove(slug).is_some() {
+                    users.insert(name.as_str(), serde_json::to_string(&u)?.as_str())?;
+                }
+            }
+            let mut hosts = w.open_table(HOSTS)?;
+            let all: Vec<(String, String)> = hosts.iter()?.map(|r| r.map(|(k, v)| (k.value().to_string(), v.value().to_string()))).collect::<Result<_, _>>()?;
+            for (id, json) in all {
+                let mut h: StoredHost = serde_json::from_str(&json)?;
+                if h.host.workspaces.iter().any(|x| x == slug) {
+                    h.host.workspaces.retain(|x| x != slug);
+                    hosts.insert(id.as_str(), serde_json::to_string(&h)?.as_str())?;
+                }
+            }
         }
         w.commit()?;
         Ok(removed)

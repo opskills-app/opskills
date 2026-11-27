@@ -15,7 +15,7 @@ use crate::model::Role;
 use crate::audit::{self, By};
 use crate::model::AuditTarget;
 use crate::web::AppState;
-use super::{Access, ApiError, ApiResult, CurrentUser, bad};
+use super::{Access, ApiError, ApiResult, CurrentUser, InWorkspace, Scope, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -24,38 +24,40 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
 }
 
 pub(super) const ACCESS: &[(&str, &str, Access)] = &[
-    ("GET", "/runbooks", Access::Role(Role::Viewer)),
-    ("POST", "/runbooks", Access::Role(Role::Editor)),
-    ("GET", "/runbooks/{id}", Access::Role(Role::Viewer)),
-    ("PUT", "/runbooks/{id}", Access::Role(Role::Editor)),
-    ("DELETE", "/runbooks/{id}", Access::Role(Role::Editor)),
+    ("GET", "/runbooks", Access::Role(Role::Viewer, Scope::Query)),
+    ("POST", "/runbooks", Access::Role(Role::Editor, Scope::Query)),
+    ("GET", "/runbooks/{id}", Access::Role(Role::Viewer, Scope::Runbook)),
+    ("PUT", "/runbooks/{id}", Access::Role(Role::Editor, Scope::Runbook)),
+    ("DELETE", "/runbooks/{id}", Access::Role(Role::Editor, Scope::Runbook)),
 ];
 
-async fn list_runbooks(State(st): State<Arc<AppState>>) -> ApiResult<Json<Vec<Runbook>>> {
-    Ok(Json(st.store.runbooks()?))
+async fn list_runbooks(State(st): State<Arc<AppState>>, Extension(InWorkspace(ws)): Extension<InWorkspace>) -> ApiResult<Json<Vec<Runbook>>> {
+    Ok(Json(st.store.runbooks()?.into_iter().filter(|r| r.workspace == ws).collect()))
 }
 
 async fn get_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<Json<Runbook>> {
     st.store.runbook(&id)?.map(Json).ok_or_else(|| ApiError::not_found("Runbook"))
 }
 
-fn parse_input(st: &AppState, body: &str) -> ApiResult<RunbookInput> {
+/// Parse and check a runbook for workspace `ws`: the secrets, hosts and runbooks it
+/// names must all be in that workspace.
+fn parse_input(st: &AppState, ws: &str, body: &str) -> ApiResult<RunbookInput> {
     let input: RunbookInput = serde_json::from_str(body).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("Invalid runbook: {e}")))?;
     let input = input.validate().map_err(|msg| ApiError::new(StatusCode::BAD_REQUEST, msg))?;
     for name in &input.secrets {
-        if st.store.secret(name)?.is_none() {
+        if st.store.secret(ws, name)?.is_none() {
             return Err(ApiError::new(StatusCode::BAD_REQUEST, format!("The vault has no secret named {name}. Add it in the vault first.")));
         }
     }
     for (i, n) in input.notifications.iter().enumerate() {
         for name in n.secret_refs() {
-            if st.store.secret(&name)?.is_none() {
+            if st.store.secret(ws, &name)?.is_none() {
                 return Err(bad(format!("Notification {}: the vault has no secret named {name}. Add it in the vault first.", i + 1)));
             }
         }
     }
     for id in &input.targets.hosts {
-        if id != LOCAL_HOST_ID && st.store.stored_host(id)?.is_none() {
+        if id != LOCAL_HOST_ID && !st.store.stored_host(id)?.is_some_and(|h| h.host.workspaces.iter().any(|w| w == ws)) {
             return Err(ApiError::new(StatusCode::BAD_REQUEST, format!("There is no host with id {id}. It may have been removed.")));
         }
     }
@@ -65,9 +67,10 @@ fn parse_input(st: &AppState, body: &str) -> ApiResult<RunbookInput> {
 /// Check the call steps of `input` (saved as `self_id`, if it exists yet) against the
 /// stored runbooks: each called runbook exists, gets only inputs it has and every
 /// required one it has no default for, and no chain of calls comes back around.
-fn check_calls(st: &AppState, self_id: Option<&str>, input: &RunbookInput) -> ApiResult<()> {
+fn check_calls(st: &AppState, ws: &str, self_id: Option<&str>, input: &RunbookInput) -> ApiResult<()> {
     let bad = |m: String| ApiError::new(StatusCode::BAD_REQUEST, m);
-    let all = st.store.runbooks()?;
+    // Calls stay inside a workspace: runbooks elsewhere don't exist from here.
+    let all: Vec<Runbook> = st.store.runbooks()?.into_iter().filter(|r| r.workspace == ws).collect();
     for (i, step) in input.steps.iter().enumerate() {
         let Some(call) = &step.call else { continue };
         let n = i + 1;
@@ -102,12 +105,13 @@ fn check_calls(st: &AppState, self_id: Option<&str>, input: &RunbookInput) -> Ap
     Ok(())
 }
 
-async fn create_runbook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, body: String) -> ApiResult<Response> {
-    let input = parse_input(&st, &body)?;
-    check_calls(&st, None, &input)?;
+async fn create_runbook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Extension(InWorkspace(ws)): Extension<InWorkspace>, body: String) -> ApiResult<Response> {
+    let input = parse_input(&st, &ws, &body)?;
+    check_calls(&st, &ws, None, &input)?;
     let now = now_ms();
     let rb = Runbook {
         id: uuid::Uuid::now_v7().to_string(),
+        workspace: ws,
         name: input.name,
         description: input.description,
         tags: input.tags,
@@ -126,14 +130,14 @@ async fn create_runbook(State(st): State<Arc<AppState>>, Extension(user): Extens
     };
     st.store.put_runbook(&rb)?;
     tracing::info!(runbook_id = %rb.id, name = %rb.name, "runbook created");
-    audit::record(&st, &By::user(&user), "runbook.create", Some(AuditTarget::new("runbook", &rb.id, &rb.name)), None);
+    audit::record(&st, &By::user(&user), Some(&rb.workspace), "runbook.create", Some(AuditTarget::new("runbook", &rb.id, &rb.name)), None);
     Ok((StatusCode::CREATED, Json(rb)).into_response())
 }
 
 async fn update_runbook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>, body: String) -> ApiResult<Json<Runbook>> {
     let existing = st.store.runbook(&id)?.ok_or_else(|| ApiError::not_found("Runbook"))?;
-    let input = parse_input(&st, &body)?;
-    check_calls(&st, Some(&id), &input)?;
+    let input = parse_input(&st, &existing.workspace, &body)?;
+    check_calls(&st, &existing.workspace, Some(&id), &input)?;
     let renamed = (existing.name != input.name).then(|| format!("renamed from {:?}", existing.name));
     let rb = Runbook {
         name: input.name,
@@ -153,7 +157,7 @@ async fn update_runbook(State(st): State<Arc<AppState>>, Extension(user): Extens
         ..existing
     };
     st.store.put_runbook(&rb)?;
-    audit::record(&st, &By::user(&user), "runbook.update", Some(AuditTarget::new("runbook", &rb.id, &rb.name)), renamed);
+    audit::record(&st, &By::user(&user), Some(&rb.workspace), "runbook.update", Some(AuditTarget::new("runbook", &rb.id, &rb.name)), renamed);
     Ok(Json(rb))
 }
 
@@ -162,12 +166,12 @@ async fn delete_runbook(State(st): State<Arc<AppState>>, Extension(user): Extens
     if !callers.is_empty() {
         return Err(ApiError::new(StatusCode::CONFLICT, format!("This runbook is called by: {}. Remove those calls first.", callers.join(", "))));
     }
-    let name = st.store.runbook(&id)?.map(|r| r.name).unwrap_or_default();
+    let (name, ws) = st.store.runbook(&id)?.map(|r| (r.name, r.workspace)).unwrap_or_default();
     if st.store.delete_runbook(&id)? {
         for h in st.store.webhooks_of(&id)? {
             st.store.delete_webhook(&h.id)?;
         }
-        audit::record(&st, &By::user(&user), "runbook.delete", Some(AuditTarget::new("runbook", &id, &name)), None);
+        audit::record(&st, &By::user(&user), Some(&ws), "runbook.delete", Some(AuditTarget::new("runbook", &id, &name)), None);
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::not_found("Runbook"))

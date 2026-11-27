@@ -7,7 +7,7 @@ import { duration, fromNow, runDuration, runNumber, timeAgo, when } from "../for
 import { Button, Card, CardHeader, cx, ErrorNote, PageHeader, StatusPill, Tag } from "../components/ui";
 import { useRunNow } from "./Runbooks";
 import { go } from "../router";
-import { useCan } from "../session";
+import { useCan, useFollowWorkspace } from "../session";
 
 function toYaml(rb: Runbook) {
   const q = (s: string) => (/^[\w .,/()-]*$/.test(s) && s.trim() === s && s !== "" ? s : JSON.stringify(s));
@@ -254,6 +254,7 @@ function RunOnSummary({ rb, hosts }: { rb: Runbook; hosts: Host[] }) {
 
 export function RunbookDetail({ id }: { id: string }) {
   const rb = useData(() => api.runbook(id), [id]);
+  useFollowWorkspace(rb.data?.workspace);
   const hosts = useData(() => api.hosts(), []);
   const runs = useData(() => api.runs({ runbookId: id, limit: 100 }), [id], 5000);
   const [tab, setTab] = useState<"steps" | "runs" | "yaml">("steps");

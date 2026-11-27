@@ -24,6 +24,7 @@ mod webhooks;
 mod notifications;
 mod users;
 mod audit;
+mod workspaces;
 
 struct TestServer {
     app: Router,
@@ -192,13 +193,20 @@ async fn sign_in_as(s: &TestServer, name: &str, password: &str) -> Reply {
     call(&s.app, "POST", "/api/v1/auth/login", Some(json!({"username": name, "password": password})), None, true).await
 }
 
-/// Create a user with a role as the admin, sign them in and replace their generated
-/// password. Returns their session cookie.
+/// Create a user with a role in the default workspace, sign them in and replace their
+/// generated password. Returns their session cookie.
 async fn user_with_role(s: &TestServer, admin: &str, name: &str, role: &str) -> String {
-    let r = call(&s.app, "POST", "/api/v1/users", Some(json!({"name": name, "role": role})), Some(admin), true).await;
+    user_with(s, admin, json!({"name": name, "workspaces": {"default": role}})).await
+}
+
+/// Create a user (as the server admin `admin`) from a `POST /users` body, sign them in
+/// and replace their generated password. Returns their session cookie.
+async fn user_with(s: &TestServer, admin: &str, body: Value) -> String {
+    let name = body["name"].as_str().unwrap().to_string();
+    let r = call(&s.app, "POST", "/api/v1/users", Some(body), Some(admin), true).await;
     assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
     let generated = r.json()["password"].as_str().unwrap().to_string();
-    let r = sign_in_as(s, name, &generated).await;
+    let r = sign_in_as(s, &name, &generated).await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     assert_eq!(r.json()["must_change_password"], true);
     let cookie = r.cookie.unwrap();

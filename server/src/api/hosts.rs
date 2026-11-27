@@ -19,7 +19,7 @@ use crate::model::Role;
 use crate::audit::{self, By};
 use crate::model::AuditTarget;
 use crate::web::AppState;
-use super::{Access, ApiError, ApiResult, CurrentUser, bad};
+use super::{Access, ApiError, ApiResult, CurrentUser, InWorkspace, Scope, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -27,23 +27,30 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/hosts/packages", get(host_packages))
         .route("/hosts/enrollment-tokens", post(create_enrollment_token))
         .route("/hosts/{id}", axum::routing::put(update_host).delete(delete_host))
+        .route("/hosts/{id}/workspaces/{slug}", axum::routing::put(add_to_workspace).delete(remove_from_workspace))
 }
 
 pub(super) const ACCESS: &[(&str, &str, Access)] = &[
-    ("GET", "/hosts", Access::Role(Role::Viewer)),
-    ("GET", "/hosts/packages", Access::Role(Role::Viewer)),
-    ("POST", "/hosts/enrollment-tokens", Access::Role(Role::Admin)),
-    ("PUT", "/hosts/{id}", Access::Role(Role::Admin)),
-    ("DELETE", "/hosts/{id}", Access::Role(Role::Admin)),
+    ("GET", "/hosts", Access::Role(Role::Viewer, Scope::Query)),
+    ("GET", "/hosts/packages", Access::User),
+    ("POST", "/hosts/enrollment-tokens", Access::Role(Role::Admin, Scope::Query)),
+    ("PUT", "/hosts/{id}", Access::Role(Role::Admin, Scope::Host)),
+    ("DELETE", "/hosts/{id}", Access::Role(Role::Admin, Scope::Host)),
+    ("PUT", "/hosts/{id}/workspaces/{slug}", Access::Role(Role::Admin, Scope::HostAndSlug)),
+    ("DELETE", "/hosts/{id}/workspaces/{slug}", Access::Role(Role::Admin, Scope::Slug)),
 ];
 
 #[derive(serde::Serialize)]
 struct HostView {
+    /// `host.workspaces` lists only the workspaces the caller belongs to.
     #[serde(flatten)]
     host: Host,
     online: bool,
-    /// The OpSkills server itself: always there, can't be edited or removed.
+    /// The OpSkills server itself: in every workspace, can't be edited or removed.
     builtin: bool,
+    /// The host is also in workspaces the caller doesn't belong to.
+    shared_elsewhere: bool,
+    /// Runbooks of the current workspace that run on it.
     used_by: Vec<serde_json::Value>,
 }
 
@@ -65,21 +72,40 @@ fn local_host(st: &AppState) -> Host {
         arch: info.arch,
         agent_version: crate::VERSION.into(),
         tags: vec![],
+        workspaces: vec![],
         enrolled_at: started,
         last_seen: now_ms(),
     }
 }
 
-fn host_views(st: &AppState) -> ApiResult<Vec<HostView>> {
-    let runbooks = st.store.runbooks()?;
+/// The hosts of workspace `ws` (the server first), as `viewer` may see them.
+fn host_views(st: &AppState, viewer: &CurrentUser, ws: &str) -> ApiResult<Vec<HostView>> {
+    let me = st.store.user(&viewer.user)?.map(|u| u.user);
+    let visible = |w: &String| me.as_ref().is_some_and(|u| u.role_in(w).is_some());
+    let runbooks: Vec<Runbook> = st.store.runbooks()?.into_iter().filter(|r| r.workspace == ws).collect();
     let used = |h: &Host| runbooks.iter().filter(|r| targets_host(r, h)).map(|r| json!({ "id": r.id, "name": r.name })).collect();
-    let local = local_host(st);
-    let mut list = vec![HostView { used_by: used(&local), host: local, online: true, builtin: true }];
-    for mut h in st.store.hosts()? {
+    let mut local = local_host(st);
+    local.workspaces = vec![ws.to_string()];
+    let mut list = vec![HostView { used_by: used(&local), host: local, online: true, builtin: true, shared_elsewhere: false }];
+    for mut h in st.store.hosts()?.into_iter().filter(|h| h.workspaces.iter().any(|w| w == ws)) {
         h.last_seen = h.last_seen.max(st.hub.last_seen(&h.id).unwrap_or(0));
-        list.push(HostView { online: st.hub.is_online(&h.id, h.last_seen), used_by: used(&h), host: h, builtin: false });
+        let shared_elsewhere = h.workspaces.iter().any(|w| !visible(w));
+        let used_by = used(&h);
+        h.workspaces.retain(|w| visible(w));
+        list.push(HostView { online: st.hub.is_online(&h.id, h.last_seen), used_by, host: h, builtin: false, shared_elsewhere });
     }
     Ok(list)
+}
+
+/// Runbooks in `workspaces` that name the host `id` as a target, as "name (workspace)".
+fn runbooks_targeting(st: &AppState, id: &str, workspaces: &[String]) -> ApiResult<Vec<String>> {
+    Ok(st
+        .store
+        .runbooks()?
+        .into_iter()
+        .filter(|r| workspaces.contains(&r.workspace) && r.targets.hosts.iter().any(|h| h == id))
+        .map(|r| if workspaces.len() > 1 { format!("{} ({})", r.name, r.workspace) } else { r.name })
+        .collect())
 }
 
 #[derive(Deserialize)]
@@ -88,8 +114,8 @@ struct HostsQuery {
     filter: Option<String>,
 }
 
-async fn list_hosts(State(st): State<Arc<AppState>>, Query(q): Query<HostsQuery>) -> ApiResult<Json<Vec<HostView>>> {
-    let views = host_views(&st)?;
+async fn list_hosts(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Extension(InWorkspace(ws)): Extension<InWorkspace>, Query(q): Query<HostsQuery>) -> ApiResult<Json<Vec<HostView>>> {
+    let views = host_views(&st, &user, &ws)?;
     let Some(text) = q.filter.filter(|f| !f.trim().is_empty()) else { return Ok(Json(views)) };
     let filter = HostFilter::parse(&text).map_err(|msg| ApiError::new(StatusCode::BAD_REQUEST, msg))?;
     Ok(Json(views.into_iter().filter(|v| !v.builtin && filter.matches(&v.host)).collect()))
@@ -145,22 +171,28 @@ async fn update_host(State(st): State<Arc<AppState>>, Extension(user): Extension
     }
     st.store.put_host(&stored)?;
     let detail = format!("name {}, tags [{}]", stored.host.name, stored.host.tags.join(", "));
-    audit::record(&st, &By::user(&user), "host.update", Some(AuditTarget::new("host", &id, &stored.host.name)), Some(detail));
-    host_views(&st)?.into_iter().find(|v| v.host.id == id).map(Json).ok_or_else(|| ApiError::not_found("Host"))
+    // A shared host changes in each of its workspaces.
+    for ws in &stored.host.workspaces {
+        audit::record(&st, &By::user(&user), Some(ws), "host.update", Some(AuditTarget::new("host", &id, &stored.host.name)), Some(detail.clone()));
+    }
+    let first = stored.host.workspaces.first().cloned().unwrap_or_default();
+    host_views(&st, &user, &first)?.into_iter().find(|v| v.host.id == id).map(Json).ok_or_else(|| ApiError::not_found("Host"))
 }
 
 async fn delete_host(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>) -> ApiResult<StatusCode> {
     if id == LOCAL_HOST_ID {
         return Err(ApiError::new(StatusCode::CONFLICT, "The OpSkills server can't be removed."));
     }
-    let users: Vec<String> = st.store.runbooks()?.into_iter().filter(|r| r.targets.hosts.contains(&id)).map(|r| r.name).collect();
+    let host = st.store.stored_host(&id)?.ok_or_else(|| ApiError::not_found("Host"))?.host;
+    let users = runbooks_targeting(&st, &id, &host.workspaces)?;
     if !users.is_empty() {
         return Err(ApiError::new(StatusCode::CONFLICT, format!("This host is a target of: {}. Remove it from those runbooks first.", users.join(", "))));
     }
-    let name = st.store.stored_host(&id)?.map(|h| h.host.name).unwrap_or_default();
     if st.store.delete_host(&id)? {
         st.hub.forget(&id);
-        audit::record(&st, &By::user(&user), "host.delete", Some(AuditTarget::new("host", &id, &name)), None);
+        for ws in &host.workspaces {
+            audit::record(&st, &By::user(&user), Some(ws), "host.delete", Some(AuditTarget::new("host", &id, &host.name)), None);
+        }
         tracing::info!(host_id = %id, "host removed");
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -170,15 +202,47 @@ async fn delete_host(State(st): State<Arc<AppState>>, Extension(user): Extension
 
 const ENROLLMENT_HOURS: u64 = 24;
 
-async fn create_enrollment_token(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>) -> ApiResult<Response> {
+/// A one-time token; the host that uses it joins the workspace it was made in.
+async fn create_enrollment_token(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Extension(InWorkspace(ws)): Extension<InWorkspace>) -> ApiResult<Response> {
     st.store.purge_expired_enrollment_tokens()?;
     let token = auth::new_token();
     let now = now_ms();
-    let t = EnrollmentToken { created_at: now, expires_at: now + ENROLLMENT_HOURS * 3_600_000, created_by: user.label() };
+    let t = EnrollmentToken { workspace: ws.clone(), created_at: now, expires_at: now + ENROLLMENT_HOURS * 3_600_000, created_by: user.label() };
     st.store.put_enrollment_token(&auth::token_hash(&token), &t)?;
-    tracing::info!("enrollment token created");
-    audit::record(&st, &By::user(&user), "host.enrollment_token", None, Some("valid once, for 24 hours".into()));
+    tracing::info!(workspace = %ws, "enrollment token created");
+    audit::record(&st, &By::user(&user), Some(&ws), "host.enrollment_token", None, Some("valid once, for 24 hours".into()));
     Ok((StatusCode::CREATED, Json(json!({ "token": token, "expires_at": t.expires_at }))).into_response())
+}
+
+/// Share a host with another workspace. Needs Admin in the host's workspaces and in that one.
+async fn add_to_workspace(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path((id, slug)): Path<(String, String)>) -> ApiResult<Json<HostView>> {
+    let ws = st.store.workspace(&slug)?.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "No such workspace."))?;
+    let mut stored = st.store.stored_host(&id)?.ok_or_else(|| ApiError::not_found("Host"))?;
+    if !stored.host.workspaces.contains(&ws.slug) {
+        let before = stored.host.workspaces.join(", ");
+        stored.host.workspaces.push(ws.slug.clone());
+        st.store.put_host(&stored)?;
+        tracing::info!(host_id = %id, workspace = %ws.slug, "host shared");
+        audit::record(&st, &By::user(&user), Some(&ws.slug), "host.share", Some(AuditTarget::new("host", &id, &stored.host.name)), Some(format!("also in {before}")));
+    }
+    host_views(&st, &user, &ws.slug)?.into_iter().find(|v| v.host.id == id).map(Json).ok_or_else(|| ApiError::not_found("Host"))
+}
+
+/// Take a host out of one of its workspaces. Needs Admin in that workspace.
+async fn remove_from_workspace(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path((id, slug)): Path<(String, String)>) -> ApiResult<StatusCode> {
+    let mut stored = st.store.stored_host(&id)?.filter(|h| h.host.workspaces.contains(&slug)).ok_or_else(|| ApiError::not_found("Host"))?;
+    if stored.host.workspaces.len() == 1 {
+        return Err(ApiError::new(StatusCode::CONFLICT, "This is the host's only workspace. Remove the host instead."));
+    }
+    let users = runbooks_targeting(&st, &id, std::slice::from_ref(&slug))?;
+    if !users.is_empty() {
+        return Err(ApiError::new(StatusCode::CONFLICT, format!("This host is a target of: {}. Remove it from those runbooks first.", users.join(", "))));
+    }
+    stored.host.workspaces.retain(|w| w != &slug);
+    st.store.put_host(&stored)?;
+    tracing::info!(host_id = %id, workspace = %slug, "host unshared");
+    audit::record(&st, &By::user(&user), Some(&slug), "host.unshare", Some(AuditTarget::new("host", &id, &stored.host.name)), None);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// One agent package: where the server offers it and where it comes from.

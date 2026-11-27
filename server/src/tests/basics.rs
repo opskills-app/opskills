@@ -146,6 +146,7 @@ async fn interrupted_runs_are_marked_failed() {
         let store = crate::store::Store::open(&path, &dir).unwrap();
         let rb = crate::model::Runbook {
             id: "rb".into(),
+            workspace: "default".into(),
             name: "x".into(),
             description: String::new(),
             tags: vec![],

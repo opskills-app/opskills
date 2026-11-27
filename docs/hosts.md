@@ -50,8 +50,8 @@ the right address in the commands it shows.
    `amd64` they look like this:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.13.0_amd64.deb
-   sudo apt install ./opskills-agent_0.13.0_amd64.deb
+   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.14.0_amd64.deb
+   sudo apt install ./opskills-agent_0.14.0_amd64.deb
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -59,8 +59,8 @@ the right address in the commands it shows.
    And for RHEL, Rocky, Alma or Fedora on `x86_64`:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.13.0-1.x86_64.rpm
-   sudo dnf install ./opskills-agent-0.13.0-1.x86_64.rpm
+   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.14.0-1.x86_64.rpm
+   sudo dnf install ./opskills-agent-0.14.0-1.x86_64.rpm
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -96,16 +96,18 @@ enrollment, so no token is needed then. To read it before running it:
 
 Every host needs its own enrollment token. Automation creates them with the API,
 using an API token from **Settings > API tokens**: `POST
-/api/v1/hosts/enrollment-tokens` once per host.
+/api/v1/hosts/enrollment-tokens` once per host. The host joins the workspace the token
+was made in: add `?workspace=<id>` for one other than Default
+([Workspaces](workspaces.md#hosts)).
 
 ```bash
 OPSKILLS=https://opskills.example.com
 OPSKILLS_TOKEN=osk_...   # from Settings > API tokens
-curl -fsS -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" "$OPSKILLS/api/v1/hosts/enrollment-tokens"
+curl -fsS -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" "$OPSKILLS/api/v1/hosts/enrollment-tokens?workspace=default"
 # {"token":"3f9c...","expires_at":1764201600000}
 ```
 
-Enrolling needs the Admin role, so use an admin's token. Without an API token, sign
+Enrolling needs the Admin role in that workspace, so use an Admin's token. Without an API token, sign
 in as an admin instead and send the session cookie plus the `X-OpSkills-Request: 1`
 header on every change, as `deploy/enroll-hosts.sh` does when no token is set.
 
@@ -118,7 +120,8 @@ installs the agent from your OpSkills server and is safe to run again.
 admin (`OPSKILLS_USER`, default `admin`; or set `OPSKILLS_TOKEN` to an admin's API
 token), then for each host creates a token and runs the one-line installer over SSH. Set the
 three variables at the top (server address, hosts, tags) and run it from a machine
-that can SSH to the hosts and use `sudo` there:
+that can SSH to the hosts and use `sudo` there. Hosts join the Default workspace, or
+the one in `OPSKILLS_WORKSPACE`:
 
 ```bash
 sh deploy/enroll-hosts.sh
@@ -129,7 +132,8 @@ sh deploy/enroll-hosts.sh
 [`deploy/ansible/deploy-opskills-agent.yml`](../deploy/ansible/deploy-opskills-agent.yml)
 enrolls every host in the `opskills_hosts` group that isn't enrolled yet, upgrades
 the agent on the others, and keeps the service running. It signs in as an admin
-(`opskills_user`, default `admin`); keep that password in Ansible Vault:
+(`opskills_user`, default `admin`) and enrolls hosts into `opskills_workspace` (default
+`default`); keep that password in Ansible Vault:
 
 ```bash
 cp deploy/ansible/inventory.example.ini inventory.ini        # list your hosts

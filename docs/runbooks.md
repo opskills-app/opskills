@@ -140,6 +140,7 @@ before anything runs. Other uses of double braces, like the Go templates in
 | `OPSKILLS_RUNBOOK_ID`, `OPSKILLS_RUNBOOK_NAME`, `OPSKILLS_STARTED_BY` | This runbook, and who started the run |
 
 Vault secrets the runbook lists are environment variables too, under their own names.
+A runbook uses the secrets of its own [workspace](workspaces.md).
 
 ## Step options
 

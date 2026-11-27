@@ -111,6 +111,7 @@ mod tests {
         Host {
             id: name.into(),
             name: name.into(),
+            workspaces: vec!["default".into()],
             hostname: format!("{name}.internal"),
             os: os.into(),
             arch: arch.into(),

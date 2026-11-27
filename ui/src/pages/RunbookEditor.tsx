@@ -27,6 +27,7 @@ import { when } from "../format";
 import { templates } from "../templates";
 import { go } from "../router";
 import { cleanNotification, NotificationsEditor } from "../components/Notifications";
+import { useFollowWorkspace } from "../session";
 
 const blank: RunbookInput = {
   name: "",
@@ -829,12 +830,15 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
   const [error, setError] = useState<string | null>(null);
   const vault = useData(() => api.secrets(), []);
   const others = useData(() => api.runbooks(), []);
+  const [workspaceOf, setWorkspaceOf] = useState<string>();
+  useFollowWorkspace(workspaceOf);
   const [onHosts, setOnHosts] = useState(false);
 
   useEffect(() => {
     if (!id) return;
     api.runbook(id).then(
       (rb) => {
+        setWorkspaceOf(rb.workspace);
         setInput({
           name: rb.name,
           description: rb.description,

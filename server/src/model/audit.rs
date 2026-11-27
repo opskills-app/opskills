@@ -15,6 +15,9 @@ pub struct AuditEvent {
     pub via: Option<String>,
     /// What, as `<area>.<verb>`: "runbook.update", "auth.sign_in_failed".
     pub action: String,
+    /// The workspace it happened in; none for server-wide changes like users and sign-ins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<AuditTarget>,
     /// A short note, like "role operator to editor". Never a secret value.

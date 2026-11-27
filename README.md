@@ -9,13 +9,14 @@ with live output, approvals and a full audit trail.
 
 Website: [opskills.app](https://opskills.app)
 
-> **Status:** v0.13.0 preview. Sign in, keep secrets in an encrypted vault, enroll
+> **Status:** v0.14.0 preview. Sign in, keep secrets in an encrypted vault, enroll
 > your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks with
 > inputs, retries, file copies and calls to other runbooks, and run them on the
 > server or on your hosts, by hand, on a schedule, from a webhook or with an API
 > token, with output streaming live to your browser, and hear how runs went by email
-> or in chat. Give each person their own user with a role (Viewer, Operator, Editor
-> or Admin), and see who changed what in the audit log. Workspaces are next.
+> or in chat. Give each team its own workspace, each person their own user with a
+> role in each workspace (Viewer, Operator, Editor or Admin), and see who changed what
+> in the audit log. A vault with folders is next.
 
 ## Install
 
@@ -33,7 +34,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.13.0
+  opskills/opskills:0.14.0
 docker logs opskills 2>&1 | grep 'Admin password'
 ```
 
@@ -45,13 +46,13 @@ use the included [`compose.yaml`](compose.yaml): `docker compose up -d`.
 ### Debian and Ubuntu
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.13.0/opskills_0.13.0_amd64.deb
-sudo apt install ./opskills_0.13.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.14.0/opskills_0.14.0_amd64.deb
+sudo apt install ./opskills_0.14.0_amd64.deb
 sudo systemctl start opskills
 sudo journalctl -u opskills | grep 'Admin password'
 ```
 
-Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.13.0_arm64.deb`
+Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.14.0_arm64.deb`
 on ARM servers (`dpkg --print-architecture` tells you which). All downloads and
 checksums are on the [releases page](https://github.com/opskills-app/opskills/releases/latest).
 The package installs a sandboxed systemd service that runs as the `opskills`
@@ -135,8 +136,8 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   the exact commands:
 
   ```bash
-  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.13.0_amd64.deb
-  sudo apt install ./opskills-agent_0.13.0_amd64.deb
+  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.14.0_amd64.deb
+  sudo apt install ./opskills-agent_0.14.0_amd64.deb
   sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
   sudo systemctl enable --now opskills-agent
   ```
@@ -175,15 +176,18 @@ The full guide is [docs/hosts.md](docs/hosts.md).
 - Every API call needs a signed-in session (an HttpOnly, SameSite=Strict cookie) or
   an API token. With a session, every change also needs the `X-OpSkills-Request: 1`
   header, which blocks cross-site request forgery.
-- Each user has a role (Viewer, Operator, Editor, Admin), checked on every request.
-  Every API route has an access rule; a route without one is refused. See
-  [Users and roles](docs/users.md).
+- Each user has a role in each workspace they belong to (Viewer, Operator, Editor,
+  Admin), checked on every request; server admins manage accounts and workspaces. Every
+  API route has an access rule; a route without one is refused, and anything in a
+  workspace you don't belong to answers 404. See [Users and roles](docs/users.md) and
+  [Workspaces](docs/workspaces.md).
 - API tokens (`osk_...`) are shown once and stored only as a SHA-256 hash. They can
-  expire, are revoked instantly, and can't manage tokens, users or sign-ins. A token
-  acts with its owner's current role, and runs record which token started them.
+  expire, are revoked instantly, and can't manage tokens, users, members or sign-ins. A
+  token acts with its owner's current roles, and runs record which token started them.
   Keep tokens in your CI's secret store.
 - Every change is written to the audit log with who made it and how (a user, a
-  token, a schedule, a webhook or an agent); admins read it on the **Audit log** page.
+  token, a schedule, a webhook or an agent) and its workspace; server admins and each
+  workspace's Admins read it on the **Audit log** page.
   Secret values never appear in it. See [Audit log](docs/audit.md).
 - Passwords are hashed with argon2id. Generated passwords (first start, new users,
   resets) must be replaced at the next sign-in. Failed sign-ins are slowed down.
@@ -243,16 +247,25 @@ curl -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" \
   https://ops.example.com/api/v1/runbooks/<id>/runs
 ```
 
+Lists and creates work in the workspace named by `?workspace=<id>`, or in Default
+without one ([Workspaces](docs/workspaces.md#api)).
+
+**API changes.** Until 1.0, a minor release can change the API, and every change that
+can break a script is listed under **Breaking changes** in its
+[release notes](docs/releases). From 1.0 on, a replaced field stays for at least one
+release before it's removed.
+
 
 | Endpoint | What it does |
 |---|---|
 | `GET /system` | Version, server ID, and whether setup is done (no sign-in needed) |
-| `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` | Sign in and out, and who you are, with your role |
+| `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` | Sign in and out, and who you are, with your workspaces and role in each |
 | `POST /auth/password` | Change your password: `{"current_password", "new_password"}`; signed-in sessions only |
 | `GET /me/tokens`, `POST /me/tokens`, `DELETE /me/tokens/{id}` | List, create (the value is returned once) and revoke your API tokens; signed-in sessions only |
-| `GET /users`, `POST /users`, `PUT`, `DELETE /users/{name}`, `POST /users/{name}/reset-password` | Manage users and roles (admins, sessions only); see [Users and roles](docs/users.md#api) |
-| `GET /tokens`, `DELETE /tokens/{id}` | Everyone's API tokens (admins, sessions only) |
-| `GET /audit?q=&action=&actor=&before=&limit=` | The audit log, newest first (admins); `next` continues it. See [Audit log](docs/audit.md) |
+| `GET /users`, `POST /users`, `PUT`, `DELETE /users/{name}`, `POST /users/{name}/reset-password` | Manage accounts and server admins (server admins, sessions only); see [Users and roles](docs/users.md#api) |
+| `GET /tokens`, `DELETE /tokens/{id}` | Everyone's API tokens (server admins, sessions only) |
+| `GET`, `POST /workspaces`, `GET`, `PUT`, `DELETE /workspaces/{slug}` | Workspaces; members under `/workspaces/{slug}/members`. See [Workspaces](docs/workspaces.md#api) |
+| `GET /audit?q=&action=&actor=&workspace=&before=&limit=` | The audit log, newest first (server admins); `next` continues it. `GET /workspaces/{slug}/audit` for a workspace's Admins. See [Audit log](docs/audit.md) |
 | `GET /runbooks`, `POST /runbooks` | List and create runbooks |
 | `GET`, `PUT`, `DELETE /runbooks/{id}` | Read, replace and delete a runbook |
 | `GET /runbooks/{id}/schedules` | Each schedule's next times, last run and last error |
@@ -274,7 +287,8 @@ curl -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" \
 | `GET /secrets`, `POST /secrets` | List secrets (never values) and add one |
 | `PUT`, `DELETE /secrets/{name}` | Replace a value or edit a secret, and delete one |
 | `GET /hosts?filter=` | List hosts, starting with the OpSkills server itself, or the enrolled hosts a filter matches |
-| `PUT`, `DELETE /hosts/{id}` | Rename or tag a host, and remove one |
+| `PUT`, `DELETE /hosts/{id}` | Rename or tag a host, and remove one (Admin in all its workspaces) |
+| `PUT`, `DELETE /hosts/{id}/workspaces/{slug}` | Share a host with another workspace, or take it out of one |
 | `POST /hosts/enrollment-tokens` | Create a one-time enrollment token |
 | `GET /hosts/packages` | Agent packages for this version |
 | `GET /downloads/{file}` | Download an agent package (no sign-in needed) |

@@ -1,8 +1,10 @@
-//! Users and their roles.
+//! Users, server admins, and each user's role in the workspaces they belong to.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// What a user may do. Each role includes everything the ones before it may do.
+/// What a user may do in a workspace. Each role includes everything the ones before it may do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -13,7 +15,7 @@ pub enum Role {
     /// Also edits runbooks (with their schedules, webhooks and notifications) and the vault.
     /// Anyone who can edit a runbook can run any command as root on the hosts it targets.
     Editor,
-    /// Also manages hosts, users, email settings and everyone's API tokens.
+    /// Also manages the workspace's hosts and members.
     Admin,
 }
 
@@ -35,7 +37,13 @@ pub const FIRST_ADMIN: &str = "admin";
 pub struct User {
     /// The sign-in name; also how runs and API tokens refer to the user.
     pub name: String,
-    pub role: Role,
+    /// Server admins manage accounts, workspaces, email settings and everyone's API
+    /// tokens, and act as Admin in every workspace.
+    #[serde(default)]
+    pub admin: bool,
+    /// The user's role in each workspace they belong to, by workspace id.
+    #[serde(default)]
+    pub workspaces: BTreeMap<String, Role>,
     pub created_at: u64,
     /// Set for a generated password: the user must choose their own before doing anything else.
     #[serde(default)]
@@ -52,6 +60,14 @@ pub struct StoredUser {
     pub user: User,
     /// `argon2id$v=19$m=19456,t=2,p=1$<salt hex>$<hash hex>`
     pub password_hash: String,
+}
+
+impl User {
+    /// What the user may do in a workspace: Admin for server admins, otherwise their
+    /// role there, or nothing if they don't belong to it.
+    pub fn role_in(&self, workspace: &str) -> Option<Role> {
+        if self.admin { Some(Role::Admin) } else { self.workspaces.get(workspace).copied() }
+    }
 }
 
 pub const MIN_PASSWORD: usize = 12;
@@ -91,6 +107,16 @@ mod tests {
     fn roles_are_ordered() {
         assert!(Role::Viewer < Role::Operator && Role::Operator < Role::Editor && Role::Editor < Role::Admin);
         assert_eq!(serde_json::to_string(&Role::Operator).unwrap(), "\"operator\"");
+    }
+
+    #[test]
+    fn roles_are_per_workspace_and_server_admins_have_all() {
+        let mut u = User { name: "a".into(), admin: false, workspaces: BTreeMap::new(), created_at: 0, must_change_password: false, last_sign_in_at: None, password_changed_at: None };
+        u.workspaces.insert("ops".into(), Role::Operator);
+        assert_eq!(u.role_in("ops"), Some(Role::Operator));
+        assert_eq!(u.role_in("payments"), None);
+        u.admin = true;
+        assert_eq!(u.role_in("payments"), Some(Role::Admin));
     }
 
     #[test]

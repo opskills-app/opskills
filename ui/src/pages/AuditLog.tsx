@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ScrollText } from "lucide-react";
-import { api, type AuditEvent } from "../api";
+import { api, type AuditEvent, type AuditPage } from "../api";
+import { useIsServerAdmin, useMe, useWorkspace } from "../session";
 import { timeAgo, when } from "../format";
 import { Avatar, Button, Card, EmptyState, ErrorNote, PageHeader, SearchField } from "../components/ui";
 
@@ -14,6 +15,13 @@ const LABELS: Record<string, string> = {
   "user.role_change": "Changed a role",
   "user.password_reset": "Reset a password",
   "user.delete": "Removed a user",
+  "user.admin_change": "Changed a server admin",
+  "workspace.create": "Added a workspace",
+  "workspace.update": "Renamed a workspace",
+  "workspace.delete": "Deleted a workspace",
+  "member.add": "Added a member",
+  "member.role_change": "Changed a member's role",
+  "member.remove": "Removed a member",
   "token.create": "Created an API token",
   "token.revoke": "Revoked an API token",
   "runbook.create": "Created a runbook",
@@ -33,6 +41,8 @@ const LABELS: Record<string, string> = {
   "host.enroll": "Enrolled a host",
   "host.update": "Renamed or tagged a host",
   "host.delete": "Removed a host",
+  "host.share": "Shared a host into a workspace",
+  "host.unshare": "Took a host out of a workspace",
   "settings.email_update": "Changed email settings",
   "settings.email_delete": "Turned email off",
 };
@@ -41,6 +51,8 @@ const AREAS: [string, string][] = [
   ["", "Everything"],
   ["auth.", "Sign-ins"],
   ["user.", "Users"],
+  ["workspace.", "Workspaces"],
+  ["member.", "Members"],
   ["token.", "API tokens"],
   ["runbook.", "Runbooks"],
   ["run.", "Runs"],
@@ -58,8 +70,17 @@ function targetHref(e: AuditEvent): string | null {
   return null;
 }
 
-/** Who changed what, and when, for admins. */
+/** Who changed what, and when: everything for server admins, one workspace for its Admins. */
 export function AuditLogPage() {
+  const serverAdmin = useIsServerAdmin();
+  const me = useMe();
+  const workspace = useWorkspace();
+  // Server admins choose a workspace, or "" for everything including server-wide events.
+  const [scope, setScope] = useState("");
+  const load = (p: { action: string; q: string; before?: string }): Promise<AuditPage> =>
+    serverAdmin ? api.audit({ ...p, workspace: scope }) : api.workspaceAudit(workspace?.slug ?? "default", p);
+  const names = Object.fromEntries((me?.workspaces ?? []).map((w) => [w.slug, w.name]));
+  const showWhere = serverAdmin && scope === "";
   const [area, setArea] = useState("");
   const [q, setQ] = useState("");
   const [query, setQuery] = useState("");
@@ -78,8 +99,7 @@ export function AuditLogPage() {
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    api
-      .audit({ action: area, q: query })
+    load({ action: area, q: query })
       .then((page) => {
         if (!alive) return;
         setEvents(page.events);
@@ -92,13 +112,13 @@ export function AuditLogPage() {
     return () => {
       alive = false;
     };
-  }, [area, query]);
+  }, [area, query, scope]);
 
   async function more() {
     if (!next) return;
     setLoading(true);
     try {
-      const page = await api.audit({ action: area, q: query, before: next });
+      const page = await load({ action: area, q: query, before: next });
       setEvents((list) => [...list, ...page.events]);
       setNext(page.next);
     } catch (e) {
@@ -110,9 +130,22 @@ export function AuditLogPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Audit log" subtitle={`Who changed what, and when. Reading isn't recorded, and secret values never are.${days ? ` Kept for ${days} days.` : ""}`} />
+      <PageHeader
+        title="Audit log"
+        subtitle={`${serverAdmin ? "Who changed what, and when, in every workspace and on the server." : `Who changed what in ${workspace?.name ?? "this workspace"}, and when.`} Reading isn't recorded, and secret values never are.${days ? ` Kept for ${days} days.` : ""}`}
+      />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <SearchField value={q} onChange={setQ} placeholder="Search people, runbooks, hosts..." className="sm:w-80" />
+        {serverAdmin && (
+          <select aria-label="Workspace" value={scope} onChange={(e) => setScope(e.target.value)} className="h-11 rounded-xl bg-surface px-3 text-sm shadow-soft">
+            <option value="">All workspaces and the server</option>
+            {(me?.workspaces ?? []).map((w) => (
+              <option key={w.slug} value={w.slug}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+        )}
         <select aria-label="Area" value={area} onChange={(e) => setArea(e.target.value)} className="h-11 rounded-xl bg-surface px-3 text-sm shadow-soft">
           {AREAS.map(([v, label]) => (
             <option key={v} value={v}>
@@ -138,6 +171,7 @@ export function AuditLogPage() {
                   <th className="px-3 py-3 font-medium">Who</th>
                   <th className="px-3 py-3 font-medium">What</th>
                   <th className="px-3 py-3 font-medium">On</th>
+                  {showWhere && <th className="px-3 py-3 font-medium">Where</th>}
                   <th className="px-6 py-3 font-medium">Note</th>
                 </tr>
               </thead>
@@ -171,6 +205,7 @@ export function AuditLogPage() {
                           ))}
                         {e.target && <span className="block text-xs text-muted">{e.target.kind}</span>}
                       </td>
+                      {showWhere && <td className="px-3 py-3 text-muted">{e.workspace ? (names[e.workspace] ?? e.workspace) : "Server"}</td>}
                       <td className="px-6 py-3 text-muted">{e.detail}</td>
                     </tr>
                   );

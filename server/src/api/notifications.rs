@@ -13,7 +13,7 @@ use crate::model::Role;
 use crate::audit::{self, By};
 use crate::model::AuditTarget;
 use crate::web::AppState;
-use super::{Access, ApiError, ApiResult, CurrentUser, bad};
+use super::{Access, ApiError, ApiResult, CurrentUser, InWorkspace, Scope, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -24,12 +24,12 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
 }
 
 pub(super) const ACCESS: &[(&str, &str, Access)] = &[
-    ("GET", "/notifications/settings", Access::Role(Role::Viewer)),
-    ("GET", "/settings/email", Access::Role(Role::Admin)),
-    ("PUT", "/settings/email", Access::Role(Role::Admin)),
-    ("DELETE", "/settings/email", Access::Role(Role::Admin)),
-    ("POST", "/notifications/test", Access::Role(Role::Editor)),
-    ("GET", "/runs/{id}/notifications", Access::Role(Role::Viewer)),
+    ("GET", "/notifications/settings", Access::User),
+    ("GET", "/settings/email", Access::ServerAdmin),
+    ("PUT", "/settings/email", Access::ServerAdmin),
+    ("DELETE", "/settings/email", Access::ServerAdmin),
+    ("POST", "/notifications/test", Access::Role(Role::Editor, Scope::Query)),
+    ("GET", "/runs/{id}/notifications", Access::Role(Role::Viewer, Scope::Run)),
 ];
 
 async fn notification_settings(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -52,14 +52,15 @@ async fn put_email_settings(State(st): State<Arc<AppState>>, Extension(user): Ex
     }
     let mut s: crate::model::EmailSettings = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid email settings: {e}")))?;
     s.validate().map_err(bad)?;
+    // Email is server-wide; its password is a secret of the default workspace.
     if let Some(name) = &s.password_secret
-        && st.store.secret(name)?.is_none()
+        && st.store.secret(crate::model::DEFAULT_WORKSPACE, name)?.is_none()
     {
-        return Err(bad(format!("The vault has no secret named {name}. Add the password to the vault first.")));
+        return Err(bad(format!("The Default workspace's vault has no secret named {name}. Add the password there first.")));
     }
     st.store.put_email_settings(Some(&s))?;
     tracing::info!(smtp_host = %s.smtp_host, "email settings saved");
-    audit::record(&st, &By::user(&user), "settings.email_update", Some(AuditTarget::new("settings", "email", "Email")), Some(format!("SMTP {}:{}, from {}", s.smtp_host, s.smtp_port, s.from)));
+    audit::record(&st, &By::user(&user), None, "settings.email_update", Some(AuditTarget::new("settings", "email", "Email")), Some(format!("SMTP {}:{}, from {}", s.smtp_host, s.smtp_port, s.from)));
     Ok(Json(json!({ "source": "settings", "settings": s })))
 }
 
@@ -68,7 +69,7 @@ async fn delete_email_settings(State(st): State<Arc<AppState>>, Extension(user):
         return Err(ApiError::new(StatusCode::CONFLICT, "Email is set in the server config file. Remove it there."));
     }
     st.store.put_email_settings(None)?;
-    audit::record(&st, &By::user(&user), "settings.email_delete", Some(AuditTarget::new("settings", "email", "Email")), Some("email turned off".into()));
+    audit::record(&st, &By::user(&user), None, "settings.email_delete", Some(AuditTarget::new("settings", "email", "Email")), Some("email turned off".into()));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -88,7 +89,7 @@ struct TestTarget {
 }
 
 /// Send a test message to a target, so people can check it before relying on it.
-async fn test_notification(State(st): State<Arc<AppState>>, body: String) -> ApiResult<Json<serde_json::Value>> {
+async fn test_notification(State(st): State<Arc<AppState>>, Extension(InWorkspace(ws)): Extension<InWorkspace>, body: String) -> ApiResult<Json<serde_json::Value>> {
     let t: TestTarget = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid target: {e}")))?;
     let mut n = crate::model::Notification {
         id: String::new(),
@@ -106,13 +107,13 @@ async fn test_notification(State(st): State<Arc<AppState>>, body: String) -> Api
         return Err(ApiError::new(StatusCode::CONFLICT, "Email isn't set up on this server yet. Set it up under Settings > Email."));
     }
     for name in n.secret_refs() {
-        if st.store.secret(&name)?.is_none() {
+        if st.store.secret(&ws, &name)?.is_none() {
             return Err(bad(format!("The vault has no secret named {name}.")));
         }
     }
     let notifier = st.notifier.clone();
     let target = n.target_label();
-    match tokio::task::spawn_blocking(move || notifier.send_test(&n)).await.map_err(|e| anyhow::anyhow!("test send: {e}"))? {
+    match tokio::task::spawn_blocking(move || notifier.send_test(&n, &ws)).await.map_err(|e| anyhow::anyhow!("test send: {e}"))? {
         Ok(()) => Ok(Json(json!({ "sent": true, "target": target }))),
         Err(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, format!("Sending to {target} failed: {e}"))),
     }

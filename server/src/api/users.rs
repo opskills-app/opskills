@@ -1,6 +1,8 @@
-//! Users and roles, for admins. New users and password resets get a generated password
-//! that is shown once; the user must replace it at their next sign-in.
+//! User accounts, for server admins. New users and password resets get a generated
+//! password that is shown once; the user must replace it at their next sign-in. What a
+//! user may do inside a workspace is set by its members (see `workspaces.rs`).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -11,11 +13,10 @@ use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::audit::{self, By};
 use crate::auth;
 use crate::firststart::random_password;
-use crate::model::{Role, StoredUser, User, now_ms, validate_username};
-use crate::audit::{self, By};
-use crate::model::AuditTarget;
+use crate::model::{AuditTarget, Role, StoredUser, User, now_ms, validate_username};
 use crate::web::AppState;
 use super::{Access, ApiError, ApiResult, CurrentUser, bad};
 
@@ -27,11 +28,11 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
 }
 
 pub(super) const ACCESS: &[(&str, &str, Access)] = &[
-    ("GET", "/users", Access::SessionRole(Role::Admin)),
-    ("POST", "/users", Access::SessionRole(Role::Admin)),
-    ("PUT", "/users/{name}", Access::SessionRole(Role::Admin)),
-    ("DELETE", "/users/{name}", Access::SessionRole(Role::Admin)),
-    ("POST", "/users/{name}/reset-password", Access::SessionRole(Role::Admin)),
+    ("GET", "/users", Access::SessionServerAdmin),
+    ("POST", "/users", Access::SessionServerAdmin),
+    ("PUT", "/users/{name}", Access::SessionServerAdmin),
+    ("DELETE", "/users/{name}", Access::SessionServerAdmin),
+    ("POST", "/users/{name}/reset-password", Access::SessionServerAdmin),
 ];
 
 const MAX_USERS: usize = 500;
@@ -45,7 +46,12 @@ async fn list_users(State(st): State<Arc<AppState>>) -> ApiResult<Json<Vec<User>
 #[serde(deny_unknown_fields)]
 struct NewUser {
     name: String,
-    role: Role,
+    /// A server admin.
+    #[serde(default)]
+    admin: bool,
+    /// Workspaces to add the user to, with their role in each.
+    #[serde(default)]
+    workspaces: BTreeMap<String, Role>,
 }
 
 /// A generated password and its hash.
@@ -54,6 +60,16 @@ async fn generated_password() -> ApiResult<(String, String)> {
     let p = password.clone();
     let hash = tokio::task::spawn_blocking(move || auth::hash_password(&p)).await.map_err(|e| anyhow::anyhow!("{e}"))??;
     Ok((password, hash))
+}
+
+/// "server admin", or "editor in ops, viewer in payments".
+fn describe(u: &User) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if u.admin {
+        parts.push("server admin".into());
+    }
+    parts.extend(u.workspaces.iter().map(|(w, r)| format!("{} in {w}", r.as_str())));
+    if parts.is_empty() { "no workspaces yet".into() } else { parts.join(", ") }
 }
 
 async fn create_user(State(st): State<Arc<AppState>>, Extension(me): Extension<CurrentUser>, body: String) -> ApiResult<Response> {
@@ -66,39 +82,49 @@ async fn create_user(State(st): State<Arc<AppState>>, Extension(me): Extension<C
     if users.len() >= MAX_USERS {
         return Err(ApiError::new(StatusCode::CONFLICT, format!("There can be at most {MAX_USERS} users.")));
     }
+    for slug in input.workspaces.keys() {
+        if st.store.workspace(slug)?.is_none() {
+            return Err(bad(format!("There is no workspace {slug:?}.")));
+        }
+    }
     let (password, password_hash) = generated_password().await?;
-    let user = User { name, role: input.role, created_at: now_ms(), must_change_password: true, last_sign_in_at: None, password_changed_at: None };
+    let user = User { name, admin: input.admin, workspaces: input.workspaces, created_at: now_ms(), must_change_password: true, last_sign_in_at: None, password_changed_at: None };
     st.store.put_user(&StoredUser { user: user.clone(), password_hash })?;
-    tracing::info!(user = %user.name, role = user.role.as_str(), by = %me.user, "user created");
-    audit::record(&st, &By::user(&me), "user.create", Some(AuditTarget::new("user", &user.name, &user.name)), Some(format!("role {}", user.role.as_str())));
+    tracing::info!(user = %user.name, admin = user.admin, by = %me.user, "user created");
+    audit::record(&st, &By::user(&me), None, "user.create", Some(AuditTarget::new("user", &user.name, &user.name)), Some(describe(&user)));
+    for (slug, role) in &user.workspaces {
+        audit::record(&st, &By::user(&me), Some(slug), "member.add", Some(AuditTarget::new("user", &user.name, &user.name)), Some(format!("role {}", role.as_str())));
+    }
     // The only time the password is shown.
     Ok((StatusCode::CREATED, Json(json!({ "user": user, "password": password }))).into_response())
 }
 
-/// Admins left if `name` stopped being one.
-fn other_admins(users: &[User], name: &str) -> usize {
-    users.iter().filter(|u| u.role == Role::Admin && u.name != name).count()
+/// Server admins left if `name` stopped being one.
+fn other_server_admins(users: &[User], name: &str) -> usize {
+    users.iter().filter(|u| u.admin && u.name != name).count()
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UserUpdate {
-    role: Role,
+    admin: bool,
 }
 
+/// Make a user a server admin, or not.
 async fn update_user(State(st): State<Arc<AppState>>, Extension(me): Extension<CurrentUser>, Path(name): Path<String>, body: String) -> ApiResult<Json<User>> {
     let input: UserUpdate = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid change: {e}")))?;
     let mut stored = st.store.user(&name)?.ok_or_else(|| ApiError::not_found("User"))?;
-    if input.role != stored.user.role {
+    if input.admin != stored.user.admin {
         if name == me.user {
-            return Err(ApiError::new(StatusCode::CONFLICT, "You can't change your own role. Ask another admin."));
+            return Err(ApiError::new(StatusCode::CONFLICT, "You can't change whether you're a server admin. Ask another server admin."));
         }
-        if stored.user.role == Role::Admin && other_admins(&st.store.users()?, &name) == 0 {
-            return Err(ApiError::new(StatusCode::CONFLICT, "There must always be at least one admin."));
+        if stored.user.admin && other_server_admins(&st.store.users()?, &name) == 0 {
+            return Err(ApiError::new(StatusCode::CONFLICT, "There must always be at least one server admin."));
         }
-        tracing::info!(user = %name, from = stored.user.role.as_str(), to = input.role.as_str(), by = %me.user, "role changed");
-        audit::record(&st, &By::user(&me), "user.role_change", Some(AuditTarget::new("user", &name, &name)), Some(format!("role {} to {}", stored.user.role.as_str(), input.role.as_str())));
-        stored.user.role = input.role;
+        let what = if input.admin { "made a server admin" } else { "no longer a server admin" };
+        tracing::info!(user = %name, admin = input.admin, by = %me.user, "server admin changed");
+        audit::record(&st, &By::user(&me), None, "user.admin_change", Some(AuditTarget::new("user", &name, &name)), Some(what.into()));
+        stored.user.admin = input.admin;
         st.store.put_user(&stored)?;
     }
     Ok(Json(stored.user))
@@ -115,20 +141,20 @@ async fn reset_password(State(st): State<Arc<AppState>>, Extension(me): Extensio
     st.store.put_user(&stored)?;
     st.store.delete_sessions_of(&name, None)?;
     tracing::info!(user = %name, by = %me.user, "password reset");
-    audit::record(&st, &By::user(&me), "user.password_reset", Some(AuditTarget::new("user", &name, &name)), Some("signed out; must choose a new password".into()));
+    audit::record(&st, &By::user(&me), None, "user.password_reset", Some(AuditTarget::new("user", &name, &name)), Some("signed out; must choose a new password".into()));
     Ok(Json(json!({ "user": stored.user, "password": password })))
 }
 
 async fn delete_user(State(st): State<Arc<AppState>>, Extension(me): Extension<CurrentUser>, Path(name): Path<String>) -> ApiResult<StatusCode> {
     if name == me.user {
-        return Err(ApiError::new(StatusCode::CONFLICT, "You can't remove yourself. Ask another admin."));
+        return Err(ApiError::new(StatusCode::CONFLICT, "You can't remove yourself. Ask another server admin."));
     }
     let stored = st.store.user(&name)?.ok_or_else(|| ApiError::not_found("User"))?;
-    if stored.user.role == Role::Admin && other_admins(&st.store.users()?, &name) == 0 {
-        return Err(ApiError::new(StatusCode::CONFLICT, "There must always be at least one admin."));
+    if stored.user.admin && other_server_admins(&st.store.users()?, &name) == 0 {
+        return Err(ApiError::new(StatusCode::CONFLICT, "There must always be at least one server admin."));
     }
     st.store.delete_user(&name)?;
     tracing::info!(user = %name, by = %me.user, "user removed, with their sessions and API tokens");
-    audit::record(&st, &By::user(&me), "user.delete", Some(AuditTarget::new("user", &name, &name)), Some(format!("was {}; sessions and API tokens ended", stored.user.role.as_str())));
+    audit::record(&st, &By::user(&me), None, "user.delete", Some(AuditTarget::new("user", &name, &name)), Some(format!("was {}; sessions and API tokens ended", describe(&stored.user))));
     Ok(StatusCode::NO_CONTENT)
 }
