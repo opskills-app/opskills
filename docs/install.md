@@ -67,6 +67,9 @@ What each part does:
 docker logs opskills 2>&1 | grep 'Admin password'
 ```
 
+`opskills` is the container's name from Step 3. If you named it differently, use that
+name instead; `docker ps` lists your containers.
+
 The password is printed **only on the first start**. You sign in with it, so
 store it in your password manager.
 
@@ -375,6 +378,13 @@ own mailbox or app password. After changing the config file, restart OpSkills.
 
 **Port 8080 is already in use.** Pick another port: `-p 127.0.0.1:9000:8080` for
 Docker, or `listen = "127.0.0.1:9000"` in the config file for the package.
+
+**The password command prints nothing.**
+- The name after `docker logs` must be your container's name. `docker ps` lists them;
+  with a wrong name, `docker logs` says `No such container`.
+- The password is printed only when the data folder or volume is new. If you started
+  with a volume from an earlier install, sign in with the password you saved then, or
+  reset it as below.
 
 **I lost the admin password.** Delete `admin.hash` and restart; a new password is
 printed once, and everyone who was signed in is signed out.
