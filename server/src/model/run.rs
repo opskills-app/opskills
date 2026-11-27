@@ -78,6 +78,10 @@ pub struct Run {
     /// Hosts in the order they run.
     #[serde(default)]
     pub hosts: Vec<RunHost>,
+    /// Targeted hosts left out because nothing can reach them yet (listed by an
+    /// inventory source, without the agent).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_hosts: Vec<String>,
     pub steps: Vec<StepResult>,
     pub error: Option<String>,
     pub log_lines: u64,
@@ -100,7 +104,9 @@ impl Run {
         let mut out: Vec<RunHost> = Vec::new();
         for s in &self.steps {
             if !ok(s) && !out.iter().any(|h| h.id == s.host_id) {
-                out.push(RunHost { id: s.host_id.clone(), name: s.host_name.clone() });
+                // A retry uses the attributes the host had when the run started.
+                let attributes = self.hosts.iter().find(|h| h.id == s.host_id).map(|h| h.attributes.clone()).unwrap_or_default();
+                out.push(RunHost { id: s.host_id.clone(), name: s.host_name.clone(), attributes });
             }
         }
         out
@@ -119,6 +125,9 @@ fn local_name() -> String {
 pub struct RunHost {
     pub id: String,
     pub name: String,
+    /// The host's attributes when the run started, for `{{ host.attr.<key> }}`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attributes: BTreeMap<String, String>,
 }
 
 impl Run {
@@ -165,6 +174,7 @@ impl Run {
                 })
                 .collect(),
             hosts,
+            skipped_hosts: vec![],
             error: None,
             log_lines: 0,
             parent: None,

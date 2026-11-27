@@ -69,7 +69,7 @@ async fn create_workspace(State(st): State<Arc<AppState>>, Extension(me): Extens
     if st.store.workspace(&slug)?.is_some() {
         return Err(ApiError::new(StatusCode::CONFLICT, format!("There is already a workspace {slug:?}.")));
     }
-    let ws = Workspace { slug, name, description, created_at: now_ms() };
+    let ws = Workspace { slug, name, description, created_at: now_ms(), tag_rules: vec![] };
     st.store.put_workspace(&ws)?;
     tracing::info!(workspace = %ws.slug, by = %me.user, "workspace created");
     audit::record(&st, &By::user(&me), Some(&ws.slug), "workspace.create", Some(AuditTarget::new("workspace", &ws.slug, &ws.name)), None);

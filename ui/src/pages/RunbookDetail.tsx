@@ -241,12 +241,14 @@ function RunOnSummary({ rb, hosts }: { rb: Runbook; hosts: Host[] }) {
   const tagged = rb.targets.tags.map((t) => `tag ${t}`);
   const filtered = rb.targets.filter?.trim() ? [`hosts matching ${rb.targets.filter}`] : [];
   // The server knows which hosts a runbook targets, filter included: they list it as a user.
-  const count = hosts.filter((h) => (h.builtin ? rb.targets.hosts.includes(LOCAL_HOST_ID) : h.used_by.some((u) => u.id === rb.id))).length;
+  const targeted = hosts.filter((h) => (h.builtin ? rb.targets.hosts.includes(LOCAL_HOST_ID) : h.used_by.some((u) => u.id === rb.id)));
+  const count = targeted.filter((h) => h.reach !== "listed").length;
+  const listed = targeted.length - count;
   return (
     <span className="text-right">
       {[...named, ...tagged, ...filtered].join(", ")}
       <a href="#/hosts" className="block text-xs text-muted hover:text-accent">
-        {count} host{count === 1 ? "" : "s"} now
+        {count} host{count === 1 ? "" : "s"} now{listed ? `, ${listed} listed only (skipped)` : ""}
       </a>
     </span>
   );

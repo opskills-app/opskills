@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Check, CircleCheck, Copy, Download, HardDrive, LogOut, Pencil, Plus, Server, ServerCog, ServerOff, Share2, Trash2, TriangleAlert } from "lucide-react";
+import { Check, CircleCheck, Copy, Download, HardDrive, ListTree, LogOut, Pencil, Plus, Server, ServerCog, ServerOff, Share2, Trash2, TriangleAlert } from "lucide-react";
 import { api, useData, type AgentPackage, type Host } from "../api";
 import { timeAgo } from "../format";
 import { Badge, Button, Card, cx, ErrorNote, IconBubble, Modal, PageHeader, SearchField, Tag, TableHeading } from "../components/ui";
 import { useCan, useMe, useWorkspace } from "../session";
+import { InventorySources, TagRules } from "./Inventory";
 
 type Family = "deb" | "rpm";
 type Arch = "amd64" | "arm64";
@@ -294,7 +295,15 @@ function AddHost({ packages, serverUrl, onClose, onEnrolled }: { packages: Agent
 
 function EditHost({ host, onClose, onSaved }: { host: Host; onClose: () => void; onSaved: () => void }) {
   const [name, setName] = useState(host.name);
-  const [tags, setTags] = useState(host.tags.join(", "));
+  // Only what an Admin set: tags and attributes from sources and rules aren't saved here.
+  const [tags, setTags] = useState(host.own_tags.join(", "));
+  const [attrs, setAttrs] = useState(
+    Object.entries(host.own_attributes)
+      .map(([k, v]) => `${k}=${v}`)
+      .join("\n"),
+  );
+  const fromElsewhere = host.tags.filter((t) => !host.own_tags.includes(t));
+  const sourceAttrs = Object.entries(host.attributes ?? {}).filter(([k]) => !(k in host.own_attributes));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -303,12 +312,21 @@ function EditHost({ host, onClose, onSaved }: { host: Host; onClose: () => void;
     setBusy(true);
     setError(null);
     try {
+      const attributes: Record<string, string> = {};
+      for (const line of attrs.split("\n")) {
+        const t = line.trim();
+        if (!t) continue;
+        const i = t.indexOf("=");
+        if (i < 1) throw new Error(`"${t}" is not key=value.`);
+        attributes[t.slice(0, i).trim()] = t.slice(i + 1).trim();
+      }
       await api.updateHost(host.id, {
         name,
         tags: tags
           .split(",")
           .map((t) => t.trim())
           .filter(Boolean),
+        attributes,
       });
       onSaved();
     } catch (err) {
@@ -346,7 +364,28 @@ function EditHost({ host, onClose, onSaved }: { host: Host; onClose: () => void;
             Tags
           </label>
           <input id="edit-host-tags" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="web, prod" className={`mt-2 ${field}`} />
-          <p className="mt-1.5 text-xs text-muted">Runbooks can target every host with a tag. Separate tags with commas.</p>
+          <p className="mt-1.5 text-xs text-muted">
+            Runbooks can target every host with a tag. Separate tags with commas.
+            {fromElsewhere.length > 0 && <> From sources and tag rules: {fromElsewhere.join(", ")}.</>}
+          </p>
+        </div>
+        <div>
+          <label className="text-sm font-medium" htmlFor="edit-host-attrs">
+            Attributes
+          </label>
+          <textarea
+            id="edit-host-attrs"
+            rows={3}
+            value={attrs}
+            onChange={(e) => setAttrs(e.target.value)}
+            placeholder={"env=prod\nregion=eu-west-1"}
+            spellCheck={false}
+            className="mt-2 w-full rounded-xl bg-surface-2 px-4 py-3 font-mono text-xs outline-none focus:ring-2 focus:ring-accent"
+          />
+          <p className="mt-1.5 text-xs text-muted">
+            One key=value per line. Filters use them (env:prod) and commands too ({"{{ host.attr.env }}"}). Yours win over a source's.
+            {sourceAttrs.length > 0 && <> From sources: {sourceAttrs.map(([k, v]) => `${k}=${v}`).join(", ")}.</>}
+          </p>
         </div>
       </form>
     </Modal>
@@ -470,9 +509,16 @@ export function HostsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const all = useMemo(() => hosts.data ?? [], [hosts.data]);
-  const enrolled = all.filter((h) => !h.builtin);
+  const enrolled = all.filter((h) => !h.builtin && h.reach !== "listed");
+  const listed = all.filter((h) => h.reach === "listed").length;
   const online = enrolled.filter((h) => h.online).length;
-  const list = all.filter((h) => `${h.name} ${h.hostname} ${h.os} ${h.arch} ${h.tags.join(" ")}`.toLowerCase().includes(q.toLowerCase()));
+  const list = all.filter((h) =>
+    `${h.name} ${h.hostname} ${h.os} ${h.arch} ${h.tags.join(" ")} ${Object.entries(h.attributes ?? {})
+      .map(([k, v]) => `${k}:${v}`)
+      .join(" ")}`
+      .toLowerCase()
+      .includes(q.toLowerCase()),
+  );
   const reload = hosts.reload;
 
   async function unshare(h: Host) {
@@ -501,7 +547,7 @@ export function HostsPage() {
     <div className="space-y-8">
       <PageHeader
         title="Hosts"
-        subtitle="Machines your runbooks run on. Each one runs the OpSkills agent, which connects to this server."
+        subtitle="Machines your runbooks run on. Each one runs the OpSkills agent, which connects to this server. Inventory sources can list more hosts and add attributes."
         actions={
           admin && (
             <Button variant="primary" onClick={() => setAdding(true)}>
@@ -532,10 +578,13 @@ export function HostsPage() {
       {hosts.error && <ErrorNote>{hosts.error}</ErrorNote>}
 
       <Card className="overflow-hidden">
-        <TableHeading title="All hosts" subtitle={enrolled.length ? `${enrolled.length} enrolled, ${online} online` : "Add a host to run runbooks on other machines"}>
+        <TableHeading
+          title="All hosts"
+          subtitle={enrolled.length || listed ? `${enrolled.length} enrolled, ${online} online${listed ? `, ${listed} listed by sources` : ""}` : "Add a host to run runbooks on other machines"}
+        >
           <SearchField value={q} onChange={setQ} />
         </TableHeading>
-        <div className="hidden grid-cols-[minmax(0,1.3fr)_minmax(0,1.1fr)_minmax(0,0.8fr)_100px_110px_150px] gap-6 border-y border-line px-10 py-4 text-sm font-medium text-muted lg:grid">
+        <div className="hidden grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)_100px_100px_150px] gap-6 border-y border-line px-10 py-4 text-sm font-medium text-muted lg:grid">
           <span>Host</span>
           <span>System</span>
           <span>Tags</span>
@@ -546,13 +595,20 @@ export function HostsPage() {
         <ul className="px-6 pb-2 sm:px-10">
           {list.length === 0 && <li className="py-10 text-center text-sm text-muted">{hosts.loading ? "Loading..." : "No hosts match."}</li>}
           {list.map((h) => (
-            <li key={h.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 gap-y-2 border-b border-line py-4 text-sm last:border-0 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,0.7fr)_90px_100px_150px]">
+            <li key={h.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 gap-y-2 border-b border-line py-4 text-sm last:border-0 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)_100px_100px_150px]">
               <span className="flex min-w-0 items-center gap-3">
-                <span className={cx("flex size-9 shrink-0 items-center justify-center rounded-full", h.builtin ? "bg-accent text-accent-ink" : "bg-accent-soft text-accent")}>
-                  <Server className="size-4" />
+                <span className={cx("flex size-9 shrink-0 items-center justify-center rounded-full", h.builtin ? "bg-accent text-accent-ink" : h.reach === "listed" ? "bg-surface-2 text-muted" : "bg-accent-soft text-accent")}>
+                  {h.reach === "listed" ? <ListTree className="size-4" /> : <Server className="size-4" />}
                 </span>
                 <span className="min-w-0">
-                  <span className="block truncate font-medium">{h.name}</span>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate font-medium">{h.name}</span>
+                    {h.stale && (
+                      <span title="A source that lists it failed its last refresh, so this may be out of date. See Inventory sources." className="shrink-0 text-amber-600 dark:text-amber-300">
+                        <TriangleAlert className="size-3.5" aria-label="May be out of date" />
+                      </span>
+                    )}
+                  </span>
                   <span className="block truncate text-xs text-muted">
                     {h.builtin ? `Built in · ${h.hostname}` : h.hostname}
                     {!h.builtin && (h.workspaces.length > 1 || h.shared_elsewhere) && (
@@ -561,25 +617,50 @@ export function HostsPage() {
                         · Shared
                       </span>
                     )}
-                    <span className="lg:hidden"> · {h.os}</span>
+                    {h.reach !== "listed" && <span className="lg:hidden"> · {h.os}</span>}
                   </span>
                 </span>
               </span>
               <span className="hidden min-w-0 lg:block">
-                <span className="block truncate">{h.os || "Unknown"}</span>
-                <span className="block truncate text-xs text-muted">
-                  {h.arch} · agent {h.agent_version}
+                {h.reach === "listed" ? (
+                  <>
+                    <span className="block truncate">Listed only</span>
+                    <span className="block truncate text-xs text-muted">from {h.sources.map((x) => x.name).join(", ")}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="block truncate">{h.os || "Unknown"}</span>
+                    <span className="block truncate text-xs text-muted">
+                      {h.arch} · agent {h.agent_version}
+                      {h.sources.length > 0 && <> · also in {h.sources.map((x) => x.name).join(", ")}</>}
+                    </span>
+                  </>
+                )}
+              </span>
+              <span className="hidden min-w-0 lg:block">
+                <span className="flex flex-wrap gap-1.5">
+                  {h.tags.length ? h.tags.map((t) => <Tag key={t}>{t}</Tag>) : <span className="text-xs text-muted">{h.builtin ? "" : "No tags"}</span>}
                 </span>
+                {Object.keys(h.attributes ?? {}).length > 0 && (
+                  <span className="mt-1.5 block font-mono text-[11px] break-words text-muted" title={Object.entries(h.attributes ?? {}).map(([k, v]) => `${k}: ${v}`).join("\n")}>
+                    {Object.entries(h.attributes ?? {})
+                      .map(([k, v]) => `${k}:${v}`)
+                      .join(" ")}
+                  </span>
+                )}
               </span>
-              <span className="hidden min-w-0 flex-wrap gap-1.5 lg:flex">
-                {h.tags.length ? h.tags.map((t) => <Tag key={t}>{t}</Tag>) : <span className="text-xs text-muted">{h.builtin ? "" : "No tags"}</span>}
-              </span>
-              <span className="hidden text-muted lg:block">{h.builtin || h.online ? "Now" : timeAgo(h.last_seen)}</span>
+              <span className="hidden text-muted lg:block">{h.builtin || h.online ? "Now" : h.reach === "listed" ? "Not reached" : timeAgo(h.last_seen)}</span>
               <span className="text-center">
-                <Badge tone={h.online ? "green" : "red"}>{h.online ? "Online" : "Offline"}</Badge>
+                {h.reach === "listed" ? (
+                  <Badge tone="gray" className="cursor-help">
+                    <span title="Only an inventory source lists it. Runs skip it until the agent is installed.">Listed</span>
+                  </Badge>
+                ) : (
+                  <Badge tone={h.online ? "green" : "red"}>{h.online ? "Online" : "Offline"}</Badge>
+                )}
               </span>
               <span className="col-span-2 flex justify-end gap-1 lg:col-span-1">
-                {!h.builtin && admin && (
+                {!h.builtin && h.reach !== "listed" && admin && (
                   <>
                     <Button size="sm" variant="ghost" onClick={() => setEditing(h)} aria-label={`Edit ${h.name}`} title="Rename or tag">
                       <Pencil className="size-3.5" />
@@ -602,6 +683,13 @@ export function HostsPage() {
           ))}
         </ul>
       </Card>
+
+      {admin && workspace && (
+        <>
+          <InventorySources onChange={reload} />
+          <TagRules slug={workspace.slug} onChange={reload} />
+        </>
+      )}
 
       {pkgs.data && <Downloads version={pkgs.data.version} packages={pkgs.data.packages} />}
 

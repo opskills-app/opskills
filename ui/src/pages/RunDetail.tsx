@@ -241,6 +241,12 @@ export function RunDetail({ id }: { id: string }) {
         </div>
       )}
 
+      {(run.skipped_hosts?.length ?? 0) > 0 && (
+        <div className="mb-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          Skipped {run.skipped_hosts!.join(", ")}: only listed by an inventory source, so nothing can reach {run.skipped_hosts!.length === 1 ? "it" : "them"} yet. Install the agent to include {run.skipped_hosts!.length === 1 ? "it" : "them"}.
+        </div>
+      )}
+
       {inputs.length > 0 && (
         <Card className="mb-4 rounded-2xl px-5 py-4">
           <div className="text-xs text-muted">Inputs</div>

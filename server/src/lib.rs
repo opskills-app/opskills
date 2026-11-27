@@ -10,6 +10,7 @@ pub mod executor;
 pub mod filter;
 pub mod firststart;
 pub mod hub;
+pub mod inventory;
 pub mod model;
 pub mod notify;
 pub mod oidc;

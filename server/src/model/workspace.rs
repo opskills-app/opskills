@@ -25,6 +25,9 @@ pub struct Workspace {
     #[serde(default)]
     pub description: String,
     pub created_at: u64,
+    /// Tags for hosts that match a filter, like `os:debian*` gets `debian`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tag_rules: Vec<super::TagRule>,
 }
 
 /// 1 to 40 lowercase letters, digits and dashes, starting with a letter or digit.

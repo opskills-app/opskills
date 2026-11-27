@@ -128,6 +128,7 @@ impl RunValues {
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
         v.extend(self.inputs.iter().map(|i| (format!("inputs.{}", i.name), i.value.clone())));
+        v.extend(host.attributes.iter().map(|(k, val)| (format!("host.attr.{k}"), val.clone())));
         v
     }
 }
@@ -256,7 +257,7 @@ impl Executor {
         self.notifier.emit(&rules, &run, NotifyEvent::Started);
         let slow_timers = self.notifier.slow_timers(&rules, &run);
 
-        let hosts = if run.hosts.is_empty() { vec![RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into() }] } else { run.hosts.clone() };
+        let hosts = if run.hosts.is_empty() { vec![RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into(), attributes: Default::default() }] } else { run.hosts.clone() };
         let per_host = run.steps.len() / hosts.len();
         let waves = run.rollout.waves(hosts.len());
         let pause = run.rollout.pause_seconds;

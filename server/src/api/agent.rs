@@ -101,6 +101,7 @@ async fn agent_enroll(State(st): State<Arc<AppState>>, body: String) -> ApiResul
         workspaces: vec![token.workspace.clone()],
         enrolled_at: now,
         last_seen: now,
+        attributes: Default::default(),
     };
     st.store.put_host(&StoredHost { host: host.clone(), secret_hash: auth::token_hash(&secret) })?;
     st.hub.touch(&host.id);

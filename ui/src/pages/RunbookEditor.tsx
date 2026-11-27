@@ -97,11 +97,15 @@ function useFilterPreview(filter: string) {
 
 function RunOn({ targets, onChange, onHosts, setOnHosts }: { targets: Targets; onChange: (t: Targets) => void; onHosts: boolean; setOnHosts: (v: boolean) => void }) {
   const hosts = useData(() => api.hosts(), []);
-  const enrolled = (hosts.data ?? []).filter((h) => !h.builtin);
-  const hostTags = [...new Set(enrolled.flatMap((h) => h.tags))].sort();
+  const others = (hosts.data ?? []).filter((h) => !h.builtin);
+  // Only hosts the agent reaches can be picked by name; listed-only hosts come in by tag or filter.
+  const enrolled = others.filter((h) => h.reach !== "listed");
+  const hostTags = [...new Set(others.flatMap((h) => h.tags))].sort();
   const onServer = !onHosts;
   const preview = useFilterPreview(targets.filter ?? "");
-  const matched = enrolled.filter((h) => targets.hosts.includes(h.id) || h.tags.some((t) => targets.tags.includes(t)) || preview.ids.includes(h.id));
+  const picks = (h: (typeof others)[number]) => targets.hosts.includes(h.id) || h.tags.some((t) => targets.tags.includes(t)) || preview.ids.includes(h.id);
+  const matched = enrolled.filter(picks);
+  const skipped = others.filter((h) => h.reach === "listed" && picks(h));
   const count = matched.length + (targets.hosts.includes(LOCAL_HOST_ID) ? 1 : 0);
   const chip = (on: boolean) => cx("flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs", on ? "bg-accent text-accent-ink" : "bg-surface-2 text-ink-2 hover:bg-surface-3");
 
@@ -139,7 +143,7 @@ function RunOn({ targets, onChange, onHosts, setOnHosts }: { targets: Targets; o
       </div>
       {onServer ? (
         <p className="mt-3 text-xs text-muted">Steps run on the OpSkills server itself, as the user the server runs as.</p>
-      ) : enrolled.length === 0 ? (
+      ) : others.length === 0 ? (
         <p className="mt-3 text-xs text-muted">
           No hosts yet.{" "}
           <a href="#/hosts" className="font-medium text-accent hover:underline">
@@ -205,14 +209,23 @@ function RunOn({ targets, onChange, onHosts, setOnHosts }: { targets: Targets; o
                 )
               ) : (
                 <>
-                  Keys: tags, name, hostname, os, arch. <code className="font-mono">!</code> excludes, <code className="font-mono">*</code> is a wildcard, commas mean any of.
+                  Keys: tags, name, hostname, os, arch, or an attribute like env. <code className="font-mono">!</code> excludes, <code className="font-mono">*</code> is a wildcard, commas mean any of.
                 </>
               )}
             </p>
           </div>
           <p className={cx("text-xs", count ? "text-muted" : "text-amber-700 dark:text-amber-300")}>
-            {count ? `Runs on ${count} host${count === 1 ? "" : "s"} now. Choose how below, under Rollout.` : "Pick at least one host or tag, or enter a filter that matches a host."}
+            {count
+              ? `Runs on ${count} host${count === 1 ? "" : "s"} now. Choose how below, under Rollout.`
+              : skipped.length
+                ? "No host the agent reaches matches yet."
+                : "Pick at least one host or tag, or enter a filter that matches a host."}
           </p>
+          {skipped.length > 0 && (
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              {skipped.map((h) => h.name).join(", ")} {skipped.length === 1 ? "is" : "are"} only listed by an inventory source, so runs skip {skipped.length === 1 ? "it" : "them"} until the agent is installed.
+            </p>
+          )}
         </div>
       )}
     </Card>
@@ -1213,7 +1226,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
                 <code className="font-mono text-xs">$OPSKILLS_INPUT_...</code> per input are set for each step.
               </li>
               <li>
-                <code className="font-mono text-xs">{"{{ host.name }}"}</code>, <code className="font-mono text-xs">{"{{ run.id }}"}</code> and <code className="font-mono text-xs">{"{{ inputs.x }}"}</code> in a command become quoted values.
+                <code className="font-mono text-xs">{"{{ host.name }}"}</code>, <code className="font-mono text-xs">{"{{ host.attr.env }}"}</code>, <code className="font-mono text-xs">{"{{ run.id }}"}</code> and <code className="font-mono text-xs">{"{{ inputs.x }}"}</code> in a command become quoted values.
               </li>
               <li>A step that exits with a non-zero code fails. What happens next is set under "When a step fails".</li>
             </ul>

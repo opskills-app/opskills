@@ -275,7 +275,7 @@ fn a_database_from_0_14_is_backed_up_and_its_secrets_still_open() {
         w.commit().unwrap();
     }
     let store = crate::store::Store::open(&path, &dir).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 3);
+    assert_eq!(store.schema_version().unwrap(), crate::store::SCHEMA_VERSION);
     assert!(store.shared_secrets().unwrap().is_empty());
     let backups: Vec<String> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.contains("-backup-")).collect();
     assert!(backups.len() == 1 && backups[0].starts_with("opskills.redb.schema-2-backup-"), "{backups:?}");

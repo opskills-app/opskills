@@ -187,7 +187,9 @@ async fn host_filters_pick_the_hosts_a_run_goes_to() {
     assert_eq!(preview.status, StatusCode::OK, "{}", preview.body);
     let names: Vec<String> = preview.json().as_array().unwrap().iter().map(|h| h["name"].as_str().unwrap().to_string()).collect();
     assert_eq!(names, vec!["web-1"]);
-    assert_eq!(call(&s.app, "GET", "/api/v1/hosts?filter=color:blue", None, Some(&c), false).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(call(&s.app, "GET", "/api/v1/hosts?filter=-color:blue", None, Some(&c), false).await.status, StatusCode::BAD_REQUEST);
+    let none = call(&s.app, "GET", "/api/v1/hosts?filter=color:blue", None, Some(&c), false).await;
+    assert_eq!(none.json(), json!([]), "an attribute no host has matches nothing: {}", none.body);
     assert_eq!(call(&s.app, "GET", "/api/v1/hosts", None, Some(&c), false).await.json().as_array().unwrap().len(), 4, "no filter lists every host");
 
     let bad = call(&s.app, "POST", "/api/v1/runbooks", Some(json!({"name": "Bad", "targets": {"filter": "tags:"}, "steps": [{"name": "a", "run": "true"}]})), Some(&c), true).await;

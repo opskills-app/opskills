@@ -14,6 +14,7 @@ mod secret;
 mod user;
 mod workspace;
 mod sign_in;
+mod inventory;
 
 pub use audit::*;
 pub use schedule::*;
@@ -27,6 +28,7 @@ pub use secret::*;
 pub use user::*;
 pub use workspace::*;
 pub use sign_in::*;
+pub use inventory::*;
 
 /// Serde default for flags that start out on.
 fn yes() -> bool {

@@ -52,6 +52,17 @@ struct HostView {
     shared_elsewhere: bool,
     /// Runbooks of the current workspace that run on it.
     used_by: Vec<serde_json::Value>,
+    /// How runs reach it: `agent`, or `listed` (only an inventory source lists it).
+    reach: crate::inventory::Reach,
+    /// Inventory sources that list it.
+    sources: Vec<serde_json::Value>,
+    /// Tags it has from the workspace's tag rules (also in `tags`).
+    rule_tags: Vec<String>,
+    /// A source that lists it failed its last refresh.
+    stale: bool,
+    /// What an Admin set on an enrolled host, without what sources and rules add.
+    own_tags: Vec<String>,
+    own_attributes: std::collections::BTreeMap<String, String>,
 }
 
 fn targets_host(rb: &Runbook, host: &Host) -> bool {
@@ -75,6 +86,7 @@ fn local_host(st: &AppState) -> Host {
         workspaces: vec![],
         enrolled_at: started,
         last_seen: now_ms(),
+        attributes: Default::default(),
     }
 }
 
@@ -86,13 +98,43 @@ fn host_views(st: &AppState, viewer: &CurrentUser, ws: &str) -> ApiResult<Vec<Ho
     let used = |h: &Host| runbooks.iter().filter(|r| targets_host(r, h)).map(|r| json!({ "id": r.id, "name": r.name })).collect();
     let mut local = local_host(st);
     local.workspaces = vec![ws.to_string()];
-    let mut list = vec![HostView { used_by: used(&local), host: local, online: true, builtin: true, shared_elsewhere: false }];
-    for mut h in st.store.hosts()?.into_iter().filter(|h| h.workspaces.iter().any(|w| w == ws)) {
-        h.last_seen = h.last_seen.max(st.hub.last_seen(&h.id).unwrap_or(0));
+    let mut list = vec![HostView {
+        used_by: used(&local),
+        host: local,
+        online: true,
+        builtin: true,
+        shared_elsewhere: false,
+        reach: crate::inventory::Reach::Agent,
+        sources: vec![],
+        rule_tags: vec![],
+        stale: false,
+        own_tags: vec![],
+        own_attributes: Default::default(),
+    }];
+    let own: std::collections::HashMap<String, Host> = st.store.hosts()?.into_iter().map(|h| (h.id.clone(), h)).collect();
+    for inv in crate::inventory::workspace_hosts(st, ws)? {
+        let mut h = inv.host;
+        let enrolled = inv.reach == crate::inventory::Reach::Agent;
+        if enrolled {
+            h.last_seen = h.last_seen.max(st.hub.last_seen(&h.id).unwrap_or(0));
+        }
         let shared_elsewhere = h.workspaces.iter().any(|w| !visible(w));
         let used_by = used(&h);
         h.workspaces.retain(|w| visible(w));
-        list.push(HostView { online: st.hub.is_online(&h.id, h.last_seen), used_by, host: h, builtin: false, shared_elsewhere });
+        let (own_tags, own_attributes) = own.get(&h.id).map(|o| (o.tags.clone(), o.attributes.clone())).unwrap_or_default();
+        list.push(HostView {
+            online: enrolled && st.hub.is_online(&h.id, h.last_seen),
+            used_by,
+            host: h,
+            builtin: false,
+            shared_elsewhere,
+            reach: inv.reach,
+            sources: inv.sources.into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect(),
+            rule_tags: inv.rule_tags,
+            stale: inv.stale,
+            own_tags,
+            own_attributes,
+        });
     }
     Ok(list)
 }
@@ -126,6 +168,9 @@ async fn list_hosts(State(st): State<Arc<AppState>>, Extension(user): Extension<
 struct HostUpdate {
     name: Option<String>,
     tags: Option<Vec<String>>,
+    /// Attributes like env or region; replaces the ones an Admin set before.
+    #[serde(default)]
+    attributes: Option<std::collections::BTreeMap<String, String>>,
 }
 
 pub(super) fn validate_host_name(name: &str) -> Result<String, String> {
@@ -169,8 +214,13 @@ async fn update_host(State(st): State<Arc<AppState>>, Extension(user): Extension
     if let Some(tags) = update.tags {
         stored.host.tags = clean_tags(&tags).map_err(bad)?;
     }
+    if let Some(mut attrs) = update.attributes {
+        crate::model::validate_attributes(&mut attrs).map_err(bad)?;
+        stored.host.attributes = attrs;
+    }
     st.store.put_host(&stored)?;
-    let detail = format!("name {}, tags [{}]", stored.host.name, stored.host.tags.join(", "));
+    let attrs: Vec<String> = stored.host.attributes.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    let detail = format!("name {}, tags [{}]{}", stored.host.name, stored.host.tags.join(", "), if attrs.is_empty() { String::new() } else { format!(", attributes {}", attrs.join(" ")) });
     // A shared host changes in each of its workspaces.
     for ws in &stored.host.workspaces {
         audit::record(&st, &By::user(&user), Some(ws), "host.update", Some(AuditTarget::new("host", &id, &stored.host.name)), Some(detail.clone()));
