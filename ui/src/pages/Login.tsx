@@ -101,12 +101,15 @@ export function Login({ onSignedIn, sourceUrl }: { onSignedIn: (user: string) =>
 
         <div className="mt-6 rounded-2xl bg-surface/70 p-5 text-xs leading-relaxed text-muted">
           <p className="font-medium text-ink-2">Where is the password?</p>
-          <p className="mt-1">It was printed once in the server log on first start:</p>
+          <p className="mt-1">It was printed in the server log, on the first start only:</p>
           <pre className="mt-2 overflow-x-auto rounded-lg bg-surface-2 p-3 font-mono text-[11px] text-ink-2">
             {"docker logs opskills 2>&1 | grep 'Admin password'\nsudo journalctl -u opskills | grep 'Admin password'"}
           </pre>
           <p className="mt-2">
-            Lost it? See{" "}
+            With Docker, <code className="font-mono text-ink-2">opskills</code> is the container's name. If you named it differently, use that name: <code className="font-mono text-ink-2">docker ps</code> lists them.
+          </p>
+          <p className="mt-2">
+            Nothing printed, or lost it? See{" "}
             <a className="font-medium text-accent" href="https://github.com/opskills-app/opskills/blob/main/docs/install.md#troubleshooting" target="_blank" rel="noreferrer">
               resetting the admin password
             </a>

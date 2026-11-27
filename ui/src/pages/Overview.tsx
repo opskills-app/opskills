@@ -42,7 +42,7 @@ function BarChart({ runs }: { runs: Run[] }) {
           <div key={d} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-3">
             <div className="relative flex w-full flex-1 items-end justify-center">
               <div
-                title={`${new Date(d).toLocaleDateString()}: ${counts[i]} runs`}
+                title={`${new Date(d).toLocaleDateString()}: ${counts[i]} ${counts[i] === 1 ? "run" : "runs"}`}
                 className={cx("w-full max-w-[30px] rounded-[9px] transition-colors", current ? "bg-accent" : "bg-bar hover:bg-surface-3")}
                 style={{ height: `${h}%` }}
               />
@@ -172,7 +172,7 @@ export function Overview() {
               <p className="mt-1 text-sm text-muted">Runs per day, last 14 days</p>
             </div>
             <span className="flex h-10 items-center rounded-xl bg-surface-2 px-4 text-xs text-ink-2">
-              <TrendingUp className="mr-2 size-4" /> {stats.last14} runs
+              <TrendingUp className="mr-2 size-4" /> {stats.last14} {stats.last14 === 1 ? "run" : "runs"}
             </span>
           </div>
           <BarChart runs={runs.data ?? []} />
