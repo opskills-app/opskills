@@ -23,6 +23,7 @@ mod schedules;
 mod webhooks;
 mod notifications;
 mod users;
+mod audit;
 
 struct TestServer {
     app: Router,

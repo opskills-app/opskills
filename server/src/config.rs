@@ -16,6 +16,7 @@ pub struct Config {
     pub auth: Auth,
     pub runs: Runs,
     pub hosts: Hosts,
+    pub audit: Audit,
     pub email: Email,
 }
 
@@ -82,6 +83,14 @@ pub struct Auth {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct Audit {
+    /// How many days of audit log to keep, at most `MAX_AUDIT_RETENTION_DAYS`; older
+    /// events are removed every hour.
+    pub retention_days: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Runs {
     /// How many runs may execute at the same time; others wait in the queue.
     pub max_concurrent: usize,
@@ -104,6 +113,12 @@ impl Default for Hosts {
 impl Default for Auth {
     fn default() -> Self {
         Self { session_hours: 8 }
+    }
+}
+
+impl Default for Audit {
+    fn default() -> Self {
+        Self { retention_days: 90 }
     }
 }
 
@@ -177,6 +192,9 @@ fn apply_env(cfg: &mut Config, get: impl Fn(&str) -> Option<String>) -> Result<(
     if let Some(v) = get("OPSKILLS_HOSTS__PACKAGES_DIR") {
         cfg.hosts.packages_dir = PathBuf::from(v);
     }
+    if let Some(v) = get("OPSKILLS_AUDIT__RETENTION_DAYS") {
+        cfg.audit.retention_days = v.parse().context("OPSKILLS_AUDIT__RETENTION_DAYS must be a whole number")?;
+    }
     if let Some(v) = get("OPSKILLS_RUNS__MAX_CONCURRENT") {
         cfg.runs.max_concurrent = v.parse().context("OPSKILLS_RUNS__MAX_CONCURRENT must be a whole number")?;
     }
@@ -202,6 +220,9 @@ fn apply_env(cfg: &mut Config, get: impl Fn(&str) -> Option<String>) -> Result<(
     Ok(())
 }
 
+/// The longest the audit log is kept.
+pub const MAX_AUDIT_RETENTION_DAYS: u64 = 90;
+
 fn validate(cfg: &Config) -> Result<()> {
     cfg.server
         .listen
@@ -214,6 +235,10 @@ fn validate(cfg: &Config) -> Result<()> {
     );
     anyhow::ensure!((1..=720).contains(&cfg.auth.session_hours), "auth.session_hours must be 1 to 720");
     anyhow::ensure!((1..=64).contains(&cfg.runs.max_concurrent), "runs.max_concurrent must be 1 to 64");
+    anyhow::ensure!(
+        (1..=MAX_AUDIT_RETENTION_DAYS).contains(&cfg.audit.retention_days),
+        "audit.retention_days must be 1 to {MAX_AUDIT_RETENTION_DAYS}"
+    );
     let e = &cfg.email;
     anyhow::ensure!(
         ["starttls", "tls", "none"].contains(&e.security.as_str()),
@@ -301,5 +326,10 @@ mod tests {
         cfg = Config::default();
         cfg.server.listen = "8080".into();
         assert!(validate(&cfg).is_err());
+        cfg = Config::default();
+        cfg.audit.retention_days = 91;
+        assert!(validate(&cfg).unwrap_err().to_string().contains("1 to 90"));
+        cfg.audit.retention_days = 30;
+        assert!(validate(&cfg).is_ok());
     }
 }

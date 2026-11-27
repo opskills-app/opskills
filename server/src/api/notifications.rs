@@ -5,13 +5,15 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::model::Role;
+use crate::audit::{self, By};
+use crate::model::AuditTarget;
 use crate::web::AppState;
-use super::{Access, ApiError, ApiResult, bad};
+use super::{Access, ApiError, ApiResult, CurrentUser, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -44,7 +46,7 @@ async fn get_email_settings(State(st): State<Arc<AppState>>) -> ApiResult<Json<s
     Ok(Json(json!({ "source": source, "settings": settings })))
 }
 
-async fn put_email_settings(State(st): State<Arc<AppState>>, body: String) -> ApiResult<Json<serde_json::Value>> {
+async fn put_email_settings(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, body: String) -> ApiResult<Json<serde_json::Value>> {
     if st.notifier.email_source() == crate::notify::EmailSource::Config {
         return Err(ApiError::new(StatusCode::CONFLICT, "Email is set in the server config file. Change it there, or remove it there to manage it here."));
     }
@@ -57,14 +59,16 @@ async fn put_email_settings(State(st): State<Arc<AppState>>, body: String) -> Ap
     }
     st.store.put_email_settings(Some(&s))?;
     tracing::info!(smtp_host = %s.smtp_host, "email settings saved");
+    audit::record(&st, &By::user(&user), "settings.email_update", Some(AuditTarget::new("settings", "email", "Email")), Some(format!("SMTP {}:{}, from {}", s.smtp_host, s.smtp_port, s.from)));
     Ok(Json(json!({ "source": "settings", "settings": s })))
 }
 
-async fn delete_email_settings(State(st): State<Arc<AppState>>) -> ApiResult<StatusCode> {
+async fn delete_email_settings(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>) -> ApiResult<StatusCode> {
     if st.notifier.email_source() == crate::notify::EmailSource::Config {
         return Err(ApiError::new(StatusCode::CONFLICT, "Email is set in the server config file. Remove it there."));
     }
     st.store.put_email_settings(None)?;
+    audit::record(&st, &By::user(&user), "settings.email_delete", Some(AuditTarget::new("settings", "email", "Email")), Some("email turned off".into()));
     Ok(StatusCode::NO_CONTENT)
 }
 

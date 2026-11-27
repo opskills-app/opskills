@@ -6,14 +6,16 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 
 use crate::model::{
     calls_of, DEFAULT_STEP_TIMEOUT, LOCAL_HOST_ID, Runbook, RunbookInput, now_ms,
 };
 use crate::model::Role;
+use crate::audit::{self, By};
+use crate::model::AuditTarget;
 use crate::web::AppState;
-use super::{Access, ApiError, ApiResult, bad};
+use super::{Access, ApiError, ApiResult, CurrentUser, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -100,7 +102,7 @@ fn check_calls(st: &AppState, self_id: Option<&str>, input: &RunbookInput) -> Ap
     Ok(())
 }
 
-async fn create_runbook(State(st): State<Arc<AppState>>, body: String) -> ApiResult<Response> {
+async fn create_runbook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, body: String) -> ApiResult<Response> {
     let input = parse_input(&st, &body)?;
     check_calls(&st, None, &input)?;
     let now = now_ms();
@@ -124,13 +126,15 @@ async fn create_runbook(State(st): State<Arc<AppState>>, body: String) -> ApiRes
     };
     st.store.put_runbook(&rb)?;
     tracing::info!(runbook_id = %rb.id, name = %rb.name, "runbook created");
+    audit::record(&st, &By::user(&user), "runbook.create", Some(AuditTarget::new("runbook", &rb.id, &rb.name)), None);
     Ok((StatusCode::CREATED, Json(rb)).into_response())
 }
 
-async fn update_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>, body: String) -> ApiResult<Json<Runbook>> {
+async fn update_runbook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>, body: String) -> ApiResult<Json<Runbook>> {
     let existing = st.store.runbook(&id)?.ok_or_else(|| ApiError::not_found("Runbook"))?;
     let input = parse_input(&st, &body)?;
     check_calls(&st, Some(&id), &input)?;
+    let renamed = (existing.name != input.name).then(|| format!("renamed from {:?}", existing.name));
     let rb = Runbook {
         name: input.name,
         description: input.description,
@@ -149,18 +153,21 @@ async fn update_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>,
         ..existing
     };
     st.store.put_runbook(&rb)?;
+    audit::record(&st, &By::user(&user), "runbook.update", Some(AuditTarget::new("runbook", &rb.id, &rb.name)), renamed);
     Ok(Json(rb))
 }
 
-async fn delete_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+async fn delete_runbook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>) -> ApiResult<StatusCode> {
     let callers: Vec<String> = st.store.runbooks()?.into_iter().filter(|r| r.id != id && calls_of(&r.steps).contains(&id)).map(|r| r.name).collect();
     if !callers.is_empty() {
         return Err(ApiError::new(StatusCode::CONFLICT, format!("This runbook is called by: {}. Remove those calls first.", callers.join(", "))));
     }
+    let name = st.store.runbook(&id)?.map(|r| r.name).unwrap_or_default();
     if st.store.delete_runbook(&id)? {
         for h in st.store.webhooks_of(&id)? {
             st.store.delete_webhook(&h.id)?;
         }
+        audit::record(&st, &By::user(&user), "runbook.delete", Some(AuditTarget::new("runbook", &id, &name)), None);
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::not_found("Runbook"))

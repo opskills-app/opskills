@@ -15,6 +15,8 @@ use serde_json::json;
 use crate::auth;
 use crate::model::{Role, now_ms, validate_password};
 use crate::store::Session;
+use crate::audit::{self, By};
+use crate::model::AuditTarget;
 use crate::web::AppState;
 use super::{Access, ApiError, ApiResult, CurrentUser, bad};
 
@@ -66,6 +68,7 @@ static FAILED_LOGINS: AtomicU64 = AtomicU64::new(0);
 async fn login(State(st): State<Arc<AppState>>, Json(input): Json<LoginInput>) -> ApiResult<Response> {
     let name = input.username.trim().to_lowercase();
     let stored = st.store.user(&name)?;
+    let stored_exists = stored.is_some();
     // Unknown names are checked against a dummy hash, so both take the same time.
     let hash = stored.as_ref().map_or(auth::DUMMY_HASH.to_string(), |u| u.password_hash.clone());
     let password = input.password.clone();
@@ -75,6 +78,8 @@ async fn login(State(st): State<Arc<AppState>>, Json(input): Json<LoginInput>) -
         let fails = FAILED_LOGINS.fetch_add(1, Ordering::Relaxed).min(9) + 1;
         tokio::time::sleep(Duration::from_millis(500 * fails)).await;
         tracing::warn!(username = %input.username, "failed sign-in");
+        let tried: String = name.chars().filter(|c| !c.is_control()).take(64).collect();
+        audit::record(&st, &By::named(&tried), "auth.sign_in_failed", None, Some(if stored_exists { "wrong password" } else { "no such user" }.into()));
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Wrong username or password."));
     };
     FAILED_LOGINS.store(0, Ordering::Relaxed);
@@ -86,15 +91,17 @@ async fn login(State(st): State<Arc<AppState>>, Json(input): Json<LoginInput>) -
     stored.user.last_sign_in_at = Some(now);
     st.store.put_user(&stored)?;
     tracing::info!(user = %name, "signed in");
+    audit::record(&st, &By::named(&name), "auth.sign_in", None, None);
     let mut res = Json(json!({ "user": name, "role": stored.user.role, "must_change_password": stored.user.must_change_password })).into_response();
     res.headers_mut().insert(header::SET_COOKIE, HeaderValue::from_str(&auth::session_cookie(&token, max_age, st.secure_cookies())).unwrap());
     Ok(res)
 }
 
-async fn logout(State(st): State<Arc<AppState>>, req: Request) -> ApiResult<Response> {
+async fn logout(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, req: Request) -> ApiResult<Response> {
     if let Some(token) = auth::cookie_token(req.headers()) {
         st.store.delete_session(&auth::token_hash(&token))?;
     }
+    audit::record(&st, &By::user(&user), "auth.sign_out", None, None);
     let mut res = StatusCode::NO_CONTENT.into_response();
     res.headers_mut().insert(header::SET_COOKIE, HeaderValue::from_str(&auth::clear_cookie(st.secure_cookies())).unwrap());
     Ok(res)
@@ -131,5 +138,6 @@ async fn change_password(State(st): State<Arc<AppState>>, Extension(user): Exten
     st.store.put_user(&stored)?;
     st.store.delete_sessions_of(&user.user, user.session.as_deref())?;
     tracing::info!(user = %user.user, "password changed");
+    audit::record(&st, &By::user(&user), "auth.password_change", Some(AuditTarget::new("user", &user.user, &user.user)), None);
     Ok(StatusCode::NO_CONTENT)
 }

@@ -50,8 +50,8 @@ the right address in the commands it shows.
    `amd64` they look like this:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.12.0_amd64.deb
-   sudo apt install ./opskills-agent_0.12.0_amd64.deb
+   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.13.0_amd64.deb
+   sudo apt install ./opskills-agent_0.13.0_amd64.deb
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -59,8 +59,8 @@ the right address in the commands it shows.
    And for RHEL, Rocky, Alma or Fedora on `x86_64`:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.12.0-1.x86_64.rpm
-   sudo dnf install ./opskills-agent-0.12.0-1.x86_64.rpm
+   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.13.0-1.x86_64.rpm
+   sudo dnf install ./opskills-agent-0.13.0-1.x86_64.rpm
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```

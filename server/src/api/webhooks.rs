@@ -6,7 +6,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -16,9 +16,11 @@ use crate::model::{
 };
 use crate::vault::Sealed;
 use crate::model::Role;
+use crate::audit::{self, By};
+use crate::model::AuditTarget;
 use crate::web::AppState;
 use super::runs::start_runbook;
-use super::{Access, ApiError, ApiResult, bad};
+use super::{Access, ApiError, ApiResult, CurrentUser, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -83,7 +85,7 @@ async fn list_webhooks(State(st): State<Arc<AppState>>, Path(id): Path<String>) 
     Ok(Json(st.store.webhooks_of(&id)?))
 }
 
-async fn create_webhook(State(st): State<Arc<AppState>>, Path(id): Path<String>, body: String) -> ApiResult<Response> {
+async fn create_webhook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>, body: String) -> ApiResult<Response> {
     let input: WebhookInput = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid webhook: {e}")))?;
     let (rb, name) = check_webhook_input(&st, &id, &input, None)?;
     if st.store.webhooks_of(&rb.id)?.len() >= MAX_WEBHOOKS {
@@ -114,11 +116,12 @@ async fn create_webhook(State(st): State<Arc<AppState>>, Path(id): Path<String>,
     }
     st.store.put_webhook(&stored)?;
     tracing::info!(webhook_id = %hook_id, runbook = %rb.name, "webhook created");
+    audit::record(&st, &By::user(&user), "webhook.create", Some(AuditTarget::new("webhook", &hook_id, &stored.hook.name)), Some(format!("on runbook {:?}", rb.name)));
     // The token (part of the URL) and the signing secret are shown only now.
     Ok((StatusCode::CREATED, Json(json!({ "webhook": stored.hook, "token": token, "signing_secret": signing_secret }))).into_response())
 }
 
-async fn update_webhook(State(st): State<Arc<AppState>>, Path(id): Path<String>, body: String) -> ApiResult<Json<serde_json::Value>> {
+async fn update_webhook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>, body: String) -> ApiResult<Json<serde_json::Value>> {
     let current = st.store.webhook(&id)?.ok_or_else(|| ApiError::not_found("Webhook"))?;
     let input: WebhookInput = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid webhook: {e}")))?;
     let (_, name) = check_webhook_input(&st, &current.hook.runbook_id, &input, Some(&id))?;
@@ -145,19 +148,31 @@ async fn update_webhook(State(st): State<Arc<AppState>>, Path(id): Path<String>,
         (h.hook.clone(), shown)
     })?;
     let (hook, signing_secret) = updated.ok_or_else(|| ApiError::not_found("Webhook"))?;
+    let detail = format!("{}, {}", if hook.enabled { "on" } else { "off" }, if hook.signed { "signed" } else { "not signed" });
+    audit::record(&st, &By::user(&user), "webhook.update", Some(AuditTarget::new("webhook", &id, &hook.name)), Some(detail));
     Ok(Json(json!({ "webhook": hook, "signing_secret": signing_secret })))
 }
 
 /// Give a webhook a new URL; the old one stops working at once.
-async fn rotate_webhook(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<Json<serde_json::Value>> {
+async fn rotate_webhook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>) -> ApiResult<Json<serde_json::Value>> {
     let secret = hex::encode(crate::firststart::random_bytes::<32>());
     let hash = auth::token_hash(&secret);
-    st.store.update_webhook(&id, |h| h.token_hash = hash)?.ok_or_else(|| ApiError::not_found("Webhook"))?;
+    let name = st.store.update_webhook(&id, |h| {
+        h.token_hash = hash;
+        h.hook.name.clone()
+    })?
+    .ok_or_else(|| ApiError::not_found("Webhook"))?;
+    audit::record(&st, &By::user(&user), "webhook.rotate", Some(AuditTarget::new("webhook", &id, &name)), Some("new URL; the old one stopped working".into()));
     Ok(Json(json!({ "token": format!("{}{id}_{secret}", auth::WEBHOOK_PREFIX) })))
 }
 
-async fn delete_webhook(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
-    if st.store.delete_webhook(&id)? { Ok(StatusCode::NO_CONTENT) } else { Err(ApiError::not_found("Webhook")) }
+async fn delete_webhook(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    let name = st.store.webhook(&id)?.map(|h| h.hook.name).unwrap_or_default();
+    if !st.store.delete_webhook(&id)? {
+        return Err(ApiError::not_found("Webhook"));
+    }
+    audit::record(&st, &By::user(&user), "webhook.delete", Some(AuditTarget::new("webhook", &id, &name)), None);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /hooks/{token}` from another system: check the token and signature, map the
@@ -216,5 +231,5 @@ fn deliver(st: &AppState, stored: &crate::model::StoredWebhook, headers: &axum::
         .iter()
         .filter_map(|(name, path)| crate::model::json_path(&doc, path).map(|v| (name.clone(), serde_json::Value::String(v))))
         .collect();
-    start_runbook(st, &rb, &given, &format!("webhook {}", hook.name), "webhook")
+    start_runbook(st, &rb, &given, &By::system(format!("webhook {}", hook.name)), "webhook")
 }

@@ -98,6 +98,7 @@ fn the_role_table_is_the_agreed_one() {
         ("PUT", "/hosts/{id}", R(Role::Admin)),
         ("PUT", "/settings/email", R(Role::Admin)),
         ("GET", "/users", S(Role::Admin)),
+        ("GET", "/audit", R(Role::Admin)),
         ("GET", "/tokens", S(Role::Admin)),
         ("POST", "/me/tokens", S(Role::Viewer)),
         ("POST", "/auth/password", Access::Account),

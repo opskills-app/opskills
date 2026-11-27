@@ -1,10 +1,10 @@
 # Install and run OpSkills
 
-This guide walks through running OpSkills **v0.12.0** with Docker or with the
+This guide walks through running OpSkills **v0.13.0** with Docker or with the
 Debian package, running your first runbook, and everyday tasks: logs,
 configuration, upgrades, backups and removal.
 
-> **About the v0.12.0 preview.** You sign in, keep secrets in an encrypted vault,
+> **About the v0.13.0 preview.** You sign in, keep secrets in an encrypted vault,
 > write runbooks (with inputs, retries, file copies and calls to other runbooks)
 > and run them, with output streaming live. Each step is a shell
 > command that runs on the OpSkills server itself, or on Linux hosts you enroll
@@ -39,7 +39,7 @@ fails, start Docker Desktop (or `sudo systemctl start docker` on Linux).
 ### Step 2. Download the image
 
 ```bash
-docker pull opskills/opskills:0.12.0
+docker pull opskills/opskills:0.13.0
 ```
 
 ### Step 3. Start OpSkills
@@ -49,7 +49,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.12.0
+  opskills/opskills:0.13.0
 ```
 
 What each part does:
@@ -168,8 +168,8 @@ This prints `amd64` (Intel/AMD) or `arm64` (ARM). The commands below use
 ### Step 2. Download the package and its checksums
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.12.0/opskills_0.12.0_amd64.deb
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.12.0/SHA256SUMS
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.13.0/opskills_0.13.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.13.0/SHA256SUMS
 ```
 
 ### Step 3. Verify the download
@@ -178,13 +178,13 @@ curl -LO https://github.com/opskills-app/opskills/releases/download/v0.12.0/SHA2
 sha256sum --check --ignore-missing SHA256SUMS
 ```
 
-You should see `opskills_0.12.0_amd64.deb: OK`. If it says `FAILED`, delete the
+You should see `opskills_0.13.0_amd64.deb: OK`. If it says `FAILED`, delete the
 file and download it again.
 
 ### Step 4. Install
 
 ```bash
-sudo apt install ./opskills_0.12.0_amd64.deb
+sudo apt install ./opskills_0.13.0_amd64.deb
 ```
 
 The `./` matters: it tells apt to install this file rather than search online.
@@ -325,6 +325,7 @@ Any setting can be overridden with an environment variable named
 | `logs.level` | `OPSKILLS_LOGS__LEVEL` | `info` |
 | `auth.session_hours` | `OPSKILLS_AUTH__SESSION_HOURS` | `8` (how long a sign-in lasts) |
 | `runs.max_concurrent` | `OPSKILLS_RUNS__MAX_CONCURRENT` | `4` (runs at the same time; others wait) |
+| `audit.retention_days` | `OPSKILLS_AUDIT__RETENTION_DAYS` | `90` (days of [audit log](audit.md) to keep, 1 to 90) |
 | `hosts.packages_dir` | `OPSKILLS_HOSTS__PACKAGES_DIR` | `/usr/share/opskills/packages` (agent packages offered for download) |
 | `email.smtp_host` | `OPSKILLS_EMAIL__SMTP_HOST` | not set (email notifications off) |
 | `email.smtp_port` | `OPSKILLS_EMAIL__SMTP_PORT` | `587` |

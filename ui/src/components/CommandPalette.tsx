@@ -30,6 +30,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   const canEdit = useCan("editor");
   const canRun = useCan("operator");
+  const admin = useCan("admin");
   const items = useMemo<Item[]>(() => {
     const nav: Item[] = [
       ["overview", "Overview"],
@@ -37,9 +38,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       ["runs", "Runs"],
       ["hosts", "Hosts"],
       ["vault", "Vault"],
+      ["audit", "Audit log"],
       ["settings", "Settings"],
     ]
-      .filter(([id]) => id !== "vault" || canEdit)
+      .filter(([id]) => (id !== "vault" || canEdit) && (id !== "audit" || admin))
       .map(([id, label]) => ({ id: `nav-${id}`, label: `Go to ${label}`, hint: "Navigate", group: "Navigation", icon: ArrowRight, run: () => go(id) }));
     const create: Item = { id: "new", label: "New runbook", hint: "Create", group: "Actions", icon: Plus, run: () => go("runbooks/new") };
     const rb: Item[] = runbooks.flatMap((r): Item[] => [
@@ -58,7 +60,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       },
     ]);
     return [...nav, ...(canEdit ? [create] : []), ...rb.filter((i) => canRun || !i.id.startsWith("run-"))];
-  }, [runbooks, canEdit, canRun]);
+  }, [runbooks, canEdit, canRun, admin]);
 
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase();
