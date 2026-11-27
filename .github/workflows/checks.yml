@@ -1,0 +1,68 @@
+name: Checks
+
+# Fast checks on pull requests and merges to main, in a few minutes: type-check and build
+# the web app, run clippy and the server tests, and check the shell scripts.
+# The full multi-architecture build and its tests stay in docker.yml.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Web app, type-check and build
+        working-directory: ui
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+      - name: Set up Rust (the version the Dockerfile uses)
+        run: |
+          rust=$(sed -n 's/^ARG RUST_VERSION=//p' Dockerfile)
+          rustup toolchain install "$rust" --profile minimal --component clippy
+          rustup default "$rust"
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: server
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy
+        working-directory: server
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Server tests
+        working-directory: server
+        run: cargo test --locked
+
+      - name: Shell scripts
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q shellcheck; }
+          git ls-files -z '*.sh' | xargs -0 shellcheck --severity=warning
