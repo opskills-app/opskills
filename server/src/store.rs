@@ -1,6 +1,9 @@
 //! Persistent storage in a single redb file inside the data directory.
 //!
 //! Values are JSON documents. Run ids are UUID v7, so key order is creation order.
+//!
+//! The `meta` table records the schema version. Opening an older database migrates it,
+//! after copying the file to a backup next to it; a newer one is refused.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -9,7 +12,7 @@ use anyhow::{Context, Result};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{ApiToken, EnrollmentToken, Host, LogLine, Run, Runbook, Secret, Status, StoredApiToken, StoredHost, StoredSecret, StoredWebhook, Webhook, now_ms};
+use crate::model::{ApiToken, EnrollmentToken, FIRST_ADMIN, Host, LogLine, Role, Run, Runbook, Secret, Status, StoredApiToken, StoredHost, StoredSecret, StoredUser, StoredWebhook, User, Webhook, now_ms};
 
 const RUNBOOKS: TableDefinition<&str, &str> = TableDefinition::new("runbooks");
 const RUNS: TableDefinition<&str, &str> = TableDefinition::new("runs");
@@ -33,6 +36,47 @@ const NOTICES: TableDefinition<&str, &str> = TableDefinition::new("notices");
 const WEBHOOKS: TableDefinition<&str, &str> = TableDefinition::new("webhooks");
 /// Key: "<runbook id>/<schedule id>". Value: when it last fired, and how that went.
 const SCHEDULE_STATE: TableDefinition<&str, &str> = TableDefinition::new("schedule_state");
+/// Key: user name. Value: the user and their password hash.
+const USERS: TableDefinition<&str, &str> = TableDefinition::new("users");
+/// Key: "schema_version". Value: the version number.
+const META: TableDefinition<&str, &str> = TableDefinition::new("meta");
+
+/// The schema this build writes. Each step in `MIGRATIONS` moves the database up by one.
+pub const SCHEMA_VERSION: u64 = 1;
+
+type Migration = fn(&redb::WriteTransaction, &Path) -> Result<()>;
+
+/// `(version it produces, what it does, the change)`, in order.
+const MIGRATIONS: &[(u64, &str, Migration)] = &[(1, "users and roles", migrate_users)];
+
+/// Version 1: users. The single admin of earlier versions becomes the user `admin`, with
+/// the password in `admin.hash`.
+fn migrate_users(w: &redb::WriteTransaction, data_dir: &Path) -> Result<()> {
+    let mut users = w.open_table(USERS)?;
+    if users.iter()?.next().is_some() {
+        return Ok(());
+    }
+    let Ok(hash) = std::fs::read_to_string(data_dir.join("admin.hash")) else { return Ok(()) };
+    let admin = StoredUser {
+        user: User { name: FIRST_ADMIN.into(), role: Role::Admin, created_at: now_ms(), must_change_password: false, last_sign_in_at: None, password_changed_at: None },
+        password_hash: hash.trim().to_string(),
+    };
+    users.insert(FIRST_ADMIN, serde_json::to_string(&admin)?.as_str())?;
+    Ok(())
+}
+
+fn schema_version(db: &Database) -> Result<u64> {
+    let r = db.begin_read()?;
+    let t = match r.open_table(META) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(match t.get("schema_version")? {
+        Some(v) => v.value().parse().context("reading the schema version")?,
+        None => 0,
+    })
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
@@ -50,9 +94,26 @@ fn log_key(run_id: &str, seq: u64) -> String {
 }
 
 impl Store {
-    pub fn open(path: &Path) -> Result<Self> {
-        let db = Database::create(path).with_context(|| format!("opening {}", path.display()))?;
+    /// Open (or create) the database, migrating an older one. `data_dir` holds the files a
+    /// migration may read, like `admin.hash`.
+    pub fn open(path: &Path, data_dir: &Path) -> Result<Self> {
+        let existed = path.exists();
+        let mut db = Database::create(path).with_context(|| format!("opening {}", path.display()))?;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        let version = schema_version(&db)?;
+        anyhow::ensure!(
+            version <= SCHEMA_VERSION,
+            "the database was written by a newer OpSkills (schema {version}, this version knows up to {SCHEMA_VERSION}). Install that version or newer, or restore a backup."
+        );
+        if version < SCHEMA_VERSION && existed {
+            // Close it, copy it, open it again: the copy is the state before any change.
+            drop(db);
+            let backup = path.with_extension(format!("redb.schema-{version}-backup-{}", now_ms() / 1000));
+            std::fs::copy(path, &backup).with_context(|| format!("backing up the database to {}", backup.display()))?;
+            let _ = std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600));
+            tracing::info!(from = version, to = SCHEMA_VERSION, backup = %backup.display(), "migrating the database; the backup is the state before");
+            db = Database::create(path).with_context(|| format!("opening {}", path.display()))?;
+        }
         let w = db.begin_write()?;
         {
             w.open_table(RUNBOOKS)?;
@@ -67,9 +128,21 @@ impl Store {
             w.open_table(WEBHOOKS)?;
             w.open_table(NOTICES)?;
             w.open_table(SETTINGS)?;
+            w.open_table(USERS)?;
         }
+        // Every migration and the new version commit together, or not at all.
+        for (to, what, migrate) in MIGRATIONS {
+            if *to > version {
+                migrate(&w, data_dir).with_context(|| format!("migrating the database to schema {to} ({what})"))?;
+            }
+        }
+        w.open_table(META)?.insert("schema_version", SCHEMA_VERSION.to_string().as_str())?;
         w.commit()?;
         Ok(Store { db })
+    }
+
+    pub fn schema_version(&self) -> Result<u64> {
+        schema_version(&self.db)
     }
 
     fn put(&self, def: TableDefinition<&'static str, &'static str>, key: &str, value: &str) -> Result<()> {
@@ -427,4 +500,48 @@ impl Store {
         w.commit()?;
         Ok(())
     }
+
+    // Users
+
+    pub fn user(&self, name: &str) -> Result<Option<StoredUser>> {
+        self.get(USERS, name)?.map(|s| serde_json::from_str(&s).map_err(Into::into)).transpose()
+    }
+    pub fn put_user(&self, u: &StoredUser) -> Result<()> {
+        self.put(USERS, &u.user.name, &serde_json::to_string(u)?)
+    }
+    /// Every user, by name.
+    pub fn users(&self) -> Result<Vec<User>> {
+        self.values(USERS)?.iter().map(|s| serde_json::from_str::<StoredUser>(s).map(|u| u.user).map_err(Into::into)).collect()
+    }
+    /// Remove a user with their sessions and API tokens.
+    pub fn delete_user(&self, name: &str) -> Result<bool> {
+        let w = self.db.begin_write()?;
+        let existed = w.open_table(USERS)?.remove(name)?.is_some();
+        w.open_table(SESSIONS)?.retain(|_, v| serde_json::from_str::<Session>(v).map(|s| s.user != name).unwrap_or(false))?;
+        w.open_table(API_TOKENS)?.retain(|_, v| serde_json::from_str::<StoredApiToken>(v).map(|t| t.token.user != name).unwrap_or(false))?;
+        w.commit()?;
+        Ok(existed)
+    }
+    /// After a new password from `admin.hash`: the `admin` user exists, is an Admin, has that
+    /// password and must choose a new one at sign-in. Everyone is signed out.
+    pub fn reset_first_admin(&self, password_hash: &str) -> Result<()> {
+        let mut u = self.user(FIRST_ADMIN)?.unwrap_or_else(|| StoredUser {
+            user: User { name: FIRST_ADMIN.into(), role: Role::Admin, created_at: now_ms(), must_change_password: true, last_sign_in_at: None, password_changed_at: None },
+            password_hash: String::new(),
+        });
+        u.user.role = Role::Admin;
+        u.user.must_change_password = true;
+        u.password_hash = password_hash.trim().to_string();
+        self.put_user(&u)?;
+        self.clear_sessions()
+    }
+    /// Sign a user out everywhere, except the session with this token hash.
+    pub fn delete_sessions_of(&self, name: &str, except: Option<&str>) -> Result<()> {
+        let w = self.db.begin_write()?;
+        w.open_table(SESSIONS)?
+            .retain(|k, v| except == Some(k) || serde_json::from_str::<Session>(v).map(|s| s.user != name).unwrap_or(false))?;
+        w.commit()?;
+        Ok(())
+    }
+
 }

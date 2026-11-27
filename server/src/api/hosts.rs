@@ -15,8 +15,9 @@ use crate::filter::HostFilter;
 use crate::model::{
     EnrollmentToken, Host, LOCAL_HOST_ID, LOCAL_HOST_NAME, Runbook, normalize_tag, now_ms,
 };
+use crate::model::Role;
 use crate::web::AppState;
-use super::{ApiError, ApiResult, CurrentUser, bad};
+use super::{Access, ApiError, ApiResult, CurrentUser, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -25,6 +26,14 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/hosts/enrollment-tokens", post(create_enrollment_token))
         .route("/hosts/{id}", axum::routing::put(update_host).delete(delete_host))
 }
+
+pub(super) const ACCESS: &[(&str, &str, Access)] = &[
+    ("GET", "/hosts", Access::Role(Role::Viewer)),
+    ("GET", "/hosts/packages", Access::Role(Role::Viewer)),
+    ("POST", "/hosts/enrollment-tokens", Access::Role(Role::Admin)),
+    ("PUT", "/hosts/{id}", Access::Role(Role::Admin)),
+    ("DELETE", "/hosts/{id}", Access::Role(Role::Admin)),
+];
 
 #[derive(serde::Serialize)]
 struct HostView {

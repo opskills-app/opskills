@@ -22,6 +22,7 @@ mod tokens;
 mod schedules;
 mod webhooks;
 mod notifications;
+mod users;
 
 struct TestServer {
     app: Router,
@@ -48,7 +49,22 @@ fn server_with(adjust: impl FnOnce(&mut Config)) -> TestServer {
     let fs = firststart::prepare(&cfg).unwrap();
     let password = fs.initial_password.clone().unwrap();
     let state = web::build_state(cfg, &fs).unwrap();
+    // Most tests act as an admin who has already chosen a password; `fresh_server` doesn't.
+    set_must_change(&state, "admin", false);
     TestServer { app: web::router(state.clone()), state, password, dir }
+}
+
+/// A server just after its first start: the admin still has the generated password.
+fn fresh_server() -> TestServer {
+    let s = server();
+    set_must_change(&s.state, "admin", true);
+    s
+}
+
+fn set_must_change(state: &web::AppState, name: &str, on: bool) {
+    let mut u = state.store.user(name).unwrap().unwrap();
+    u.user.must_change_password = on;
+    state.store.put_user(&u).unwrap();
 }
 
 struct Reply {
@@ -151,4 +167,41 @@ async fn log_lines(s: &TestServer, cookie: &str, run: &str) -> Vec<String> {
 
 async fn start_with(s: &TestServer, cookie: &str, runbook: &str, body: Value) -> Reply {
     call(&s.app, "POST", &format!("/api/v1/runbooks/{runbook}/runs"), Some(body), Some(cookie), true).await
+}
+
+async fn bearer_call(app: &Router, method: &str, path: &str, body: Option<Value>, token: &str) -> Reply {
+    let mut req = Request::builder().method(method).uri(path).header(header::AUTHORIZATION, format!("Bearer {token}"));
+    let req = match body {
+        Some(b) => {
+            req = req.header(header::CONTENT_TYPE, "application/json");
+            req.body(Body::from(b.to_string())).unwrap()
+        }
+        None => req.body(Body::empty()).unwrap(),
+    };
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    Reply { status, cookie: None, body: String::from_utf8_lossy(&bytes).into() }
+}
+
+/// A password the tests use after replacing a generated one.
+const CHOSEN: &str = "a-chosen-password-1";
+
+async fn sign_in_as(s: &TestServer, name: &str, password: &str) -> Reply {
+    call(&s.app, "POST", "/api/v1/auth/login", Some(json!({"username": name, "password": password})), None, true).await
+}
+
+/// Create a user with a role as the admin, sign them in and replace their generated
+/// password. Returns their session cookie.
+async fn user_with_role(s: &TestServer, admin: &str, name: &str, role: &str) -> String {
+    let r = call(&s.app, "POST", "/api/v1/users", Some(json!({"name": name, "role": role})), Some(admin), true).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let generated = r.json()["password"].as_str().unwrap().to_string();
+    let r = sign_in_as(s, name, &generated).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.json()["must_change_password"], true);
+    let cookie = r.cookie.unwrap();
+    let r = call(&s.app, "POST", "/api/v1/auth/password", Some(json!({"current_password": generated, "new_password": CHOSEN})), Some(&cookie), true).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.body);
+    cookie
 }

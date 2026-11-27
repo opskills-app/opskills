@@ -9,8 +9,9 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::model::Role;
 use crate::web::AppState;
-use super::{ApiError, ApiResult, bad};
+use super::{Access, ApiError, ApiResult, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -19,6 +20,15 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/notifications/test", post(test_notification))
         .route("/runs/{id}/notifications", get(run_notices))
 }
+
+pub(super) const ACCESS: &[(&str, &str, Access)] = &[
+    ("GET", "/notifications/settings", Access::Role(Role::Viewer)),
+    ("GET", "/settings/email", Access::Role(Role::Admin)),
+    ("PUT", "/settings/email", Access::Role(Role::Admin)),
+    ("DELETE", "/settings/email", Access::Role(Role::Admin)),
+    ("POST", "/notifications/test", Access::Role(Role::Editor)),
+    ("GET", "/runs/{id}/notifications", Access::Role(Role::Viewer)),
+];
 
 async fn notification_settings(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(json!({ "email": st.notifier.email_enabled(), "from": st.notifier.email_from(), "source": st.notifier.email_source() }))

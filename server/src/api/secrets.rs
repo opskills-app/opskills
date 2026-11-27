@@ -13,14 +13,22 @@ use crate::model::{
     Secret, SecretInput, SecretUpdate, StoredSecret, now_ms, validate_secret_description, validate_secret_kind,
     validate_secret_name, validate_secret_value,
 };
+use crate::model::Role;
 use crate::web::AppState;
-use super::{ApiError, ApiResult, bad};
+use super::{Access, ApiError, ApiResult, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/secrets", get(list_secrets).post(create_secret))
         .route("/secrets/{name}", axum::routing::put(update_secret).delete(delete_secret))
 }
+
+pub(super) const ACCESS: &[(&str, &str, Access)] = &[
+    ("GET", "/secrets", Access::Role(Role::Editor)),
+    ("POST", "/secrets", Access::Role(Role::Editor)),
+    ("PUT", "/secrets/{name}", Access::Role(Role::Editor)),
+    ("DELETE", "/secrets/{name}", Access::Role(Role::Editor)),
+];
 
 #[derive(serde::Serialize)]
 struct SecretView {

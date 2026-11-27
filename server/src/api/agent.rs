@@ -19,7 +19,7 @@ use crate::model::{
 };
 use crate::web::AppState;
 use super::hosts::{clean_tags, validate_host_name};
-use super::{ApiError, ApiResult, bad};
+use super::{Access, ApiError, ApiResult, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -29,6 +29,14 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/agent/jobs/{id}/output", post(agent_output))
         .route("/agent/jobs/{id}/finish", post(agent_finish))
 }
+
+pub(super) const ACCESS: &[(&str, &str, Access)] = &[
+    ("POST", "/agent/enroll", Access::OwnCredential),
+    ("POST", "/agent/poll", Access::OwnCredential),
+    ("GET", "/agent/whoami", Access::OwnCredential),
+    ("POST", "/agent/jobs/{id}/output", Access::OwnCredential),
+    ("POST", "/agent/jobs/{id}/finish", Access::OwnCredential),
+];
 
 fn agent_host(st: &AppState, headers: &axum::http::HeaderMap) -> ApiResult<StoredHost> {
     let unauthorized = || ApiError::new(StatusCode::UNAUTHORIZED, "This host is not enrolled. Enroll it again with a new token.");
