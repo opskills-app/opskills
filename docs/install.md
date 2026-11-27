@@ -325,7 +325,7 @@ Any setting can be overridden with an environment variable named
 | `logs.level` | `OPSKILLS_LOGS__LEVEL` | `info` |
 | `auth.session_hours` | `OPSKILLS_AUTH__SESSION_HOURS` | `8` (how long a sign-in lasts) |
 | `runs.max_concurrent` | `OPSKILLS_RUNS__MAX_CONCURRENT` | `4` (runs at the same time; others wait) |
-| `audit.retention_days` | `OPSKILLS_AUDIT__RETENTION_DAYS` | `90` (days of [audit log](audit.md) to keep, 1 to 3650) |
+| `audit.retention_days` | `OPSKILLS_AUDIT__RETENTION_DAYS` | `90` (days of [audit log](audit.md) to keep, 1 to 90) |
 | `hosts.packages_dir` | `OPSKILLS_HOSTS__PACKAGES_DIR` | `/usr/share/opskills/packages` (agent packages offered for download) |
 | `email.smtp_host` | `OPSKILLS_EMAIL__SMTP_HOST` | not set (email notifications off) |
 | `email.smtp_port` | `OPSKILLS_EMAIL__SMTP_PORT` | `587` |

@@ -58,12 +58,13 @@ event has `id`, `at` (milliseconds), `actor`, `via`, `action`, `target` (`kind`,
 
 ## How long it's kept
 
-Events older than `audit.retention_days` (90 by default, up to 3650) are removed every
-hour. Set it in the config file or with `OPSKILLS_AUDIT__RETENTION_DAYS`:
+Events are kept for up to 90 days, and removed every hour once they're older than
+`audit.retention_days` (90 by default, 1 to 90). To keep less, set it in the config
+file or with `OPSKILLS_AUDIT__RETENTION_DAYS`:
 
 ```toml
 [audit]
-retention_days = 365
+retention_days = 30
 ```
 
 The log lives in the OpSkills database, so it's part of your backups of the data

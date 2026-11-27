@@ -28,7 +28,7 @@ session_hours = 8
 max_concurrent = 4
 
 [audit]
-# Days of audit log to keep (1 to 3650); older events are removed every hour.
+# Days of audit log to keep (1 to 90); older events are removed every hour.
 retention_days = 90
 
 # SMTP server for email notifications (optional). Email is off until smtp_host is set.

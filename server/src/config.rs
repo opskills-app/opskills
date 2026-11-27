@@ -84,7 +84,8 @@ pub struct Auth {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Audit {
-    /// How many days of audit log to keep; older events are removed every hour.
+    /// How many days of audit log to keep, at most `MAX_AUDIT_RETENTION_DAYS`; older
+    /// events are removed every hour.
     pub retention_days: u64,
 }
 
@@ -219,6 +220,9 @@ fn apply_env(cfg: &mut Config, get: impl Fn(&str) -> Option<String>) -> Result<(
     Ok(())
 }
 
+/// The longest the audit log is kept.
+pub const MAX_AUDIT_RETENTION_DAYS: u64 = 90;
+
 fn validate(cfg: &Config) -> Result<()> {
     cfg.server
         .listen
@@ -231,7 +235,10 @@ fn validate(cfg: &Config) -> Result<()> {
     );
     anyhow::ensure!((1..=720).contains(&cfg.auth.session_hours), "auth.session_hours must be 1 to 720");
     anyhow::ensure!((1..=64).contains(&cfg.runs.max_concurrent), "runs.max_concurrent must be 1 to 64");
-    anyhow::ensure!((1..=3650).contains(&cfg.audit.retention_days), "audit.retention_days must be 1 to 3650");
+    anyhow::ensure!(
+        (1..=MAX_AUDIT_RETENTION_DAYS).contains(&cfg.audit.retention_days),
+        "audit.retention_days must be 1 to {MAX_AUDIT_RETENTION_DAYS}"
+    );
     let e = &cfg.email;
     anyhow::ensure!(
         ["starttls", "tls", "none"].contains(&e.security.as_str()),
@@ -319,5 +326,10 @@ mod tests {
         cfg = Config::default();
         cfg.server.listen = "8080".into();
         assert!(validate(&cfg).is_err());
+        cfg = Config::default();
+        cfg.audit.retention_days = 91;
+        assert!(validate(&cfg).unwrap_err().to_string().contains("1 to 90"));
+        cfg.audit.retention_days = 30;
+        assert!(validate(&cfg).is_ok());
     }
 }
