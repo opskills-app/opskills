@@ -123,6 +123,7 @@ the quote marks in the value. Write it bare, as above.
 |---|---|
 | `{{ inputs.<name> }}` | The input's value |
 | `{{ host.name }}`, `{{ host.id }}` | The host the step runs on |
+| `{{ host.attr.<key> }}` | The host's [attribute](inventory.md#attributes), like `{{ host.attr.env }}`; empty when the host doesn't have it |
 | `{{ run.id }}`, `{{ run.started_by }}` | This run, and who started it |
 | `{{ runbook.id }}`, `{{ runbook.name }}` | This runbook |
 
@@ -390,7 +391,8 @@ decide which hosts, and the `rollout` decides how they take turns.
 
 `targets` picks hosts three ways, and a run goes to every host any of them picks:
 `hosts` (by id, including `local` for the OpSkills server), `tags` (any of them),
-and `filter`, an expression checked against every enrolled host when the run starts:
+and `filter`, an expression checked against every host of the workspace when the run
+starts:
 
 ```json
 "targets": {"filter": "tags:web,api !tags:staging os:debian*"}
@@ -398,7 +400,7 @@ and `filter`, an expression checked against every enrolled host when the run sta
 
 | Part | Meaning |
 |---|---|
-| `key:value` | The host's field matches the value. Keys: `tags`, `name`, `hostname`, `os`, `arch` |
+| `key:value` | The host's field matches the value. Keys: `tags`, `name`, `hostname`, `os`, `arch`, or an [attribute](inventory.md#attributes) like `env` |
 | `key:a,b` | Any of the values matches |
 | `*`, `?` | Any run of characters, any one character |
 | `!key:value` | The host must not match |
@@ -406,7 +408,10 @@ and `filter`, an expression checked against every enrolled host when the run sta
 | spaces | Separate terms; a host must match every term |
 
 Matching ignores case, values can't contain spaces, and a filter never picks the
-OpSkills server. Saving checks the filter. In the editor, the field under **Run on**
+OpSkills server. A host without an attribute doesn't match `env:prod` and does match
+`!env:prod`. Tags include those from [inventory sources and tag rules](inventory.md).
+Hosts an inventory source only lists (no agent yet) are skipped, and the run page
+names them. Saving checks the filter. In the editor, the field under **Run on**
 shows which hosts it matches as you type; the API offers the same preview with
 `GET /api/v1/hosts?filter=<expression>`.
 

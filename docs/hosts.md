@@ -50,8 +50,8 @@ the right address in the commands it shows.
    `amd64` they look like this:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.16.0_amd64.deb
-   sudo apt install ./opskills-agent_0.16.0_amd64.deb
+   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.17.0_amd64.deb
+   sudo apt install ./opskills-agent_0.17.0_amd64.deb
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -59,8 +59,8 @@ the right address in the commands it shows.
    And for RHEL, Rocky, Alma or Fedora on `x86_64`:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.16.0-1.x86_64.rpm
-   sudo dnf install ./opskills-agent-0.16.0-1.x86_64.rpm
+   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.17.0-1.x86_64.rpm
+   sudo dnf install ./opskills-agent-0.17.0-1.x86_64.rpm
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -168,6 +168,9 @@ In the runbook editor, under **Run on**, choose **Hosts**, then pick:
   matches when the run starts. See
   [Choosing hosts with a filter](runbooks.md#choosing-hosts-with-a-filter).
 
+Hosts also get tags and attributes from [inventory sources and tag rules](inventory.md),
+so you can target `env:prod` or a rule's tag instead of naming hosts.
+
 A run goes to every host that any of these picks. The editor shows how many hosts
 match now, and which ones the filter matches as you type it. Each host runs all the
 steps in order; how hosts take turns (one by one, in parallel or in batches, canary
@@ -196,7 +199,7 @@ step, the step fails after 30 seconds with "Lost contact with the agent".
 | See the agent's status | `sudo opskills-agent status` (also checks that the server accepts this host) |
 | Agent logs | `sudo journalctl -u opskills-agent -f` |
 | Restart the agent | `sudo systemctl restart opskills-agent` |
-| Rename or retag a host | **Hosts**, then the pencil icon |
+| Rename, retag or set attributes | **Hosts**, then the pencil icon |
 | Upgrade the agent | Install the new package the same way; the service restarts on the new version |
 | Enroll with another server | `sudo opskills-agent enroll --server ... --token ... --force` |
 
