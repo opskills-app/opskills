@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Check, KeyRound, Layers, Mail, Plus, RotateCcw, Send, Trash2, UserPlus, X } from "lucide-react";
 import { CopyButton } from "../components/CopyButton";
-import { api, ROLES, useData, type ApiToken, type EmailSettings, type Role, type User } from "../api";
+import { api, ROLES, SHARED_PREFIX, useData, type ApiToken, type EmailSettings, type Role, type User } from "../api";
 import { ROLE_DESCRIPTIONS, ROLE_LABELS, useCan, useIsServerAdmin, useMe, useSession, useWorkspace } from "../session";
 import { MIN_PASSWORD } from "./ChangePassword";
 import { timeAgo } from "../format";
@@ -179,7 +179,7 @@ const blankEmail: EmailSettings = { smtp_host: "", smtp_port: 587, security: "st
 /** SMTP settings for email notifications. The password is a vault secret. */
 function EmailCard() {
   const current = useData(() => api.emailSettings(), []);
-  const vault = useData(() => api.secrets(), []);
+  const shared = useData(() => api.sharedSecrets(), []);
   const [form, setForm] = useState<EmailSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -193,7 +193,9 @@ function EmailCard() {
     setSaved(false);
     setForm({ ...value, ...patch });
   };
-  const secrets = (vault.data ?? []).map((s) => s.name);
+  // Shared secrets; a Default secret picked before 0.15 stays listed until changed.
+  const sharedNames = (shared.data ?? []).map((s) => SHARED_PREFIX + s.name);
+  const secrets = value.password_secret && !sharedNames.includes(value.password_secret) ? [...sharedNames, value.password_secret] : sharedNames;
 
   async function save(e: FormEvent) {
     e.preventDefault();
@@ -303,19 +305,20 @@ function EmailCard() {
                 <input value={value.username ?? ""} onChange={(e) => set({ username: e.target.value })} placeholder="Leave empty for no sign-in" autoComplete="off" className={`mt-1.5 ${field} text-ink`} />
               </label>
               <label className="text-xs font-medium text-muted">
-                Password, from the vault
+                Password, a shared secret
                 <select value={value.password_secret ?? ""} onChange={(e) => set({ password_secret: e.target.value || undefined })} disabled={!(value.username ?? "").trim()} className={`mt-1.5 ${field} text-ink disabled:opacity-50`}>
-                  <option value="">{secrets.length ? "Pick a secret" : "The vault is empty"}</option>
+                  <option value="">{secrets.length ? "Pick a shared secret" : "No shared secrets yet"}</option>
                   {secrets.map((s) => (
                     <option key={s} value={s}>
-                      {s}
+                      {s.startsWith(SHARED_PREFIX) ? s : `${s} (Default workspace)`}
                     </option>
                   ))}
                 </select>
               </label>
             </div>
             <p className="-mt-2 text-xs text-muted">
-              Add the password to the <a href="#/vault" className="text-accent hover:underline">vault</a> first, for example as SMTP_PASSWORD. It stays encrypted there; this page only stores its name.
+              Add the password as a shared secret first, under <a href="#/vault" className="text-accent hover:underline">Vault &gt; Shared</a>, for example as smtp/SMTP_PASSWORD. It
+              doesn't have to be shared with any workspace. It stays encrypted there; this page only stores its name.
             </p>
             <label className="block text-xs font-medium text-muted">
               Sender

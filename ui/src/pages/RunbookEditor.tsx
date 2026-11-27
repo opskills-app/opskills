@@ -6,6 +6,7 @@ import {
   LOCAL_HOST_ID,
   MAX_OUTPUT_LINES,
   runsOnServer,
+  secretEnvName,
   stepKind,
   useData,
   type CallStep,
@@ -692,6 +693,44 @@ function StepKindSwitch({ kind, index, onChange }: { kind: StepKind; index: numb
 }
 
 /** Where a copy step writes, and what. */
+/** Add a secret whose folder a choice input picks, like `{{ inputs.env }}/DB_PASSWORD`. */
+function PickedByInput({ inputs, onAdd }: { inputs: InputDef[]; onAdd: (reference: string) => void }) {
+  const choices = inputs.filter((d) => d.type === "choice" && d.name);
+  const [inputName, setInputName] = useState("");
+  const [rest, setRest] = useState("");
+  if (choices.length === 0) return null;
+  const pick = inputName || choices[0].name;
+  const reference = `{{ inputs.${pick} }}/${rest.replace(/^\/+/, "")}`;
+  return (
+    <div className="mt-4 rounded-xl bg-surface-2 p-3">
+      <p className="text-xs font-medium text-ink-2">Pick the folder with a choice input</p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <select aria-label="Choice input" value={pick} onChange={(e) => setInputName(e.target.value)} className="h-9 rounded-lg bg-surface px-2 font-mono text-xs outline-none focus:ring-2 focus:ring-accent">
+          {choices.map((d) => (
+            <option key={d.name} value={d.name}>
+              {`{{ inputs.${d.name} }}`}
+            </option>
+          ))}
+        </select>
+        <span className="font-mono text-xs text-muted">/</span>
+        <input aria-label="Rest of the secret's name" value={rest} onChange={(e) => setRest(e.target.value)} placeholder="DB_PASSWORD" spellCheck={false} className="h-9 w-48 rounded-lg bg-surface px-3 font-mono text-xs outline-none focus:ring-2 focus:ring-accent" />
+        <Button
+          size="sm"
+          type="button"
+          disabled={!/[A-Z0-9_]$/.test(rest)}
+          onClick={() => {
+            onAdd(reference);
+            setRest("");
+          }}
+        >
+          Add
+        </Button>
+      </div>
+      <p className="mt-1.5 text-xs text-muted">Each run uses the secret in the folder its input names, like prod/DB_PASSWORD or staging/DB_PASSWORD. Every choice must have one.</p>
+    </div>
+  );
+}
+
 function CopyFields({ copy, index, vaultNames, onChange, onPickSecret }: { copy: CopyStep; index: number; vaultNames: string[]; onChange: (c: CopyStep) => void; onPickSecret: (name: string) => void }) {
   const fromSecret = copy.secret !== undefined;
   return (
@@ -1014,7 +1053,7 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
                 <CopyFields
                   copy={step.copy}
                   index={i}
-                  vaultNames={(vault.data ?? []).map((s) => s.name)}
+                  vaultNames={[...new Set([...(vault.data ?? []).map((s) => s.name), ...input.secrets])]}
                   onChange={(copy) => setStep(i, { copy })}
                   onPickSecret={(name) => setInput((s) => (s.secrets.includes(name) ? s : { ...s, secrets: [...s.secrets, name] }))}
                 />
@@ -1135,28 +1174,29 @@ export function RunbookEditor({ id, template }: { id?: string; template?: string
                 Open the vault
               </a>
             </div>
-            <p className="mt-1 text-xs text-muted">Selected secrets are environment variables in every step. Their values are masked in the output.</p>
+            <p className="mt-1 text-xs text-muted">Selected secrets are environment variables in every step, named after their last part. Their values are masked in the output.</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              {(vault.data ?? []).map((sec) => {
-                const on = input.secrets.includes(sec.name);
+              {[...(vault.data ?? []).map((sec) => sec.name), ...input.secrets.filter((r) => !(vault.data ?? []).some((sec) => sec.name === r))].map((name) => {
+                const on = input.secrets.includes(name);
                 return (
                   <button
-                    key={sec.name}
+                    key={name}
                     type="button"
                     aria-pressed={on}
-                    onClick={() => setInput((s) => ({ ...s, secrets: on ? s.secrets.filter((x) => x !== sec.name) : [...s.secrets, sec.name] }))}
+                    onClick={() => setInput((s) => ({ ...s, secrets: on ? s.secrets.filter((x) => x !== name) : [...s.secrets, name] }))}
                     className={`flex h-8 items-center gap-1.5 rounded-lg px-2.5 font-mono text-xs ${on ? "bg-accent text-accent-ink" : "bg-surface-2 text-ink-2 hover:bg-surface-3"}`}
                   >
                     {on ? <Check className="size-3.5" /> : <KeyRound className="size-3.5" />}
-                    {sec.name}
+                    {name}
                   </button>
                 );
               })}
-              {vault.data?.length === 0 && <p className="text-xs text-muted">The vault is empty. Add a secret there first.</p>}
+              {vault.data?.length === 0 && input.secrets.length === 0 && <p className="text-xs text-muted">The vault is empty. Add a secret there first.</p>}
             </div>
+            <PickedByInput inputs={input.inputs ?? []} onAdd={(r) => setInput((s) => (s.secrets.includes(r) ? s : { ...s, secrets: [...s.secrets, r] }))} />
             {input.secrets.length > 0 && (
               <p className="mt-3 text-xs text-muted">
-                Use it in a command as <code className="font-mono text-ink-2">"${input.secrets[0]}"</code>.
+                Use it in a command as <code className="font-mono text-ink-2">"${secretEnvName(input.secrets[0])}"</code>.
               </p>
             )}
           </Card>

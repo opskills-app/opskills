@@ -154,7 +154,7 @@ function StepBody({ step }: { step: Step }) {
             <>
               from the vault secret{" "}
               <a href="#/vault" className="font-mono text-[12.5px] hover:text-accent">
-                ${c.secret}
+                {c.secret}
               </a>
             </>
           )}

@@ -212,7 +212,7 @@ export function RunDetail({ id }: { id: string }) {
             )}{" "}
             {timeAgo(run.created_at, now)}
             {hostNames.length > 0 && <> · on {hostNames.length > 3 ? `${hostNames.length} hosts` : hostNames.join(", ")}</>}
-            {run.secrets?.length > 0 && <> · secrets: <span className="font-mono text-xs">{run.secrets.map((n) => "$" + n).join(", ")}</span> (masked in output)</>}
+            {run.secrets?.length > 0 && <> · secrets: <span className="font-mono text-xs">{run.secrets.join(", ")}</span> (masked in output)</>}
           </p>
         </div>
         <div className={canRun ? "flex items-center gap-2" : "hidden"}>
