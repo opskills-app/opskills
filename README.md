@@ -250,6 +250,11 @@ curl -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" \
 Lists and creates work in the workspace named by `?workspace=<id>`, or in Default
 without one ([Workspaces](docs/workspaces.md#api)).
 
+**API changes.** Until 1.0, a minor release can change the API, and every change that
+can break a script is listed under **Breaking changes** in its
+[release notes](docs/releases). From 1.0 on, a replaced field stays for at least one
+release before it's removed.
+
 
 | Endpoint | What it does |
 |---|---|
