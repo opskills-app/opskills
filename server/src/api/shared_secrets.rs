@@ -47,6 +47,7 @@ struct SharedView {
 struct Users {
     runbooks: Vec<(String, String, String)>,
     email: bool,
+    sign_in: bool,
 }
 
 impl Users {
@@ -54,13 +55,17 @@ impl Users {
         let reference = format!("{SHARED_PREFIX}{name}");
         let runbooks = st.store.runbooks()?.into_iter().filter(|r| r.secret_paths().contains(&reference)).map(|r| (r.id, r.name, r.workspace)).collect();
         let email = st.store.email_settings()?.is_some_and(|e| e.password_secret.as_deref() == Some(reference.as_str()));
-        Ok(Users { runbooks, email })
+        let sign_in = st.store.sign_in_settings()?.oidc.is_some_and(|o| o.client_secret == reference);
+        Ok(Users { runbooks, email, sign_in })
     }
 
     fn describe(&self) -> Vec<String> {
         let mut out: Vec<String> = self.runbooks.iter().map(|(_, name, ws)| format!("{name} (in {ws})")).collect();
         if self.email {
             out.push("Settings > Email".into());
+        }
+        if self.sign_in {
+            out.push("Settings > Sign-in".into());
         }
         out
     }

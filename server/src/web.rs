@@ -36,6 +36,8 @@ pub struct AppState {
     pub hub: Arc<Hub>,
     pub vault: Arc<Vault>,
     pub notifier: Arc<crate::notify::Notifier>,
+    /// OIDC sign-ins in progress and the provider's settings.
+    pub oidc: crate::oidc::OidcState,
 }
 
 impl AppState {
@@ -73,6 +75,7 @@ pub fn build_state(cfg: Config, fs: &firststart::State) -> Result<Arc<AppState>>
         hub,
         vault,
         notifier,
+        oidc: Default::default(),
     }))
 }
 
