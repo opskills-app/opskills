@@ -13,6 +13,8 @@ use serde_json::json;
 use crate::auth;
 use crate::model::now_ms;
 use crate::model::Role;
+use crate::audit::{self, By};
+use crate::model::AuditTarget;
 use crate::web::AppState;
 use super::{Access, ApiError, ApiResult, CurrentUser, bad};
 
@@ -81,6 +83,8 @@ async fn create_token(State(st): State<Arc<AppState>>, Extension(user): Extensio
     };
     st.store.put_api_token(&crate::model::StoredApiToken { token: token.clone(), secret_hash: auth::token_hash(&secret) })?;
     tracing::info!(token_id = %token.id, name = %token.name, "API token created");
+    let expiry = input.expires_in_days.map_or("never expires".to_string(), |d| format!("expires in {d} days"));
+    audit::record(&st, &By::user(&user), "token.create", Some(AuditTarget::new("token", &token.id, &token.name)), Some(expiry));
     // The only time the token itself is ever shown.
     Ok((StatusCode::CREATED, Json(json!({ "token": token, "value": whole }))).into_response())
 }
@@ -88,14 +92,19 @@ async fn create_token(State(st): State<Arc<AppState>>, Extension(user): Extensio
 /// Revoke one of your own tokens.
 async fn delete_token(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>) -> ApiResult<StatusCode> {
     match st.store.api_token(&id)? {
-        Some(t) if t.token.user == user.user => delete_any_token(State(st), Path(id)).await,
+        Some(t) if t.token.user == user.user => delete_any_token(State(st), Extension(user), Path(id)).await,
         _ => Err(ApiError::not_found("Token")),
     }
 }
 
 /// Revoke anyone's token, for admins.
-async fn delete_any_token(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+async fn delete_any_token(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    let token = st.store.api_token(&id)?.map(|t| t.token);
     if st.store.delete_api_token(&id)? {
+        if let Some(t) = token {
+            let detail = (t.user != user.user).then(|| format!("of {}", t.user));
+            audit::record(&st, &By::user(&user), "token.revoke", Some(AuditTarget::new("token", &t.id, &t.name)), detail);
+        }
         tracing::info!(token_id = %id, "API token revoked");
         Ok(StatusCode::NO_CONTENT)
     } else {

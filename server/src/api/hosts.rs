@@ -16,6 +16,8 @@ use crate::model::{
     EnrollmentToken, Host, LOCAL_HOST_ID, LOCAL_HOST_NAME, Runbook, normalize_tag, now_ms,
 };
 use crate::model::Role;
+use crate::audit::{self, By};
+use crate::model::AuditTarget;
 use crate::web::AppState;
 use super::{Access, ApiError, ApiResult, CurrentUser, bad};
 
@@ -125,7 +127,7 @@ pub(super) fn clean_tags(tags: &[String]) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-async fn update_host(State(st): State<Arc<AppState>>, Path(id): Path<String>, body: String) -> ApiResult<Json<HostView>> {
+async fn update_host(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>, body: String) -> ApiResult<Json<HostView>> {
     if id == LOCAL_HOST_ID {
         return Err(ApiError::new(StatusCode::CONFLICT, "The OpSkills server can't be renamed or tagged."));
     }
@@ -142,10 +144,12 @@ async fn update_host(State(st): State<Arc<AppState>>, Path(id): Path<String>, bo
         stored.host.tags = clean_tags(&tags).map_err(bad)?;
     }
     st.store.put_host(&stored)?;
+    let detail = format!("name {}, tags [{}]", stored.host.name, stored.host.tags.join(", "));
+    audit::record(&st, &By::user(&user), "host.update", Some(AuditTarget::new("host", &id, &stored.host.name)), Some(detail));
     host_views(&st)?.into_iter().find(|v| v.host.id == id).map(Json).ok_or_else(|| ApiError::not_found("Host"))
 }
 
-async fn delete_host(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+async fn delete_host(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>) -> ApiResult<StatusCode> {
     if id == LOCAL_HOST_ID {
         return Err(ApiError::new(StatusCode::CONFLICT, "The OpSkills server can't be removed."));
     }
@@ -153,8 +157,10 @@ async fn delete_host(State(st): State<Arc<AppState>>, Path(id): Path<String>) ->
     if !users.is_empty() {
         return Err(ApiError::new(StatusCode::CONFLICT, format!("This host is a target of: {}. Remove it from those runbooks first.", users.join(", "))));
     }
+    let name = st.store.stored_host(&id)?.map(|h| h.host.name).unwrap_or_default();
     if st.store.delete_host(&id)? {
         st.hub.forget(&id);
+        audit::record(&st, &By::user(&user), "host.delete", Some(AuditTarget::new("host", &id, &name)), None);
         tracing::info!(host_id = %id, "host removed");
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -171,6 +177,7 @@ async fn create_enrollment_token(State(st): State<Arc<AppState>>, Extension(user
     let t = EnrollmentToken { created_at: now, expires_at: now + ENROLLMENT_HOURS * 3_600_000, created_by: user.label() };
     st.store.put_enrollment_token(&auth::token_hash(&token), &t)?;
     tracing::info!("enrollment token created");
+    audit::record(&st, &By::user(&user), "host.enrollment_token", None, Some("valid once, for 24 hours".into()));
     Ok((StatusCode::CREATED, Json(json!({ "token": token, "expires_at": t.expires_at }))).into_response())
 }
 

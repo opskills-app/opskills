@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{ApiToken, EnrollmentToken, FIRST_ADMIN, Host, LogLine, Role, Run, Runbook, Secret, Status, StoredApiToken, StoredHost, StoredSecret, StoredUser, StoredWebhook, User, Webhook, now_ms};
+use crate::model::{ApiToken, AuditEvent, EnrollmentToken, FIRST_ADMIN, Host, LogLine, Role, Run, Runbook, Secret, Status, StoredApiToken, StoredHost, StoredSecret, StoredUser, StoredWebhook, User, Webhook, now_ms};
 
 const RUNBOOKS: TableDefinition<&str, &str> = TableDefinition::new("runbooks");
 const RUNS: TableDefinition<&str, &str> = TableDefinition::new("runs");
@@ -38,6 +38,8 @@ const WEBHOOKS: TableDefinition<&str, &str> = TableDefinition::new("webhooks");
 const SCHEDULE_STATE: TableDefinition<&str, &str> = TableDefinition::new("schedule_state");
 /// Key: user name. Value: the user and their password hash.
 const USERS: TableDefinition<&str, &str> = TableDefinition::new("users");
+/// Key: event id (UUID v7, time-ordered). Value: the audit event.
+const AUDIT: TableDefinition<&str, &str> = TableDefinition::new("audit");
 /// Key: "schema_version". Value: the version number.
 const META: TableDefinition<&str, &str> = TableDefinition::new("meta");
 
@@ -129,6 +131,7 @@ impl Store {
             w.open_table(NOTICES)?;
             w.open_table(SETTINGS)?;
             w.open_table(USERS)?;
+            w.open_table(AUDIT)?;
         }
         // Every migration and the new version commit together, or not at all.
         for (to, what, migrate) in MIGRATIONS {
@@ -542,6 +545,57 @@ impl Store {
             .retain(|k, v| except == Some(k) || serde_json::from_str::<Session>(v).map(|s| s.user != name).unwrap_or(false))?;
         w.commit()?;
         Ok(())
+    }
+
+
+    // Audit log
+
+    pub fn append_audit(&self, e: &AuditEvent) -> Result<()> {
+        self.put(AUDIT, &e.id, &serde_json::to_string(e)?)
+    }
+    /// Events before the one with id `before` (or the newest), newest first, that pass
+    /// `keep`, up to `limit`. At most `scan` events are looked at, so a search can't run
+    /// through a very long log in one request; `more` says whether there are older ones.
+    pub fn audit(&self, before: Option<&str>, limit: usize, scan: usize, keep: impl Fn(&AuditEvent) -> bool) -> Result<(Vec<AuditEvent>, Option<String>)> {
+        let r = self.db.begin_read()?;
+        let t = r.open_table(AUDIT)?;
+        let iter = match before {
+            Some(b) => t.range(..b)?,
+            None => t.iter()?,
+        };
+        let mut out = Vec::new();
+        let mut last = None;
+        for (seen, item) in iter.rev().enumerate() {
+            let (k, v) = item?;
+            if seen >= scan || out.len() >= limit {
+                // There is more; continue after the last one looked at.
+                return Ok((out, last));
+            }
+            last = Some(k.value().to_string());
+            if let Ok(e) = serde_json::from_str::<AuditEvent>(v.value())
+                && keep(&e)
+            {
+                out.push(e);
+            }
+        }
+        Ok((out, None))
+    }
+    /// Drop events older than `cutoff_ms`. Returns how many.
+    pub fn purge_audit_before(&self, cutoff_ms: u64) -> Result<usize> {
+        let w = self.db.begin_write()?;
+        let mut removed = 0;
+        {
+            let mut t = w.open_table(AUDIT)?;
+            t.retain(|_, v| {
+                let keep = serde_json::from_str::<AuditEvent>(v).map(|e| e.at >= cutoff_ms).unwrap_or(false);
+                if !keep {
+                    removed += 1;
+                }
+                keep
+            })?;
+        }
+        w.commit()?;
+        Ok(removed)
     }
 
 }

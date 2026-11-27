@@ -144,7 +144,7 @@ pub fn tick(st: &Arc<AppState>, floor: u64, now: u64) -> Vec<String> {
 
 fn fire(st: &Arc<AppState>, rb: &Runbook, s: &Schedule) -> Result<String, String> {
     let given = s.inputs.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect();
-    let by = if s.name.is_empty() { "schedule".to_string() } else { format!("schedule {}", s.name) };
+    let by = crate::audit::By::system(if s.name.is_empty() { "schedule".to_string() } else { format!("schedule {}", s.name) });
     crate::api::start_runbook(st, rb, &given, &by, "schedule").map(|run| run.id).map_err(|e| e.detail())
 }
 

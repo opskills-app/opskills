@@ -27,6 +27,10 @@ session_hours = 8
 # How many runs may execute at the same time; others wait in the queue.
 max_concurrent = 4
 
+[audit]
+# Days of audit log to keep (1 to 3650); older events are removed every hour.
+retention_days = 90
+
 # SMTP server for email notifications (optional). Email is off until smtp_host is set.
 # [email]
 # smtp_host = "smtp.example.com"

@@ -17,6 +17,8 @@ use crate::hub::{AgentInfo, JobEnd, OutLine, POLL_WAIT};
 use crate::model::{
     Host, StoredHost, now_ms,
 };
+use crate::audit::{self, By};
+use crate::model::AuditTarget;
 use crate::web::AppState;
 use super::hosts::{clean_tags, validate_host_name};
 use super::{Access, ApiError, ApiResult, bad};
@@ -101,6 +103,7 @@ async fn agent_enroll(State(st): State<Arc<AppState>>, body: String) -> ApiResul
     st.store.put_host(&StoredHost { host: host.clone(), secret_hash: auth::token_hash(&secret) })?;
     st.hub.touch(&host.id);
     tracing::info!(host_id = %host.id, name = %host.name, "host enrolled");
+    audit::record(&st, &By::system(format!("agent {}", host.name)), "host.enroll", Some(AuditTarget::new("host", &host.id, &host.name)), Some(format!("{} {}", host.os, host.arch)));
     Ok((StatusCode::CREATED, Json(json!({ "host_id": host.id, "name": host.name, "secret": secret }))).into_response())
 }
 

@@ -28,6 +28,7 @@ mod secrets;
 mod hosts;
 mod agent;
 mod users;
+mod audit;
 
 pub use hosts::{Package, packages, release_url};
 pub use runs::start_runbook;
@@ -45,6 +46,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .merge(hosts::routes())
         .merge(agent::routes())
         .merge(users::routes())
+        .merge(audit::routes())
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "No such API endpoint.") })
         .layer(middleware::from_fn_with_state(state, guard))
 }
@@ -125,6 +127,7 @@ const RULES: &[Rules] = &[
     hosts::ACCESS,
     agent::ACCESS,
     users::ACCESS,
+    audit::ACCESS,
 ];
 
 /// Every access rule, as `(method, route, rule)`.
@@ -276,6 +279,7 @@ mod tests {
             include_str!("hosts.rs"),
             include_str!("agent.rs"),
             include_str!("users.rs"),
+            include_str!("audit.rs"),
         ];
         let route = regex::Regex::new(r#"\.route\("([^"]+)",\s*(.+)\)\s*$"#).unwrap();
         let method = regex::Regex::new(r"\b(get|post|put|delete|patch)\(").unwrap();

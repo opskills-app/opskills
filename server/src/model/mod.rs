@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+mod audit;
 mod schedule;
 mod notification;
 mod runbook;
@@ -12,6 +13,7 @@ mod token;
 mod secret;
 mod user;
 
+pub use audit::*;
 pub use schedule::*;
 pub use notification::*;
 pub use runbook::*;

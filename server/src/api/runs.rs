@@ -20,6 +20,8 @@ use crate::model::{
     LOCAL_HOST_ID, LOCAL_HOST_NAME, Run, RunHost, Runbook,
 };
 use crate::model::Role;
+use crate::audit::{self, By};
+use crate::model::AuditTarget;
 use crate::web::AppState;
 use super::{Access, ApiError, ApiResult, CurrentUser};
 
@@ -59,23 +61,25 @@ async fn start_run(State(st): State<Arc<AppState>>, Extension(user): Extension<C
     } else {
         serde_json::from_str(&body).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("Invalid run request: {e}")))?
     };
-    let run = start_runbook(&st, &rb, &start.inputs, &user.label(), "manual")?;
+    let run = start_runbook(&st, &rb, &start.inputs, &By::user(&user), "manual")?;
     Ok((StatusCode::CREATED, Json(run)).into_response())
 }
 
 /// Start a run of `rb` on its targets: check the inputs, decrypt its secrets (held only
 /// in memory for the run), pick the hosts and hand it to the executor. Used by the
 /// API, schedules and webhooks.
-pub fn start_runbook(st: &AppState, rb: &Runbook, given: &serde_json::Map<String, serde_json::Value>, started_by: &str, trigger: &str) -> ApiResult<Run> {
+pub fn start_runbook(st: &AppState, rb: &Runbook, given: &serde_json::Map<String, serde_json::Value>, by: &By, trigger: &str) -> ApiResult<Run> {
     let values = st.executor.prepare(rb, given).map_err(|e| match e {
         StartError::BadInput(m) => ApiError::new(StatusCode::BAD_REQUEST, m),
         StartError::Conflict(m) => ApiError::new(StatusCode::CONFLICT, m),
         StartError::Internal(e) => e.into(),
     })?;
     let hosts = run_hosts(st, rb)?;
-    let mut run = Run::new(rb, started_by, hosts, &values.inputs);
+    let mut run = Run::new(rb, &by.label(), hosts, &values.inputs);
     run.trigger = trigger.into();
-    Ok(st.executor.start(run, values)?)
+    let run = st.executor.start(run, values)?;
+    audit::record(st, by, "run.start", Some(AuditTarget::new("run", &run.id, &rb.name)), Some(format!("{trigger} run")));
+    Ok(run)
 }
 
 /// The hosts a run of `rb` goes to, in order: the server first if targeted, then hosts by name.
@@ -175,14 +179,16 @@ async fn retry_run(State(st): State<Arc<AppState>>, Extension(user): Extension<C
     run.retry_of = Some(earlier.id.clone());
     let run = st.executor.start(run, values)?;
     tracing::info!(run_id = %run.id, retry_of = %earlier.id, hosts = run.hosts.len(), "retrying unfinished hosts");
+    audit::record(&st, &By::user(&user), "run.retry", Some(AuditTarget::new("run", &run.id, &rb.name)), Some(format!("{} host(s) of run {}", run.hosts.len(), earlier.id)));
     Ok((StatusCode::CREATED, Json(run)).into_response())
 }
 
-async fn cancel_run(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+async fn cancel_run(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>) -> ApiResult<StatusCode> {
     let run = st.store.run(&id)?.ok_or_else(|| ApiError::not_found("Run"))?;
     if run.status.is_finished() || !st.executor.cancel(&id) {
         return Err(ApiError::new(StatusCode::CONFLICT, "This run has already finished."));
     }
+    audit::record(&st, &By::user(&user), "run.cancel", Some(AuditTarget::new("run", &id, &run.runbook_name)), None);
     Ok(StatusCode::ACCEPTED)
 }
 

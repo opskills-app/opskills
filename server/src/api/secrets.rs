@@ -6,7 +6,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde_json::json;
 
 use crate::model::{
@@ -14,8 +14,10 @@ use crate::model::{
     validate_secret_name, validate_secret_value,
 };
 use crate::model::Role;
+use crate::audit::{self, By};
+use crate::model::AuditTarget;
 use crate::web::AppState;
-use super::{Access, ApiError, ApiResult, bad};
+use super::{Access, ApiError, ApiResult, CurrentUser, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -56,7 +58,7 @@ async fn list_secrets(State(st): State<Arc<AppState>>) -> ApiResult<Json<Vec<Sec
     Ok(Json(views(&st)?))
 }
 
-async fn create_secret(State(st): State<Arc<AppState>>, body: String) -> ApiResult<Response> {
+async fn create_secret(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, body: String) -> ApiResult<Response> {
     let input: SecretInput = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid secret: {e}")))?;
     let name = input.name.trim().to_string();
     let kind = input.kind.unwrap_or_else(|| "other".into());
@@ -73,10 +75,11 @@ async fn create_secret(State(st): State<Arc<AppState>>, body: String) -> ApiResu
     let meta = Secret { name: name.clone(), kind, description, created_at: now, updated_at: now };
     st.store.put_secret(&StoredSecret { meta: meta.clone(), nonce: sealed.nonce, ciphertext: sealed.ciphertext })?;
     tracing::info!(secret = %name, "secret added");
+    audit::record(&st, &By::user(&user), "secret.create", Some(AuditTarget::new("secret", &name, &name)), None);
     Ok((StatusCode::CREATED, Json(SecretView { meta, used_by: vec![] })).into_response())
 }
 
-async fn update_secret(State(st): State<Arc<AppState>>, Path(name): Path<String>, body: String) -> ApiResult<Json<SecretView>> {
+async fn update_secret(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(name): Path<String>, body: String) -> ApiResult<Json<SecretView>> {
     let mut stored = st.store.secret(&name)?.ok_or_else(|| ApiError::not_found("Secret"))?;
     let update: SecretUpdate = serde_json::from_str(&body).map_err(|e| bad(format!("Invalid update: {e}")))?;
     if let Some(kind) = update.kind {
@@ -88,6 +91,7 @@ async fn update_secret(State(st): State<Arc<AppState>>, Path(name): Path<String>
         validate_secret_description(&description).map_err(bad)?;
         stored.meta.description = description;
     }
+    let replaced = update.value.is_some();
     if let Some(value) = update.value {
         validate_secret_value(&value).map_err(bad)?;
         let sealed = st.vault.seal(&name, value.as_bytes())?;
@@ -97,10 +101,12 @@ async fn update_secret(State(st): State<Arc<AppState>>, Path(name): Path<String>
     }
     stored.meta.updated_at = now_ms();
     st.store.put_secret(&stored)?;
+    let what = if replaced { "value replaced" } else { "details changed" };
+    audit::record(&st, &By::user(&user), "secret.update", Some(AuditTarget::new("secret", &name, &name)), Some(what.into()));
     views(&st)?.into_iter().find(|v| v.meta.name == name).map(Json).ok_or_else(|| ApiError::not_found("Secret"))
 }
 
-async fn delete_secret(State(st): State<Arc<AppState>>, Path(name): Path<String>) -> ApiResult<StatusCode> {
+async fn delete_secret(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(name): Path<String>) -> ApiResult<StatusCode> {
     if st.store.email_settings()?.is_some_and(|e| e.password_secret.as_deref() == Some(name.as_str())) {
         return Err(ApiError::new(StatusCode::CONFLICT, format!("{name} is the email password. Change it under Settings > Email first.")));
     }
@@ -116,6 +122,7 @@ async fn delete_secret(State(st): State<Arc<AppState>>, Path(name): Path<String>
     }
     if st.store.delete_secret(&name)? {
         tracing::info!(secret = %name, "secret deleted");
+        audit::record(&st, &By::user(&user), "secret.delete", Some(AuditTarget::new("secret", &name, &name)), None);
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::not_found("Secret"))

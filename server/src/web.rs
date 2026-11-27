@@ -80,6 +80,7 @@ pub async fn serve(cfg: Config, fs: firststart::State) -> Result<()> {
     let listen = cfg.server.listen.clone();
     let state = build_state(cfg, &fs)?;
     crate::schedule::spawn(state.clone());
+    crate::audit::spawn_purge(state.clone());
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(&listen).await.with_context(|| format!("listening on {listen}"))?;
     tracing::info!(listen = %listen, version = crate::VERSION, "opskills is ready");

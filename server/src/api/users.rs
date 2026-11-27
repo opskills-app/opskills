@@ -14,6 +14,8 @@ use serde_json::json;
 use crate::auth;
 use crate::firststart::random_password;
 use crate::model::{Role, StoredUser, User, now_ms, validate_username};
+use crate::audit::{self, By};
+use crate::model::AuditTarget;
 use crate::web::AppState;
 use super::{Access, ApiError, ApiResult, CurrentUser, bad};
 
@@ -68,6 +70,7 @@ async fn create_user(State(st): State<Arc<AppState>>, Extension(me): Extension<C
     let user = User { name, role: input.role, created_at: now_ms(), must_change_password: true, last_sign_in_at: None, password_changed_at: None };
     st.store.put_user(&StoredUser { user: user.clone(), password_hash })?;
     tracing::info!(user = %user.name, role = user.role.as_str(), by = %me.user, "user created");
+    audit::record(&st, &By::user(&me), "user.create", Some(AuditTarget::new("user", &user.name, &user.name)), Some(format!("role {}", user.role.as_str())));
     // The only time the password is shown.
     Ok((StatusCode::CREATED, Json(json!({ "user": user, "password": password }))).into_response())
 }
@@ -94,6 +97,7 @@ async fn update_user(State(st): State<Arc<AppState>>, Extension(me): Extension<C
             return Err(ApiError::new(StatusCode::CONFLICT, "There must always be at least one admin."));
         }
         tracing::info!(user = %name, from = stored.user.role.as_str(), to = input.role.as_str(), by = %me.user, "role changed");
+        audit::record(&st, &By::user(&me), "user.role_change", Some(AuditTarget::new("user", &name, &name)), Some(format!("role {} to {}", stored.user.role.as_str(), input.role.as_str())));
         stored.user.role = input.role;
         st.store.put_user(&stored)?;
     }
@@ -111,6 +115,7 @@ async fn reset_password(State(st): State<Arc<AppState>>, Extension(me): Extensio
     st.store.put_user(&stored)?;
     st.store.delete_sessions_of(&name, None)?;
     tracing::info!(user = %name, by = %me.user, "password reset");
+    audit::record(&st, &By::user(&me), "user.password_reset", Some(AuditTarget::new("user", &name, &name)), Some("signed out; must choose a new password".into()));
     Ok(Json(json!({ "user": stored.user, "password": password })))
 }
 
@@ -124,5 +129,6 @@ async fn delete_user(State(st): State<Arc<AppState>>, Extension(me): Extension<C
     }
     st.store.delete_user(&name)?;
     tracing::info!(user = %name, by = %me.user, "user removed, with their sessions and API tokens");
+    audit::record(&st, &By::user(&me), "user.delete", Some(AuditTarget::new("user", &name, &name)), Some(format!("was {}; sessions and API tokens ended", stored.user.role.as_str())));
     Ok(StatusCode::NO_CONTENT)
 }
