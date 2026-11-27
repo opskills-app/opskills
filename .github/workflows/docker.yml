@@ -72,8 +72,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           sbom: ${{ github.event_name != 'pull_request' }}
           provenance: ${{ github.event_name != 'pull_request' && 'mode=max' || 'false' }}
+          # Pull requests read the cache that builds on main write, but don't write their own:
+          # uploading it took about two minutes and only that pull request could use it.
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}
 
       - name: Summary
         if: github.event_name != 'pull_request'

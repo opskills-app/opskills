@@ -36,14 +36,25 @@ RUN cargo install cargo-zigbuild --version ${CARGO_ZIGBUILD_VERSION} --locked --
 RUN rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
 WORKDIR /src/server
 COPY server/Cargo.toml server/Cargo.lock ./
-RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo fetch --locked && rm -r src
+# Build the dependencies alone (for the tests and both targets), so this layer stays
+# cached until Cargo.toml or Cargo.lock change. Then remove OpSkills' own placeholder
+# build, so the real sources below always compile.
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && touch src/lib.rs \
+ && cargo test --locked --no-run --quiet \
+ && for target in x86_64 aarch64; do \
+      cargo zigbuild --locked --release --quiet --target "$target-unknown-linux-musl"; \
+    done \
+ && rm -r src \
+ && find target \( -name 'opskills*' -o -name 'libopskills*' \) -prune -exec rm -rf {} +
 COPY server/ ./
 COPY --from=ui /src/ui/dist /src/ui/dist
-RUN cargo test --locked --release --quiet \
+# The build folder isn't kept in the layer: only the binaries in /out are.
+RUN cargo test --locked --quiet \
  && for arch in amd64:x86_64 arm64:aarch64; do \
       cargo zigbuild --locked --release --target "${arch#*:}-unknown-linux-musl" \
       && install -D "target/${arch#*:}-unknown-linux-musl/release/opskills" "/out/${arch%%:*}/opskills"; \
-    done
+    done \
+ && rm -rf target
 
 # 3. Packages: the server .deb, and the agent .deb and .rpm, for both architectures
 FROM --platform=$BUILDPLATFORM build AS package-build
