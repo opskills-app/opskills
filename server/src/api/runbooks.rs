@@ -44,15 +44,19 @@ async fn get_runbook(State(st): State<Arc<AppState>>, Path(id): Path<String>) ->
 fn parse_input(st: &AppState, ws: &str, body: &str) -> ApiResult<RunbookInput> {
     let input: RunbookInput = serde_json::from_str(body).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("Invalid runbook: {e}")))?;
     let input = input.validate().map_err(|msg| ApiError::new(StatusCode::BAD_REQUEST, msg))?;
-    for name in &input.secrets {
-        if st.store.secret(ws, name)?.is_none() {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, format!("The vault has no secret named {name}. Add it in the vault first.")));
+    // Every secret a reference can stand for must be there for this workspace, for
+    // every choice of the inputs that pick its folders.
+    for reference in &input.secrets {
+        for path in crate::model::secret_ref_expansions(reference, &input.inputs).map_err(bad)? {
+            if let Err(why) = crate::secret_refs::check(&st.store, ws, &path)? {
+                return Err(bad(if path == *reference { why } else { format!("{reference} as {path}: {why}") }));
+            }
         }
     }
     for (i, n) in input.notifications.iter().enumerate() {
         for name in n.secret_refs() {
-            if st.store.secret(ws, &name)?.is_none() {
-                return Err(bad(format!("Notification {}: the vault has no secret named {name}. Add it in the vault first.", i + 1)));
+            if let Err(why) = crate::secret_refs::check(&st.store, ws, &name)? {
+                return Err(bad(format!("Notification {}: {why}", i + 1)));
             }
         }
     }

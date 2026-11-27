@@ -224,14 +224,43 @@ export interface AgentPackage {
 
 export type SecretKind = "password" | "token" | "ssh_key" | "certificate" | "other";
 
+/** A secret of the workspace, by full name (`prod/db/DB_PASSWORD`), or a shared secret it can use (`shared/<path>`). */
 export interface Secret {
   name: string;
+  workspace?: string;
   kind: SecretKind;
   description: string;
   created_at: number;
   updated_at: number;
+  updated_by?: string;
+  /** Managed by server admins; usable here as `shared/<path>`. */
+  shared: boolean;
   used_by: { id: string; name: string }[];
 }
+
+/** A shared secret, as server admins see it. */
+export interface SharedSecret {
+  name: string;
+  kind: SecretKind;
+  description: string;
+  all_workspaces: boolean;
+  workspaces: string[];
+  created_at: number;
+  updated_at: number;
+  updated_by?: string;
+  used_by: { id: string; name: string; workspace: string }[];
+  /** It's the email password (Settings > Email). */
+  email_password: boolean;
+}
+
+/** How runbooks name a shared secret: `shared/<path>`. */
+export const SHARED_PREFIX = "shared/";
+
+/** The environment variable a secret becomes: the last part of its name. */
+export const secretEnvName = (reference: string) => reference.slice(reference.lastIndexOf("/") + 1);
+
+/** A secret's full name in a URL, one segment per folder. */
+const secretPath = (name: string) => name.split("/").map(encodeURIComponent).join("/");
 
 export interface StepResult {
   name: string;
@@ -505,9 +534,15 @@ export const api = {
   retryRun: (id: string, inputs?: Record<string, string>) => request<Run>("POST", `/runs/${encodeURIComponent(id)}/retry`, inputs ? { inputs } : undefined),
   secrets: () => request<Secret[]>("GET", "/secrets"),
   createSecret: (s: { name: string; kind: SecretKind; description: string; value: string }) => request<Secret>("POST", "/secrets", s),
-  updateSecret: (name: string, s: { kind?: SecretKind; description?: string; value?: string }) =>
-    request<Secret>("PUT", `/secrets/${encodeURIComponent(name)}`, s),
-  deleteSecret: (name: string) => request<void>("DELETE", `/secrets/${encodeURIComponent(name)}`),
+  /** Change details, replace the value, or move it (`name`, only while unused). */
+  updateSecret: (name: string, s: { name?: string; kind?: SecretKind; description?: string; value?: string }) => request<Secret>("PUT", `/secrets/${secretPath(name)}`, s),
+  deleteSecret: (name: string) => request<void>("DELETE", `/secrets/${secretPath(name)}`),
+  sharedSecrets: () => request<SharedSecret[]>("GET", "/shared-secrets"),
+  createSharedSecret: (s: { name: string; kind: SecretKind; description: string; value: string; all_workspaces: boolean; workspaces: string[] }) =>
+    request<SharedSecret>("POST", "/shared-secrets", s),
+  updateSharedSecret: (name: string, s: { name?: string; kind?: SecretKind; description?: string; value?: string; all_workspaces?: boolean; workspaces?: string[] }) =>
+    request<SharedSecret>("PUT", `/shared-secrets/${secretPath(name)}`, s),
+  deleteSharedSecret: (name: string) => request<void>("DELETE", `/shared-secrets/${secretPath(name)}`),
   system: () => request<{ version: string; public_url: string | null; license: string; source_url: string; setup_done: boolean }>("GET", "/system"),
   hosts: (filter?: string) => request<Host[]>("GET", filter ? `/hosts?filter=${encodeURIComponent(filter)}` : "/hosts"),
   updateHost: (id: string, h: { name?: string; tags?: string[] }) => request<Host>("PUT", `/hosts/${encodeURIComponent(id)}`, h),

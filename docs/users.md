@@ -14,15 +14,15 @@ can.
 | See runbooks (and their YAML), runs, output and hosts | yes | yes | yes | yes |
 | Start, retry and cancel runs | | yes | yes | yes |
 | Create, edit and delete runbooks, with their schedules, webhooks and notifications | | | yes | yes |
-| See vault secret names; add, replace and delete secrets | | | yes | yes |
+| See vault secret names; add, replace, move and delete secrets | | | yes | yes |
 | Enroll, rename, tag, share and remove hosts | | | | yes |
 | Add members, change their roles, rename the workspace, read its audit log | | | | yes |
 
 The same person can be an Editor in one workspace and a Viewer in another. Someone who
 isn't a member of a workspace doesn't see it at all.
 
-**Server admins** manage the server itself: user accounts, workspaces, email settings
-and everyone's API tokens, and the audit log of every workspace. They act as Admin in
+**Server admins** manage the server itself: user accounts, workspaces, shared secrets,
+email settings and everyone's API tokens, and the audit log of every workspace. They act as Admin in
 every workspace, member or not. The first user, `admin`, is a server admin.
 
 Everyone can change their own password and create their own API tokens.

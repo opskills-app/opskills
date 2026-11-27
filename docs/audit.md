@@ -21,7 +21,8 @@ values never appear in the log, only secret names.
 | Runbooks | Created, edited (with the old name when renamed), deleted |
 | Runs | Started (by hand, by a schedule or by a webhook), retried, cancelled |
 | Webhooks | Added, changed (on or off, signed or not), new URL, deleted |
-| Vault | Added a secret, changed a secret (whether the value was replaced), deleted a secret |
+| Vault | Added a secret, changed a secret (whether the value was replaced), moved a secret (from where), deleted a secret |
+| Shared secrets | Added, changed, moved or deleted a shared secret; shared it with workspaces or stopped sharing it (which ones) |
 | Hosts | Created an enrollment token, enrolled a host (with its OS and architecture), renamed or tagged a host, shared a host into a workspace or took it out, removed a host |
 | Settings | Changed or turned off the email settings |
 

@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{ApiToken, AuditEvent, DEFAULT_WORKSPACE, EnrollmentToken, FIRST_ADMIN, Host, LogLine, Role, Run, Runbook, Secret, Status, StoredApiToken, StoredHost, StoredSecret, StoredUser, StoredWebhook, User, Webhook, Workspace, now_ms};
+use crate::model::{ApiToken, AuditEvent, DEFAULT_WORKSPACE, EnrollmentToken, FIRST_ADMIN, Host, LogLine, Role, Run, Runbook, Secret, SharedSecret, Status, StoredApiToken, StoredHost, StoredSecret, StoredSharedSecret, StoredUser, StoredWebhook, User, Webhook, Workspace, now_ms};
 
 const RUNBOOKS: TableDefinition<&str, &str> = TableDefinition::new("runbooks");
 const RUNS: TableDefinition<&str, &str> = TableDefinition::new("runs");
@@ -43,16 +43,20 @@ const USERS: TableDefinition<&str, &str> = TableDefinition::new("users");
 const AUDIT: TableDefinition<&str, &str> = TableDefinition::new("audit");
 /// Key: workspace slug. Value: the workspace.
 const WORKSPACES: TableDefinition<&str, &str> = TableDefinition::new("workspaces");
+/// Key: a shared secret's full name. Value: its metadata, who it's shared with, and the
+/// AES-256-GCM ciphertext.
+const SHARED_SECRETS: TableDefinition<&str, &str> = TableDefinition::new("shared_secrets");
 /// Key: "schema_version". Value: the version number.
 const META: TableDefinition<&str, &str> = TableDefinition::new("meta");
 
 /// The schema this build writes. Each step in `MIGRATIONS` moves the database up by one.
-pub const SCHEMA_VERSION: u64 = 2;
+pub const SCHEMA_VERSION: u64 = 3;
 
 type Migration = fn(&redb::WriteTransaction, &Path) -> Result<()>;
 
 /// `(version it produces, what it does, the change)`, in order.
-const MIGRATIONS: &[(u64, &str, Migration)] = &[(1, "users and roles", migrate_users), (2, "workspaces", migrate_workspaces)];
+const MIGRATIONS: &[(u64, &str, Migration)] =
+    &[(1, "users and roles", migrate_users), (2, "workspaces", migrate_workspaces), (3, "vault folders and shared secrets", migrate_shared_secrets)];
 
 /// Version 1: users. The single admin of earlier versions becomes the user `admin`, with
 /// the password in `admin.hash`.
@@ -101,6 +105,14 @@ fn migrate_workspaces(w: &redb::WriteTransaction, _data_dir: &Path) -> Result<()
         secrets.remove(name.as_str())?;
         secrets.insert(secret_key(DEFAULT_WORKSPACE, &name).as_str(), v.to_string().as_str())?;
     }
+    Ok(())
+}
+
+/// Version 3: vault folders and shared secrets. Existing secrets keep their names and
+/// encryption; this adds the shared secrets table. The version still changes, so an
+/// older server refuses the database instead of misreading names with folders.
+fn migrate_shared_secrets(w: &redb::WriteTransaction, _data_dir: &Path) -> Result<()> {
+    w.open_table(SHARED_SECRETS)?;
     Ok(())
 }
 
@@ -173,6 +185,7 @@ impl Store {
             w.open_table(SETTINGS)?;
             w.open_table(USERS)?;
             w.open_table(AUDIT)?;
+            w.open_table(SHARED_SECRETS)?;
             w.open_table(WORKSPACES)?;
         }
         // Every migration and the new version commit together, or not at all.
@@ -358,6 +371,54 @@ impl Store {
 
     pub fn delete_secret(&self, workspace: &str, name: &str) -> Result<bool> {
         self.remove(SECRETS, &secret_key(workspace, name))
+    }
+
+    /// Give a secret a new name in one step: `to` replaces the secret named `from`.
+    pub fn move_secret(&self, from: &str, to: &StoredSecret) -> Result<()> {
+        let w = self.db.begin_write()?;
+        {
+            let mut t = w.open_table(SECRETS)?;
+            t.remove(secret_key(&to.meta.workspace, from).as_str())?;
+            t.insert(secret_key(&to.meta.workspace, &to.meta.name).as_str(), serde_json::to_string(to)?.as_str())?;
+        }
+        w.commit()?;
+        Ok(())
+    }
+
+    // Shared secrets
+
+    pub fn put_shared_secret(&self, s: &StoredSharedSecret) -> Result<()> {
+        self.put(SHARED_SECRETS, &s.meta.name, &serde_json::to_string(s)?)
+    }
+
+    pub fn shared_secret(&self, name: &str) -> Result<Option<StoredSharedSecret>> {
+        Ok(match self.get(SHARED_SECRETS, name)? {
+            Some(s) => Some(serde_json::from_str(&s)?),
+            None => None,
+        })
+    }
+
+    /// Metadata of every shared secret, by name.
+    pub fn shared_secrets(&self) -> Result<Vec<SharedSecret>> {
+        let mut list: Vec<SharedSecret> = self.values(SHARED_SECRETS)?.iter().filter_map(|s| serde_json::from_str::<StoredSharedSecret>(s).ok()).map(|s| s.meta).collect();
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(list)
+    }
+
+    pub fn delete_shared_secret(&self, name: &str) -> Result<bool> {
+        self.remove(SHARED_SECRETS, name)
+    }
+
+    /// Give a shared secret a new name in one step.
+    pub fn move_shared_secret(&self, from: &str, to: &StoredSharedSecret) -> Result<()> {
+        let w = self.db.begin_write()?;
+        {
+            let mut t = w.open_table(SHARED_SECRETS)?;
+            t.remove(from)?;
+            t.insert(to.meta.name.as_str(), serde_json::to_string(to)?.as_str())?;
+        }
+        w.commit()?;
+        Ok(())
     }
 
     // Hosts
@@ -695,6 +756,15 @@ impl Store {
                 if h.host.workspaces.iter().any(|x| x == slug) {
                     h.host.workspaces.retain(|x| x != slug);
                     hosts.insert(id.as_str(), serde_json::to_string(&h)?.as_str())?;
+                }
+            }
+            let mut shared = w.open_table(SHARED_SECRETS)?;
+            let all: Vec<(String, String)> = shared.iter()?.map(|r| r.map(|(k, v)| (k.value().to_string(), v.value().to_string()))).collect::<Result<_, _>>()?;
+            for (name, json) in all {
+                let mut s: StoredSharedSecret = serde_json::from_str(&json)?;
+                if s.meta.workspaces.iter().any(|x| x == slug) {
+                    s.meta.workspaces.retain(|x| x != slug);
+                    shared.insert(name.as_str(), serde_json::to_string(&s)?.as_str())?;
                 }
             }
         }

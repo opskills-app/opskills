@@ -25,6 +25,7 @@ mod notifications;
 mod users;
 mod audit;
 mod workspaces;
+mod vault_paths;
 
 struct TestServer {
     app: Router,

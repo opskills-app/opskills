@@ -287,6 +287,31 @@ async fn email_can_be_set_up_on_the_settings_page_with_a_vault_password() {
 }
 
 #[tokio::test]
+async fn email_password_can_be_a_shared_secret() {
+    let (port, mail, auths) = fake_smtp_with_auth().await;
+    let s = server();
+    let c = sign_in(&s).await;
+    let settings = |secret: &str| json!({"smtp_host": "127.0.0.1", "smtp_port": port, "security": "none", "username": "ops", "password_secret": secret, "from": "OpSkills <ops@example.com>"});
+    let r = call(&s.app, "PUT", "/api/v1/settings/email", Some(settings("shared/mail/SMTP_PASSWORD")), Some(&c), true).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.body);
+    assert!(r.body.contains("no shared secret named mail/SMTP_PASSWORD"), "{}", r.body);
+    // Shared with no workspace: only the server uses it.
+    let r = call(&s.app, "POST", "/api/v1/shared-secrets", Some(json!({"name": "mail/SMTP_PASSWORD", "value": "mail-pass-123"})), Some(&c), true).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let r = call(&s.app, "PUT", "/api/v1/settings/email", Some(settings("shared/mail/SMTP_PASSWORD")), Some(&c), true).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let t = call(&s.app, "POST", "/api/v1/notifications/test", Some(json!({"email": ["oncall@example.com"]})), Some(&c), true).await;
+    assert_eq!(t.status, StatusCode::OK, "{}", t.body);
+    assert_eq!(mail.lock().unwrap().len(), 1);
+    assert!(auths.lock().unwrap().iter().any(|l| l.contains("AG9wcwBtYWlsLXBhc3MtMTIz")), "signed in with the shared password");
+    let shared = call(&s.app, "GET", "/api/v1/shared-secrets", None, Some(&c), false).await.json();
+    assert_eq!(shared[0]["email_password"], true);
+    let del = call(&s.app, "DELETE", "/api/v1/shared-secrets/mail/SMTP_PASSWORD", None, Some(&c), true).await;
+    assert_eq!(del.status, StatusCode::CONFLICT);
+    assert!(del.body.contains("Settings > Email"), "{}", del.body);
+}
+
+#[tokio::test]
 async fn email_in_the_config_file_wins_and_is_read_only() {
     let s = server_with(|cfg| {
         cfg.email.smtp_host = Some("smtp.example.com".into());

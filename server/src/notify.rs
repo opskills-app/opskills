@@ -10,9 +10,9 @@ use serde_json::json;
 
 use crate::config::{Config, Email};
 use crate::executor::{human_duration, run_number};
-use crate::model::{DEFAULT_WORKSPACE, HeaderPart, Notification, NotifyEvent, Piece, Run, Status, WebhookAuth, header_parts, now_ms, placeholders, secret_binding};
+use crate::model::{HeaderPart, Notification, NotifyEvent, Piece, Run, Status, WebhookAuth, header_parts, now_ms, placeholders};
 use crate::store::Store;
-use crate::vault::{Sealed, Vault};
+use crate::vault::Vault;
 
 type Headers = Vec<(String, String)>;
 
@@ -114,11 +114,9 @@ impl Notifier {
         }
     }
 
-    /// The value of a vault secret of `workspace`.
-    pub fn secret_value(&self, workspace: &str, name: &str) -> Result<String, String> {
-        let stored = self.store.secret(workspace, name).map_err(|e| e.to_string())?.ok_or_else(|| format!("the vault has no secret named {name}"))?;
-        let value = self.vault.open(&secret_binding(workspace, name), &Sealed { nonce: stored.nonce, ciphertext: stored.ciphertext }).map_err(|e| format!("opening {name}: {e}"))?;
-        Ok(String::from_utf8_lossy(&value).into_owned())
+    /// The value of a secret that runbooks of `workspace` can use.
+    pub fn secret_value(&self, workspace: &str, reference: &str) -> Result<String, String> {
+        crate::secret_refs::value(&self.store, &self.vault, workspace, reference)
     }
 
     fn smtp(&self) -> Result<Smtp, String> {
@@ -134,7 +132,7 @@ impl Notifier {
         }
         let s = self.store.email_settings().map_err(|e| e.to_string())?.ok_or("Email isn't set up on this server. Set it up under Settings > Email.")?;
         let credentials = match (&s.username, &s.password_secret) {
-            (Some(u), Some(secret)) => Some((u.clone(), self.secret_value(DEFAULT_WORKSPACE, secret).map_err(|e| format!("SMTP password: {e}"))?)),
+            (Some(u), Some(secret)) => Some((u.clone(), crate::secret_refs::server_value(&self.store, &self.vault, secret).map_err(|e| format!("SMTP password: {e}"))?)),
             _ => None,
         };
         Ok(Smtp { host: s.smtp_host, port: s.smtp_port, security: s.security, credentials, from: s.from })

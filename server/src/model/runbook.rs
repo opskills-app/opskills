@@ -670,14 +670,20 @@ impl RunbookInput {
                 return Err(format!("The output limit must be {MIN_OUTPUT_LINES} to {MAX_OUTPUT_LINES} lines."));
             }
         let mut secrets: Vec<String> = Vec::new();
-        for name in &self.secrets {
-            validate_secret_name(name)?;
-            if !secrets.contains(name) {
-                secrets.push(name.clone());
+        for reference in &self.secrets {
+            let reference = reference.trim().to_string();
+            secret_ref_expansions(&reference, &self.inputs)?;
+            if !secrets.contains(&reference) {
+                secrets.push(reference);
             }
         }
         if secrets.len() > 20 {
             return Err("A runbook can use at most 20 secrets.".into());
+        }
+        for (i, a) in secrets.iter().enumerate() {
+            if let Some(b) = secrets[i + 1..].iter().find(|b| secret_env_name(b) == secret_env_name(a)) {
+                return Err(format!("{a} and {b} would both be ${}. Use one of them, or pick the folder with a choice input.", secret_env_name(a)));
+            }
         }
         self.secrets = secrets;
         self.rollout.validate()?;
@@ -740,5 +746,82 @@ impl RunbookInput {
             _ => {}
         }
         Ok(self)
+    }
+}
+
+/// The input a whole folder like `{{ inputs.env }}` stands for.
+fn folder_input(folder: &str) -> Option<&str> {
+    let inner = folder.strip_prefix("{{")?.strip_suffix("}}")?.trim();
+    let name = inner.strip_prefix("inputs.")?;
+    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then_some(name)
+}
+
+/// Most secrets one reference can stand for.
+const MAX_SECRET_EXPANSIONS: usize = 50;
+
+/// Check a runbook's secret reference and list every secret it can stand for. A whole
+/// folder can be a choice input, like `{{ inputs.env }}/DB_PASSWORD`; only choice inputs,
+/// so whoever starts a run can pick only among secrets the runbook's editor chose.
+pub fn secret_ref_expansions(reference: &str, inputs: &[InputDef]) -> Result<Vec<String>, String> {
+    let parts: Vec<&str> = reference.split('/').collect();
+    let mut options: Vec<Vec<String>> = Vec::new();
+    for (i, part) in parts.iter().enumerate() {
+        match folder_input(part) {
+            Some(name) => {
+                if i + 1 == parts.len() {
+                    return Err(format!("In {reference}, the secret's name can't come from an input; only a folder can."));
+                }
+                let def = inputs.iter().find(|d| d.name == name).ok_or_else(|| format!("{reference} uses {{{{ inputs.{name} }}}}, but the runbook has no input named {name}."))?;
+                if def.kind != InputKind::Choice {
+                    return Err(format!("{reference} uses {{{{ inputs.{name} }}}}, which must be a choice input, so a run can only pick among folders you list."));
+                }
+                options.push(def.choices.clone());
+            }
+            None if part.contains("{{") || part.contains("}}") => {
+                return Err(format!("In {reference}, an input can only be a whole folder, like {{{{ inputs.env }}}}/DB_PASSWORD."));
+            }
+            None => options.push(vec![part.to_string()]),
+        }
+    }
+    let mut out = vec![String::new()];
+    for choices in options {
+        let mut next = Vec::new();
+        for prefix in &out {
+            for c in &choices {
+                next.push(if prefix.is_empty() { c.clone() } else { format!("{prefix}/{c}") });
+            }
+        }
+        if next.len() > MAX_SECRET_EXPANSIONS {
+            return Err(format!("{reference} can stand for more than {MAX_SECRET_EXPANSIONS} secrets. Use fewer choices."));
+        }
+        out = next;
+    }
+    for e in &out {
+        SecretRef::parse(e).map_err(|err| if e == reference { err } else { format!("{reference} as {e}: {err}") })?;
+    }
+    Ok(out)
+}
+
+/// A runbook's secret reference with its inputs filled in for one run.
+pub fn resolve_secret_ref(reference: &str, inputs: &[InputValue]) -> String {
+    reference
+        .split('/')
+        .map(|part| match folder_input(part).and_then(|name| inputs.iter().find(|i| i.name == name)) {
+            Some(i) => i.value.clone(),
+            None => part.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+impl Runbook {
+    /// Every secret this runbook can use, as references: each one its `secrets` can
+    /// stand for, and those its notifications name.
+    pub fn secret_paths(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.secrets.iter().flat_map(|r| secret_ref_expansions(r, &self.inputs).unwrap_or_default()).collect();
+        out.extend(self.notifications.iter().flat_map(|n| n.secret_refs()));
+        out.sort();
+        out.dedup();
+        out
     }
 }

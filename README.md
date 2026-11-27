@@ -9,14 +9,14 @@ with live output, approvals and a full audit trail.
 
 Website: [opskills.app](https://opskills.app)
 
-> **Status:** v0.14.0 preview. Sign in, keep secrets in an encrypted vault, enroll
+> **Status:** v0.15.0 preview. Sign in, keep secrets in an encrypted vault, enroll
 > your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks with
 > inputs, retries, file copies and calls to other runbooks, and run them on the
 > server or on your hosts, by hand, on a schedule, from a webhook or with an API
 > token, with output streaming live to your browser, and hear how runs went by email
 > or in chat. Give each team its own workspace, each person their own user with a
 > role in each workspace (Viewer, Operator, Editor or Admin), and see who changed what
-> in the audit log. A vault with folders is next.
+> in the audit log. Keep secrets in folders, and share some with chosen workspaces.
 
 ## Install
 
@@ -34,7 +34,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.14.0
+  opskills/opskills:0.15.0
 docker logs opskills 2>&1 | grep 'Admin password'
 ```
 
@@ -46,13 +46,13 @@ use the included [`compose.yaml`](compose.yaml): `docker compose up -d`.
 ### Debian and Ubuntu
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.14.0/opskills_0.14.0_amd64.deb
-sudo apt install ./opskills_0.14.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.15.0/opskills_0.15.0_amd64.deb
+sudo apt install ./opskills_0.15.0_amd64.deb
 sudo systemctl start opskills
 sudo journalctl -u opskills | grep 'Admin password'
 ```
 
-Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.14.0_arm64.deb`
+Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.15.0_arm64.deb`
 on ARM servers (`dpkg --print-architecture` tells you which). All downloads and
 checksums are on the [releases page](https://github.com/opskills-app/opskills/releases/latest).
 The package installs a sandboxed systemd service that runs as the `opskills`
@@ -136,8 +136,8 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   the exact commands:
 
   ```bash
-  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.14.0_amd64.deb
-  sudo apt install ./opskills-agent_0.14.0_amd64.deb
+  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.15.0_amd64.deb
+  sudo apt install ./opskills-agent_0.15.0_amd64.deb
   sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
   sudo systemctl enable --now opskills-agent
   ```
@@ -161,12 +161,15 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   (`master.key` in the data directory). Each value has a fresh random nonce and is
   bound to its name. Plaintext is never written to disk or to the log.
 - Values are **write-only**: the API and the web app never show a value again. You
-  can replace a value, edit the kind and description, or delete a secret that no
-  runbook uses.
+  can replace a value, edit the kind and description, or move or delete a secret that
+  no runbook uses.
+- Secrets can be in folders, like `prod/db/DB_PASSWORD`, and each workspace has its
+  own vault. Server admins can share a secret with chosen workspaces, which use it as
+  `shared/...`. See [Vault](docs/vault.md).
 - A runbook lists the secrets it needs. Each one is an environment variable in
-  every step of that runbook's runs, and nowhere else. For steps on a host, the
-  server sends the values to that host's agent with the step and they're never
-  written to the host's disk.
+  every step of that runbook's runs, named after its last part (`$DB_PASSWORD`), and
+  nowhere else. For steps on a host, the server sends the values to that host's
+  agent with the step and they're never written to the host's disk.
 - Any secret value (and each line of a multi-line one, like an SSH key) that shows
   up in a run's output is replaced with `••••••` before it's shown or stored.
 - Keep `master.key` with your backups: without it the vault can't be decrypted.
@@ -274,7 +277,7 @@ release before it's removed.
 | `PUT`, `DELETE /webhooks/{id}` | Change and delete a webhook; turning signing on returns a new secret once |
 | `POST /webhooks/{id}/rotate` | Give a webhook a new URL; the old one stops working |
 | `POST /hooks/{token}` | Called by other systems: start a run from a JSON body (no sign-in; see [Webhooks](docs/runbooks.md#webhooks)) |
-| `GET`, `PUT`, `DELETE /settings/email` | Email (SMTP) settings: `{"smtp_host", "smtp_port", "security", "username", "password_secret", "from"}`, where `password_secret` names a vault secret. Read-only when set in the config file |
+| `GET`, `PUT`, `DELETE /settings/email` | Email (SMTP) settings: `{"smtp_host", "smtp_port", "security", "username", "password_secret", "from"}`, where `password_secret` names a shared secret, like `shared/smtp/SMTP_PASSWORD`. Read-only when set in the config file |
 | `GET /notifications/settings` | Whether email is set up, where (`config`, `settings` or `off`), and the sender |
 | `POST /notifications/test` | Send a test message: `{"webhook": "https://...", "headers": [...], "auth": {...}, "body": "..."}` or `{"email": ["a@example.com"]}` |
 | `GET /runs/{id}/notifications` | The notifications sent about a run and whether each got through |
@@ -284,8 +287,9 @@ release before it's removed.
 | `GET /runs/{id}/events` | Live run updates and output as Server-Sent Events |
 | `POST /runs/{id}/cancel` | Cancel a queued or running run |
 | `POST /runs/{id}/retry` | Run again on the hosts that didn't finish; body `{"inputs": {...}}` for secret inputs |
-| `GET /secrets`, `POST /secrets` | List secrets (never values) and add one |
-| `PUT`, `DELETE /secrets/{name}` | Replace a value or edit a secret, and delete one |
+| `GET /secrets`, `POST /secrets` | List secrets (never values), with the shared ones the workspace can use, and add one |
+| `PUT`, `DELETE /secrets/{name}` | Replace a value, edit or move a secret, and delete one; `{name}` is the full name, like `prod/db/DB_PASSWORD` |
+| `GET`, `POST /shared-secrets`, `PUT`, `DELETE /shared-secrets/{name}` | Shared secrets and who they're shared with (server admins); see [Vault](docs/vault.md#api) |
 | `GET /hosts?filter=` | List hosts, starting with the OpSkills server itself, or the enrolled hosts a filter matches |
 | `PUT`, `DELETE /hosts/{id}` | Rename or tag a host, and remove one (Admin in all its workspaces) |
 | `PUT`, `DELETE /hosts/{id}/workspaces/{slug}` | Share a host with another workspace, or take it out of one |
