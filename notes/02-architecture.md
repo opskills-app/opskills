@@ -42,6 +42,25 @@ Core resources:
 | Tokens | `GET/POST/DELETE /me/tokens` |
 | System | `GET /healthz`, `GET /readyz`, `GET /api/v1/system` |
 
+## Server source layout
+
+The server is a library (`server/src/lib.rs`) plus a thin `main.rs` for the command
+line. One binary serves the API and the web app, and runs as the agent when installed as
+`opskills-agent`.
+
+| Path | What's there |
+|---|---|
+| `api/` | The HTTP API. `mod.rs` builds the router from each feature's `routes()`, and holds errors and the sign-in guard; one file per feature (`runbooks.rs`, `runs.rs`, `hosts.rs`, `agent.rs`, `secrets.rs`, `tokens.rs`, `webhooks.rs`, `schedules.rs`, `notifications.rs`, `session.rs`) |
+| `model/` | Domain types and their validation, one file per domain; `mod.rs` re-exports them all as `crate::model::*` |
+| `store.rs`, `vault.rs` | The database and the encrypted vault |
+| `executor.rs`, `hub.rs`, `agent.rs` | Running steps on the server, handing jobs to agents, and the agent itself |
+| `schedule.rs`, `notify.rs`, `template.rs`, `filter.rs` | Schedules, notifications, `{{ }}` templates, host filters |
+| `web.rs`, `auth.rs`, `config.rs`, `firststart.rs` | HTTP server and static files, sign-in, configuration, first start |
+| `tests/` | End-to-end tests through the router with a real store and executor, one file per feature; shared helpers in `mod.rs` |
+
+A new API feature adds a file under `api/` with its handlers and a `routes()` function,
+and one `.merge()` line in `api/mod.rs`.
+
 ## Runbook format
 
 Runbooks are stored as YAML, so they can live in Git and be reviewed like code:

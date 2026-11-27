@@ -1,20 +1,4 @@
-//! OpSkills server: serves the web app and the HTTP API from a single binary.
-
-mod agent;
-mod api;
-mod auth;
-mod config;
-mod executor;
-mod filter;
-mod firststart;
-mod hub;
-mod model;
-mod notify;
-mod schedule;
-mod store;
-mod template;
-mod vault;
-mod web;
+//! The `opskills` command: serve, check health, or print the effective config.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -24,12 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Where people using this server can get its source code (AGPL-3.0, section 13).
-/// If you run a modified version for others, point this at your own source.
-pub const SOURCE_URL: &str = "https://github.com/opskills-app/opskills";
+use opskills::{agent, config, firststart, web};
 
 #[derive(Parser)]
 #[command(name = "opskills", version, about = "Runbooks your whole team can run")]
@@ -132,5 +111,3 @@ fn healthcheck(cfg: &config::Config) -> Result<()> {
     }
 }
 
-#[cfg(test)]
-mod tests;
