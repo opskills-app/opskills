@@ -19,8 +19,9 @@ use crate::executor::{Event, StartError};
 use crate::model::{
     LOCAL_HOST_ID, LOCAL_HOST_NAME, Run, RunHost, Runbook,
 };
+use crate::model::Role;
 use crate::web::AppState;
-use super::{ApiError, ApiResult, CurrentUser};
+use super::{Access, ApiError, ApiResult, CurrentUser};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -32,6 +33,16 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/runs/{id}/cancel", post(cancel_run))
         .route("/runs/{id}/retry", post(retry_run))
 }
+
+pub(super) const ACCESS: &[(&str, &str, Access)] = &[
+    ("POST", "/runbooks/{id}/runs", Access::Role(Role::Operator)),
+    ("GET", "/runs", Access::Role(Role::Viewer)),
+    ("GET", "/runs/{id}", Access::Role(Role::Viewer)),
+    ("GET", "/runs/{id}/logs", Access::Role(Role::Viewer)),
+    ("GET", "/runs/{id}/events", Access::Role(Role::Viewer)),
+    ("POST", "/runs/{id}/cancel", Access::Role(Role::Operator)),
+    ("POST", "/runs/{id}/retry", Access::Role(Role::Operator)),
+];
 
 /// Optional body of `POST /runbooks/{id}/runs`.
 #[derive(Default, Deserialize)]

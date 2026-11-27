@@ -6,6 +6,7 @@ import { Button, Card, cx, EmptyState, ErrorNote, PageHeader, RunStrip, SearchFi
 import { StartRunDialog } from "../components/StartRun";
 import { templates } from "../templates";
 import { go } from "../router";
+import { useCan } from "../session";
 
 const icons = [RefreshCcw, ShieldCheck, Database, HardDrive, Stethoscope, Rocket, Terminal, Activity];
 
@@ -107,17 +108,20 @@ export function RunbooksPage() {
   const [tag, setTag] = useState<string | null>(null);
   const [view, setView] = useView();
   const { runNow, busy, error, dialog } = useRunNow();
+  const canEdit = useCan("editor");
+  const canRun = useCan("operator");
 
   const all = useMemo(() => runbooks.data ?? [], [runbooks.data]);
   const tags = useMemo(() => [...new Set(all.flatMap((r) => r.tags))].sort(), [all]);
   const list = all.filter((r) => (!tag || r.tags.includes(tag)) && `${r.name} ${r.description} ${r.tags.join(" ")}`.toLowerCase().includes(q.toLowerCase()));
 
-  const runButton = (rb: Runbook, variant: "primary" | "outline" = "primary") => (
-    <Button size="sm" variant={variant} disabled={busy === rb.id} onClick={() => runNow(rb.id)} aria-label={`Run ${rb.name}`}>
-      <Play className="size-3" fill="currentColor" />
-      {busy === rb.id ? "Starting" : "Run"}
-    </Button>
-  );
+  const runButton = (rb: Runbook, variant: "primary" | "outline" = "primary") =>
+    canRun && (
+      <Button size="sm" variant={variant} disabled={busy === rb.id} onClick={() => runNow(rb.id)} aria-label={`Run ${rb.name}`}>
+        <Play className="size-3" fill="currentColor" />
+        {busy === rb.id ? "Starting" : "Run"}
+      </Button>
+    );
 
   return (
     <div className="space-y-8">
@@ -126,10 +130,12 @@ export function RunbooksPage() {
         title="Runbooks"
         subtitle="Procedures your team can run with one click. Each step is a shell command, run on the OpSkills server or on your hosts."
         actions={
-          <Button variant="primary" onClick={() => go("runbooks/new")}>
-            <Plus className="size-4" />
-            New runbook
-          </Button>
+          canEdit && (
+            <Button variant="primary" onClick={() => go("runbooks/new")}>
+              <Plus className="size-4" />
+              New runbook
+            </Button>
+          )
         }
       />
       {error && <ErrorNote>{error}</ErrorNote>}
@@ -141,16 +147,18 @@ export function RunbooksPage() {
             icon={BookOpen}
             title="No runbooks yet"
             action={
-              <>
-                <Button variant="primary" onClick={() => go("runbooks/new")}>
-                  <Plus className="size-4" /> Start from scratch
-                </Button>
-                {templates.map((t) => (
-                  <Button key={t.key} onClick={() => go(`runbooks/new/${t.key}`)}>
-                    {t.label}
+              canEdit && (
+                <>
+                  <Button variant="primary" onClick={() => go("runbooks/new")}>
+                    <Plus className="size-4" /> Start from scratch
                   </Button>
-                ))}
-              </>
+                  {templates.map((t) => (
+                    <Button key={t.key} onClick={() => go(`runbooks/new/${t.key}`)}>
+                      {t.label}
+                    </Button>
+                  ))}
+                </>
+              )
             }
           >
             Create one from scratch or start from an example. You can edit everything before saving.

@@ -12,14 +12,25 @@ use serde_json::json;
 
 use crate::auth;
 use crate::model::now_ms;
+use crate::model::Role;
 use crate::web::AppState;
-use super::{ApiError, ApiResult, CurrentUser, bad};
+use super::{Access, ApiError, ApiResult, CurrentUser, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/me/tokens", get(list_tokens).post(create_token))
         .route("/me/tokens/{id}", axum::routing::delete(delete_token))
+        .route("/tokens", get(list_all_tokens))
+        .route("/tokens/{id}", axum::routing::delete(delete_any_token))
 }
+
+pub(super) const ACCESS: &[(&str, &str, Access)] = &[
+    ("GET", "/me/tokens", Access::SessionRole(Role::Viewer)),
+    ("POST", "/me/tokens", Access::SessionRole(Role::Viewer)),
+    ("DELETE", "/me/tokens/{id}", Access::SessionRole(Role::Viewer)),
+    ("GET", "/tokens", Access::SessionRole(Role::Admin)),
+    ("DELETE", "/tokens/{id}", Access::SessionRole(Role::Admin)),
+];
 
 const MAX_TOKENS: usize = 50;
 
@@ -32,7 +43,13 @@ struct TokenInput {
     expires_in_days: Option<u32>,
 }
 
-async fn list_tokens(State(st): State<Arc<AppState>>) -> ApiResult<Json<Vec<crate::model::ApiToken>>> {
+/// Your own tokens.
+async fn list_tokens(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>) -> ApiResult<Json<Vec<crate::model::ApiToken>>> {
+    Ok(Json(st.store.api_tokens()?.into_iter().filter(|t| t.user == user.user).collect()))
+}
+
+/// Everyone's tokens, for admins.
+async fn list_all_tokens(State(st): State<Arc<AppState>>) -> ApiResult<Json<Vec<crate::model::ApiToken>>> {
     Ok(Json(st.store.api_tokens()?))
 }
 
@@ -45,7 +62,7 @@ async fn create_token(State(st): State<Arc<AppState>>, Extension(user): Extensio
     if input.expires_in_days.is_some_and(|d| d == 0 || d > 3650) {
         return Err(bad("A token can last 1 to 3650 days, or never expire.".into()));
     }
-    let existing = st.store.api_tokens()?;
+    let existing: Vec<_> = st.store.api_tokens()?.into_iter().filter(|t| t.user == user.user).collect();
     if existing.iter().any(|t| t.name.eq_ignore_ascii_case(&name)) {
         return Err(ApiError::new(StatusCode::CONFLICT, format!("There is already a token named {name:?}.")));
     }
@@ -68,7 +85,16 @@ async fn create_token(State(st): State<Arc<AppState>>, Extension(user): Extensio
     Ok((StatusCode::CREATED, Json(json!({ "token": token, "value": whole }))).into_response())
 }
 
-async fn delete_token(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+/// Revoke one of your own tokens.
+async fn delete_token(State(st): State<Arc<AppState>>, Extension(user): Extension<CurrentUser>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    match st.store.api_token(&id)? {
+        Some(t) if t.token.user == user.user => delete_any_token(State(st), Path(id)).await,
+        _ => Err(ApiError::not_found("Token")),
+    }
+}
+
+/// Revoke anyone's token, for admins.
+async fn delete_any_token(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
     if st.store.delete_api_token(&id)? {
         tracing::info!(token_id = %id, "API token revoked");
         Ok(StatusCode::NO_CONTENT)

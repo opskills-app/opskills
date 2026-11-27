@@ -1,5 +1,9 @@
 //! First start: create the server identity, encryption key and admin password.
 //! Each install gets its own values; nothing is a shared default.
+//!
+//! `admin.hash` holds the generated admin password's hash. The database copies it into
+//! the `admin` user; deleting the file and restarting prints a new password and resets
+//! that user (see `Store::reset_first_admin`).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
@@ -14,6 +18,8 @@ pub struct State {
     pub server_id: String,
     /// Set only when this start created a new admin password.
     pub initial_password: Option<String>,
+    /// Its hash, as written to `admin.hash`.
+    pub initial_password_hash: Option<String>,
     /// The 256-bit vault key, hex.
     pub master_key: String,
 }
@@ -31,21 +37,18 @@ pub fn prepare(cfg: &Config) -> Result<State> {
 
     let admin_hash = dir.join("admin.hash");
     let mut initial_password = None;
+    let mut initial_password_hash = None;
     if !admin_hash.exists() {
         let password = random_password(24);
-        let salt = random_bytes::<16>();
-        let mut out = [0u8; 32];
-        argon2::Argon2::default()
-            .hash_password_into(password.as_bytes(), &salt, &mut out)
-            .map_err(|e| anyhow::anyhow!("hashing the admin password: {e}"))?;
-        let record = format!("argon2id$v=19$m=19456,t=2,p=1${}${}\n", hex::encode(salt), hex::encode(out));
-        write_new(&admin_hash, record.as_bytes())?;
+        let record = crate::auth::hash_password(&password)?;
+        write_new(&admin_hash, format!("{record}\n").as_bytes())?;
         announce_admin_password(&password);
         initial_password = Some(password);
+        initial_password_hash = Some(record);
     }
 
     tracing::info!(server_id = %server_id, data_dir = %dir.display(), "data directory ready");
-    Ok(State { server_id, initial_password, master_key })
+    Ok(State { server_id, initial_password, initial_password_hash, master_key })
 }
 
 /// Read a value file, or create it with mode 0600 if it does not exist.
@@ -81,7 +84,8 @@ pub fn random_bytes<const N: usize>() -> [u8; N] {
     buf
 }
 
-fn random_password(len: usize) -> String {
+/// A random password from an alphabet without look-alike characters.
+pub fn random_password(len: usize) -> String {
     // Rejection sampling keeps every character equally likely.
     let limit = 256 - (256 % PASSWORD_ALPHABET.len());
     let mut out = String::with_capacity(len);
@@ -102,7 +106,7 @@ fn announce_admin_password(password: &str) {
     eprintln!(" Sign in at http://<host>:<port> as:");
     eprintln!(" Admin user:     admin");
     eprintln!(" Admin password: {password}");
-    eprintln!(" This password is shown only once. Store it somewhere safe.");
+    eprintln!(" It is shown only once. When you first sign in, you choose your own.");
     eprintln!("==============================================================");
     eprintln!();
 }

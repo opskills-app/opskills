@@ -5,6 +5,7 @@ import { duration, runDuration, runNumber, timeAgo } from "../format";
 import { Button, Card, cx, Delta, EmptyState, IconBubble, StatusPill, Tile, type BubbleTone } from "../components/ui";
 import { runbookIcon } from "./Runbooks";
 import { go } from "../router";
+import { useCan } from "../session";
 
 const DAY = 86_400_000;
 
@@ -95,6 +96,7 @@ function pctChange(now: number, before: number) {
 }
 
 export function Overview() {
+  const canEdit = useCan("editor");
   const runs = useData(() => api.runs({ limit: 1000 }), [], 5000);
   const runbooks = useData(() => api.runbooks(), [], 15000);
   const [q, setQ] = useState("");
@@ -131,12 +133,14 @@ export function Overview() {
           icon={BookOpen}
           title="Welcome to OpSkills"
           action={
-            <>
-              <Button variant="primary" onClick={() => go("runbooks/new")}>
-                <Plus className="size-4" /> Create your first runbook
-              </Button>
-              <Button onClick={() => go("runbooks/new/hello")}>Start from an example</Button>
-            </>
+            canEdit && (
+              <>
+                <Button variant="primary" onClick={() => go("runbooks/new")}>
+                  <Plus className="size-4" /> Create your first runbook
+                </Button>
+                <Button onClick={() => go("runbooks/new/hello")}>Start from an example</Button>
+              </>
+            )
           }
         >
           Runbooks turn the procedures you repeat into steps anyone on your team can run. Each step is a shell command that runs on the OpSkills server or on your hosts, and you watch its output live.

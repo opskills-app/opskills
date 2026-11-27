@@ -4,6 +4,7 @@ import { api, useData, type Runbook, type Webhook, type WebhookInput } from "../
 import { runNumber, timeAgo } from "../format";
 import { CopyButton } from "./CopyButton";
 import { Button, Card, CardHeader, cx, ErrorNote, Modal } from "./ui";
+import { useCan } from "../session";
 
 const field = "h-11 w-full rounded-xl bg-surface-2 px-4 text-sm outline-none focus:ring-2 focus:ring-accent";
 
@@ -180,6 +181,7 @@ export function WebhooksCard({ rb }: { rb: Runbook }) {
   const [editing, setEditing] = useState<Webhook | "new" | null>(null);
   const [rotated, setRotated] = useState<{ name: string; token: string; inputs: Record<string, string> } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const canEdit = useCan("editor");
 
   async function act(f: () => Promise<unknown>) {
     setError(null);
@@ -197,46 +199,52 @@ export function WebhooksCard({ rb }: { rb: Runbook }) {
       <CardHeader
         title="Webhooks"
         action={
-          <Button size="sm" onClick={() => setEditing("new")}>
-            <Plus className="size-3.5" /> New
-          </Button>
+          canEdit && (
+            <Button size="sm" onClick={() => setEditing("new")}>
+              <Plus className="size-3.5" /> New
+            </Button>
+          )
         }
       />
       <div className="space-y-4 px-6 pb-6 text-sm sm:px-8">
         {(error || hooks.error) && <ErrorNote>{error ?? hooks.error}</ErrorNote>}
-        {list.length === 0 && <p className="text-xs text-muted">Let another system, like CI or GitHub, start this runbook with an HTTP request.</p>}
+        {list.length === 0 && <p className="text-xs text-muted">{canEdit ? "Let another system, like CI or GitHub, start this runbook with an HTTP request." : "None. Editors can add one to let CI or GitHub start this runbook."}</p>}
         {list.map((h) => {
           const last = h.deliveries[0];
           return (
             <div key={h.id}>
               <div className="flex items-center justify-between gap-2">
-                <button type="button" onClick={() => setEditing(h)} className="flex min-w-0 items-center gap-2 font-medium hover:text-accent">
+                <button type="button" disabled={!canEdit} onClick={() => setEditing(h)} className="flex min-w-0 items-center gap-2 font-medium enabled:hover:text-accent">
                   <WebhookIcon className="size-3.5 shrink-0 text-muted" />
                   <span className="truncate">{h.name}</span>
                 </button>
                 <span className="flex shrink-0 items-center gap-1">
                   <span className={cx("rounded-md px-1.5 py-0.5 text-[11px]", h.enabled ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-surface-2 text-muted")}>{h.enabled ? "On" : "Off"}</span>
                   {h.signed && <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">signed</span>}
-                  <button
-                    type="button"
-                    title="New URL"
-                    aria-label={`New URL for ${h.name}`}
-                    onClick={() => {
-                      if (window.confirm(`Give "${h.name}" a new URL? The current one stops working right away.`))
-                        act(async () => setRotated({ name: h.name, token: (await api.rotateWebhook(h.id)).token, inputs: h.inputs }));
-                    }}
-                    className="rounded-lg p-1.5 text-muted hover:text-ink"
-                  >
-                    <RefreshCw className="size-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Delete ${h.name}`}
-                    onClick={() => window.confirm(`Delete "${h.name}"? Calls to it will fail.`) && act(() => api.deleteWebhook(h.id))}
-                    className="rounded-lg p-1.5 text-muted hover:text-rose-600"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </button>
+                  {canEdit && (
+                    <>
+                    <button
+                      type="button"
+                      title="New URL"
+                      aria-label={`New URL for ${h.name}`}
+                      onClick={() => {
+                        if (window.confirm(`Give "${h.name}" a new URL? The current one stops working right away.`))
+                          act(async () => setRotated({ name: h.name, token: (await api.rotateWebhook(h.id)).token, inputs: h.inputs }));
+                      }}
+                      className="rounded-lg p-1.5 text-muted hover:text-ink"
+                    >
+                      <RefreshCw className="size-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete ${h.name}`}
+                      onClick={() => window.confirm(`Delete "${h.name}"? Calls to it will fail.`) && act(() => api.deleteWebhook(h.id))}
+                      className="rounded-lg p-1.5 text-muted hover:text-rose-600"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                    </>
+                  )}
                 </span>
               </div>
               <p className="mt-0.5 text-xs text-muted">

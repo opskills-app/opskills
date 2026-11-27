@@ -2,21 +2,6 @@
 
 use super::*;
 
-async fn bearer_call(app: &Router, method: &str, path: &str, body: Option<Value>, token: &str) -> Reply {
-    let mut req = Request::builder().method(method).uri(path).header(header::AUTHORIZATION, format!("Bearer {token}"));
-    let req = match body {
-        Some(b) => {
-            req = req.header(header::CONTENT_TYPE, "application/json");
-            req.body(Body::from(b.to_string())).unwrap()
-        }
-        None => req.body(Body::empty()).unwrap(),
-    };
-    let res = app.clone().oneshot(req).await.unwrap();
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    Reply { status, cookie: None, body: String::from_utf8_lossy(&bytes).into() }
-}
-
 #[tokio::test]
 async fn api_tokens_work_without_a_session_and_can_be_revoked() {
     let s = server();

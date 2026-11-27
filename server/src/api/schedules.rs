@@ -9,14 +9,20 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::model::now_ms;
+use crate::model::Role;
 use crate::web::AppState;
-use super::{ApiError, ApiResult, bad};
+use super::{Access, ApiError, ApiResult, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/runbooks/{id}/schedules", get(schedule_status))
         .route("/schedules/preview", post(preview_schedule))
 }
+
+pub(super) const ACCESS: &[(&str, &str, Access)] = &[
+    ("GET", "/runbooks/{id}/schedules", Access::Role(Role::Viewer)),
+    ("POST", "/schedules/preview", Access::Role(Role::Editor)),
+];
 
 /// What the scheduler knows about each of a runbook's schedules.
 async fn schedule_status(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<Json<Vec<serde_json::Value>>> {

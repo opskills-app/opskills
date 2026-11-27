@@ -5,8 +5,9 @@ OPSKILLS=https://opskills.example.com   # the address hosts use to reach OpSkill
 HOSTS="web-1 web-2 db-1"                # SSH names of the hosts
 TAGS=prod                               # tags for all of them (optional)
 
-# Use an API token from Settings > API tokens if OPSKILLS_TOKEN is set; otherwise
-# sign in with the admin password, keeping the session cookie in a temporary file.
+# Enrolling hosts needs the Admin role. Use an admin's API token from Settings > API
+# tokens if OPSKILLS_TOKEN is set; otherwise sign in as an admin (OPSKILLS_USER,
+# default admin), keeping the session cookie in a temporary file.
 JAR=$(mktemp)
 trap 'rm -f "$JAR"' EXIT
 if [ -n "${OPSKILLS_TOKEN:-}" ]; then
@@ -14,9 +15,10 @@ if [ -n "${OPSKILLS_TOKEN:-}" ]; then
         curl -fsS -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" "$OPSKILLS/api/v1/hosts/enrollment-tokens"
     }
 else
-    printf 'OpSkills admin password: '
+    USER_NAME=${OPSKILLS_USER:-admin}
+    printf 'OpSkills password for %s: ' "$USER_NAME"
     stty -echo; read -r PW; stty echo; echo
-    printf '{"username":"admin","password":"%s"}' "$PW" |
+    printf '{"username":"%s","password":"%s"}' "$USER_NAME" "$PW" |
         curl -fsS -c "$JAR" -o /dev/null -H 'X-OpSkills-Request: 1' \
             -H 'Content-Type: application/json' --data-binary @- "$OPSKILLS/api/v1/auth/login"
     new_token() {

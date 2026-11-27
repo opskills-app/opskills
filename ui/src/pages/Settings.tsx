@@ -1,9 +1,11 @@
 import { useState, type FormEvent } from "react";
-import { Check, KeyRound, Mail, Plus, Send, Trash2, X } from "lucide-react";
+import { Check, KeyRound, Mail, Plus, RotateCcw, Send, Trash2, UserPlus, X } from "lucide-react";
 import { CopyButton } from "../components/CopyButton";
-import { api, useData, type ApiToken, type EmailSettings } from "../api";
+import { api, ROLES, useData, type ApiToken, type EmailSettings, type Role, type User } from "../api";
+import { ROLE_DESCRIPTIONS, ROLE_LABELS, useCan, useMe } from "../session";
+import { MIN_PASSWORD } from "./ChangePassword";
 import { timeAgo } from "../format";
-import { Avatar, Button, Card, CardHeader, ErrorNote, Modal, PageHeader, SampleBanner } from "../components/ui";
+import { Avatar, Button, Card, CardHeader, ErrorNote, Modal, PageHeader } from "../components/ui";
 
 const field = "h-11 w-full rounded-xl bg-surface-2 px-4 text-sm outline-none focus:ring-2 focus:ring-accent";
 
@@ -47,7 +49,7 @@ function NewTokenDialog({ onClose, onCreated }: { onClose: () => void; onCreated
         </div>
         <p className="mt-5 text-sm font-medium">Use it</p>
         <p className="mt-1 text-xs text-muted">
-          Send it as a Bearer token. It can do anything in the API except manage tokens and sign-ins, and runs it starts show its name.
+          Send it as a Bearer token. It can do what your role allows, except manage tokens, sign-ins and users, and runs it starts show its name. If your role changes, so does what it can do.
         </p>
         <div className="mt-2 flex items-start gap-2">
           <pre className="scroll-thin min-w-0 flex-1 overflow-x-auto rounded-xl bg-term px-4 py-3 font-mono text-xs text-term-ink">{example}</pre>
@@ -171,13 +173,6 @@ function ApiTokensCard() {
     </Card>
   );
 }
-
-const members = [
-  { name: "Maya Chen", role: "Admin" },
-  { name: "Jonas Weber", role: "Operator" },
-  { name: "Priya Natarajan", role: "Operator" },
-  { name: "Leo Martins", role: "Viewer" },
-];
 
 const blankEmail: EmailSettings = { smtp_host: "", smtp_port: 587, security: "starttls", from: "" };
 
@@ -346,62 +341,366 @@ function EmailCard() {
   );
 }
 
+/** Change your own password. Other sessions are signed out. */
+function AccountCard() {
+  const me = useMe();
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    setDone(false);
+    try {
+      await api.changePassword(current, next);
+      setCurrent("");
+      setNext("");
+      setDone(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!me) return null;
+  return (
+    <Card className="mb-4">
+      <CardHeader title="Your account" hint={`Signed in as ${me.user}, ${ROLE_LABELS[me.role]}`} />
+      <form onSubmit={submit} className="grid grid-cols-1 gap-4 px-6 pb-6 sm:px-8 md:grid-cols-[1fr_1fr_auto] md:items-end">
+        <div>
+          <label className="text-sm font-medium" htmlFor="account-current">
+            Current password
+          </label>
+          <input id="account-current" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} className={`mt-2 ${field}`} />
+        </div>
+        <div>
+          <label className="text-sm font-medium" htmlFor="account-new">
+            New password
+          </label>
+          <input id="account-new" type="password" autoComplete="new-password" minLength={MIN_PASSWORD} value={next} onChange={(e) => setNext(e.target.value)} className={`mt-2 ${field}`} />
+        </div>
+        <Button variant="primary" type="submit" disabled={busy || !current || next.length < MIN_PASSWORD}>
+          {busy ? "Saving..." : "Change password"}
+        </Button>
+        <div className="md:col-span-3">
+          {error && <ErrorNote>{error}</ErrorNote>}
+          {done && <p className="text-sm text-emerald-600 dark:text-emerald-400">Password changed. Your other sessions were signed out.</p>}
+          {!error && !done && <p className="text-xs text-muted">At least {MIN_PASSWORD} characters. Changing it signs you out everywhere else.</p>}
+        </div>
+      </form>
+    </Card>
+  );
+}
+
+/** Shows a generated password once, for the admin to pass on. */
+function PasswordShown({ title, user, password, onClose }: { title: string; user: string; password: string; onClose: () => void }) {
+  return (
+    <Modal title={title} onClose={onClose} footer={<Button variant="primary" onClick={onClose}>Done</Button>}>
+      <p className="text-sm text-muted">
+        Give <span className="font-medium text-ink-2">{user}</span> this password. It is shown only now; they choose their own when they sign in with it.
+      </p>
+      <div className="mt-4 flex items-center gap-2">
+        <code className="min-w-0 flex-1 rounded-xl bg-surface-2 px-4 py-3 font-mono text-sm">{password}</code>
+        <CopyButton text={password} />
+      </div>
+    </Modal>
+  );
+}
+
+function NewUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const [name, setName] = useState("");
+  const [role, setRole] = useState<Role>("operator");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<{ user: User; password: string } | null>(null);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      setCreated(await api.createUser(name, role));
+      onCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (created) return <PasswordShown title={`User "${created.user.name}" added`} user={created.user.name} password={created.password} onClose={onClose} />;
+  return (
+    <Modal
+      title="Add a user"
+      onClose={onClose}
+      footer={
+        <>
+          <Button type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form="new-user" disabled={busy || !name.trim()}>
+            <UserPlus className="size-3.5" /> {busy ? "Adding..." : "Add user"}
+          </Button>
+        </>
+      }
+    >
+      <form id="new-user" onSubmit={submit} className="space-y-5">
+        {error && <ErrorNote>{error}</ErrorNote>}
+        <div>
+          <label className="text-sm font-medium" htmlFor="user-name">
+            User name
+          </label>
+          <input id="user-name" required maxLength={64} value={name} onChange={(e) => setName(e.target.value)} placeholder="jane.doe" className={`mt-2 ${field}`} />
+          <p className="mt-1.5 text-xs text-muted">Lowercase letters, digits, dots, dashes and underscores. They sign in with it.</p>
+        </div>
+        <div>
+          <span className="text-sm font-medium">Role</span>
+          <div className="mt-2 space-y-2">
+            {ROLES.map((r) => (
+              <label key={r} className={`flex cursor-pointer gap-3 rounded-xl border p-3 text-sm ${role === r ? "border-accent bg-accent/5" : "border-line"}`}>
+                <input type="radio" name="role" checked={role === r} onChange={() => setRole(r)} className="mt-0.5 accent-[var(--accent)]" />
+                <span>
+                  <span className="font-medium">{ROLE_LABELS[r]}</span>
+                  <span className="block text-xs text-muted">{ROLE_DESCRIPTIONS[r]}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <p className="text-xs text-muted">OpSkills generates a password to give them. They replace it when they first sign in.</p>
+      </form>
+    </Modal>
+  );
+}
+
+/** Admins add users, change roles, reset passwords and remove users. */
+function UsersCard() {
+  const me = useMe();
+  const users = useData(() => api.users(), []);
+  const [adding, setAdding] = useState(false);
+  const [shown, setShown] = useState<{ user: string; password: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function act(f: () => Promise<unknown>) {
+    setError(null);
+    try {
+      await f();
+      users.reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const list = users.data ?? [];
+  return (
+    <Card className="mb-4">
+      <CardHeader
+        title="Users"
+        hint="Who can sign in, and what their role allows"
+        action={
+          <Button size="sm" variant="primary" onClick={() => setAdding(true)}>
+            <UserPlus className="size-3.5" /> Add user
+          </Button>
+        }
+      />
+      {(error || users.error) && (
+        <div className="px-6 pb-4 sm:px-8">
+          <ErrorNote>{error ?? users.error}</ErrorNote>
+        </div>
+      )}
+      <div className="scroll-thin overflow-x-auto">
+        <table className="w-full min-w-[640px] text-sm">
+          <thead>
+            <tr className="border-y border-line bg-surface-2 text-left text-xs text-muted">
+              <th className="px-6 py-3 font-medium sm:px-8">User</th>
+              <th className="px-3 py-3 font-medium">Role</th>
+              <th className="px-3 py-3 font-medium">Last sign-in</th>
+              <th className="px-6 py-3 sm:px-8" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {list.map((u) => {
+              const self = u.name === me?.user;
+              return (
+                <tr key={u.name}>
+                  <td className="px-6 py-3 sm:px-8">
+                    <span className="flex items-center gap-3">
+                      <Avatar name={u.name} size="size-7" />
+                      <span>
+                        <span className="font-medium">{u.name}</span>
+                        {self && <span className="ml-1.5 text-xs text-muted">(you)</span>}
+                        {u.must_change_password && <span className="block text-xs text-amber-600 dark:text-amber-400">Has a generated password</span>}
+                      </span>
+                    </span>
+                  </td>
+                  <td className="px-3 py-3">
+                    <select
+                      aria-label={`Role of ${u.name}`}
+                      value={u.role}
+                      disabled={self}
+                      title={self ? "Another admin can change your role" : undefined}
+                      onChange={(e) => act(() => api.updateUser(u.name, e.target.value as Role))}
+                      className="h-8 rounded-lg border border-line bg-surface px-2 text-sm disabled:opacity-60"
+                    >
+                      {ROLES.map((r) => (
+                        <option key={r} value={r}>
+                          {ROLE_LABELS[r]}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="px-3 py-3 text-muted">{u.last_sign_in_at ? timeAgo(u.last_sign_in_at) : "Never"}</td>
+                  <td className="px-6 py-3 text-right whitespace-nowrap sm:px-8">
+                    {!self && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!window.confirm(`Reset the password of ${u.name}? They are signed out and get a new generated password.`)) return;
+                            act(async () => setShown(await api.resetPassword(u.name).then((r) => ({ user: u.name, password: r.password }))));
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted hover:text-ink"
+                        >
+                          <RotateCcw className="size-3.5" /> Reset password
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!window.confirm(`Remove ${u.name}? They are signed out and their API tokens stop working.`)) return;
+                            act(() => api.deleteUser(u.name));
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted hover:text-rose-600"
+                          aria-label={`Remove ${u.name}`}
+                        >
+                          <Trash2 className="size-3.5" /> Remove
+                        </button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {adding && <NewUserDialog onClose={() => setAdding(false)} onCreated={() => users.reload()} />}
+      {shown && <PasswordShown title={`New password for ${shown.user}`} user={shown.user} password={shown.password} onClose={() => setShown(null)} />}
+    </Card>
+  );
+}
+
+const permissions: [string, Role][] = [
+  ["See runbooks, runs, output and hosts", "viewer"],
+  ["Start, retry and cancel runs", "operator"],
+  ["Edit runbooks, with schedules, webhooks and notifications", "editor"],
+  ["Manage vault secrets", "editor"],
+  ["Enroll, tag and remove hosts", "admin"],
+  ["Manage users, email settings and everyone's API tokens", "admin"],
+];
+
+function RolesCard() {
+  const rank = (r: Role) => ROLES.indexOf(r);
+  return (
+    <Card className="mb-4">
+      <CardHeader title="Roles" hint="Each role can do everything the roles to its left can" />
+      <div className="scroll-thin overflow-x-auto">
+        <table className="w-full min-w-[560px] text-sm">
+          <thead>
+            <tr className="border-y border-line bg-surface-2 text-left text-xs text-muted">
+              <th className="px-6 py-3 font-medium sm:px-8">Permission</th>
+              {ROLES.map((r) => (
+                <th key={r} className="px-2 py-3 text-center font-medium">
+                  {ROLE_LABELS[r]}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {permissions.map(([label, min]) => (
+              <tr key={label}>
+                <td className="px-6 py-3 sm:px-8">{label}</td>
+                {ROLES.map((r) => (
+                  <td key={r} className="px-2 py-3 text-center">
+                    {rank(r) >= rank(min) ? <Check className="mx-auto size-4 text-accent" aria-label="Yes" /> : <span className="text-line-strong" aria-label="No">-</span>}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="px-6 py-4 text-xs text-muted sm:px-8">
+        Editors can make a runbook run any command, as root, on every host it targets. Give that role only to people you'd trust with root on those hosts.
+      </p>
+    </Card>
+  );
+}
+
+/** Every user's API tokens, for admins to revoke. */
+function AllTokensCard() {
+  const tokens = useData(() => api.allTokens(), []);
+  const [error, setError] = useState<string | null>(null);
+  const list = tokens.data ?? [];
+  async function revoke(t: ApiToken) {
+    if (!window.confirm(`Revoke "${t.name}" of ${t.user}? Anything using it stops working right away.`)) return;
+    setError(null);
+    try {
+      await api.revokeAnyToken(t.id);
+      tokens.reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+  return (
+    <Card className="mb-4">
+      <CardHeader title="Everyone's API tokens" hint="Revoke a token of any user" />
+      {(error || tokens.error) && (
+        <div className="px-6 pb-4 sm:px-8">
+          <ErrorNote>{error ?? tokens.error}</ErrorNote>
+        </div>
+      )}
+      {list.length === 0 ? (
+        <p className="px-6 pb-6 text-sm text-muted sm:px-8">No one has an API token.</p>
+      ) : (
+        <ul className="divide-y divide-line border-t border-line">
+          {list.map((t) => (
+            <li key={t.id} className="flex items-center gap-3 px-6 py-3 text-sm sm:px-8">
+              <KeyRound className="size-3.5 text-muted" />
+              <span className="min-w-0 flex-1 truncate">
+                <span className="font-medium">{t.name}</span> <span className="text-muted">of {t.user}, last used {t.last_used_at ? timeAgo(t.last_used_at) : "never"}</span>
+              </span>
+              <button type="button" onClick={() => revoke(t)} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted hover:text-rose-600" aria-label={`Revoke ${t.name} of ${t.user}`}>
+                <Trash2 className="size-3.5" /> Revoke
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
 export function SettingsPage() {
+  const admin = useCan("admin");
   return (
     <>
-      <PageHeader title="Settings" subtitle="API tokens, email, workspace members and access." />
+      <PageHeader title="Settings" subtitle={admin ? "Your account, API tokens, users and roles, and email." : "Your account and API tokens."} />
+      <AccountCard />
       <ApiTokensCard />
-      <EmailCard />
-      <SampleBanner>Members and roles below are a preview of a later release. This version has one built-in admin user.</SampleBanner>
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <Card>
-          <CardHeader title="Members" action={<Button size="sm">Invite</Button>} />
-          <ul className="divide-y divide-line">
-            {members.map((m) => (
-              <li key={m.name} className="flex items-center gap-3 px-6 py-3 sm:px-8">
-                <Avatar name={m.name} size="size-7" />
-                <span className="flex-1 text-sm font-medium">{m.name}</span>
-                <select defaultValue={m.role} className="h-7 rounded-md border border-line bg-surface px-2 text-xs">
-                  <option>Admin</option>
-                  <option>Operator</option>
-                  <option>Viewer</option>
-                </select>
-              </li>
-            ))}
-          </ul>
-        </Card>
-        <Card>
-          <CardHeader title="Roles" hint="What each role can do in this workspace" />
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-y border-line bg-surface-2 text-left text-xs text-muted">
-                <th className="px-6 py-3 font-medium sm:px-8">Permission</th>
-                <th className="px-2 py-2 text-center font-medium">Admin</th>
-                <th className="px-2 py-2 text-center font-medium">Operator</th>
-                <th className="px-2 py-2 text-center font-medium">Viewer</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {[
-                ["View runbooks and runs", 1, 1, 1],
-                ["Start and cancel runs", 1, 1, 0],
-                ["Approve gated steps", 1, 1, 0],
-                ["Edit runbooks", 1, 0, 0],
-                ["Manage vault and members", 1, 0, 0],
-              ].map(([label, ...cells]) => (
-                <tr key={label as string}>
-                  <td className="px-6 py-3 sm:px-8">{label}</td>
-                  {cells.map((c, i) => (
-                    <td key={i} className="px-2 py-2 text-center">
-                      {c ? <span className="text-accent">●</span> : <span className="text-line-strong">○</span>}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
-      </div>
+      {admin && (
+        <>
+          <UsersCard />
+          <RolesCard />
+          <AllTokensCard />
+          <EmailCard />
+        </>
+      )}
+      {!admin && <RolesCard />}
     </>
   );
 }

@@ -7,6 +7,7 @@ import { duration, fromNow, runDuration, runNumber, timeAgo, when } from "../for
 import { Button, Card, CardHeader, cx, ErrorNote, PageHeader, StatusPill, Tag } from "../components/ui";
 import { useRunNow } from "./Runbooks";
 import { go } from "../router";
+import { useCan } from "../session";
 
 function toYaml(rb: Runbook) {
   const q = (s: string) => (/^[\w .,/()-]*$/.test(s) && s.trim() === s && s !== "" ? s : JSON.stringify(s));
@@ -258,6 +259,8 @@ export function RunbookDetail({ id }: { id: string }) {
   const [tab, setTab] = useState<"steps" | "runs" | "yaml">("steps");
   const [copied, setCopied] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const canEdit = useCan("editor");
+  const canRun = useCan("operator");
   const { runNow, busy, error, dialog } = useRunNow();
 
   if (rb.error) return <ErrorNote>{rb.error}</ErrorNote>;
@@ -286,15 +289,21 @@ export function RunbookDetail({ id }: { id: string }) {
         subtitle={r.description || undefined}
         actions={
           <>
-            <Button onClick={remove} aria-label="Delete runbook">
-              <Trash2 className="size-4" />
-            </Button>
-            <Button onClick={() => go(`runbooks/${r.id}/edit`)}>
-              <Pencil className="size-3.5" /> Edit
-            </Button>
-            <Button variant="primary" disabled={busy === r.id} onClick={() => runNow(r.id)}>
-              <Play className="size-3.5" fill="currentColor" /> {busy === r.id ? "Starting..." : "Run now"}
-            </Button>
+            {canEdit && (
+              <>
+                <Button onClick={remove} aria-label="Delete runbook">
+                  <Trash2 className="size-4" />
+                </Button>
+                <Button onClick={() => go(`runbooks/${r.id}/edit`)}>
+                  <Pencil className="size-3.5" /> Edit
+                </Button>
+              </>
+            )}
+            {canRun && (
+              <Button variant="primary" disabled={busy === r.id} onClick={() => runNow(r.id)}>
+                <Play className="size-3.5" fill="currentColor" /> {busy === r.id ? "Starting..." : "Run now"}
+              </Button>
+            )}
           </>
         }
       />

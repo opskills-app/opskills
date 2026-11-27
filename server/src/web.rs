@@ -46,14 +46,15 @@ impl AppState {
 
 /// Open the store and build the shared state. Must run inside the async runtime.
 pub fn build_state(cfg: Config, fs: &firststart::State) -> Result<Arc<AppState>> {
-    let store = Arc::new(Store::open(&cfg.data.dir.join("opskills.redb")).context("opening the database")?);
+    let store = Arc::new(Store::open(&cfg.data.dir.join("opskills.redb"), &cfg.data.dir).context("opening the database")?);
     let interrupted = store.fail_interrupted_runs()?;
     if interrupted > 0 {
         tracing::warn!(runs = interrupted, "marked runs interrupted by a restart as failed");
     }
-    if fs.initial_password.is_some() {
-        // A new admin password invalidates every existing session.
-        store.clear_sessions()?;
+    if let Some(hash) = &fs.initial_password_hash {
+        // A new admin password (first start, or admin.hash deleted to reset it) applies to
+        // the admin user, who must choose their own at sign-in. Everyone is signed out.
+        store.reset_first_admin(hash)?;
     }
     let work_root = cfg.data.dir.join("work");
     let _ = std::fs::remove_dir_all(&work_root);

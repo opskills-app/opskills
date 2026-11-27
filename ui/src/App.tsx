@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { Activity, BookOpen, ChevronRight, KeyRound, LayoutGrid, LogOut, Moon, Plus, Search, Server, Settings, Sun } from "lucide-react";
 import { CommandPalette } from "./components/CommandPalette";
 import { Avatar, Button, cx, Kbd } from "./components/ui";
-import { api, UNAUTHORIZED_EVENT } from "./api";
+import { api, UNAUTHORIZED_EVENT, type Me, type Role } from "./api";
+import { ROLE_LABELS, SessionContext } from "./session";
+import { ChangePassword } from "./pages/ChangePassword";
 import { go, useRoute } from "./router";
 import { Login, SourceLink, SOURCE_URL } from "./pages/Login";
 import { Overview } from "./pages/Overview";
@@ -15,14 +17,16 @@ import { HostsPage } from "./pages/Hosts";
 import { VaultPage } from "./pages/Vault";
 import { SettingsPage } from "./pages/Settings";
 
-const nav = [
+const allNav: { id: string; label: string; icon: typeof LayoutGrid; min?: Role }[] = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
   { id: "runbooks", label: "Runbooks", icon: BookOpen },
   { id: "runs", label: "Runs", icon: Activity },
   { id: "hosts", label: "Hosts", icon: Server },
-  { id: "vault", label: "Vault", icon: KeyRound },
+  { id: "vault", label: "Vault", icon: KeyRound, min: "editor" },
   { id: "settings", label: "Settings", icon: Settings },
 ];
+
+const rank = (r: Role) => ["viewer", "operator", "editor", "admin"].indexOf(r);
 
 function Logo({ className = "size-9" }: { className?: string }) {
   return (
@@ -47,30 +51,62 @@ function useTheme() {
 }
 
 export default function App() {
-  const [user, setUser] = useState<string | null | undefined>(undefined);
+  const [me, setMe] = useState<Me | null | undefined>(undefined);
   const [version, setVersion] = useState("");
   const [sourceUrl, setSourceUrl] = useState(SOURCE_URL);
+  // Unknown until /system answers; the sign-in page waits for it.
+  const [setupDone, setSetupDone] = useState<boolean | undefined>(undefined);
 
-  useEffect(() => {
-    api.me().then((r) => setUser(r.user), () => setUser(null));
+  const loadMe = () => api.me().then(setMe, () => setMe(null));
+  const loadSystem = () =>
     fetch("/api/v1/system")
       .then((r) => r.json())
       .then((s) => {
         setVersion(s.version ?? "");
         if (s.source_url) setSourceUrl(s.source_url);
+        setSetupDone(s.setup_done !== false);
       })
-      .catch(() => {});
-    const onUnauthorized = () => setUser(null);
+      .catch(() => setSetupDone(true));
+
+  useEffect(() => {
+    loadMe();
+    loadSystem();
+    const onUnauthorized = () => {
+      setMe(null);
+      loadSystem();
+    };
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
   }, []);
 
-  if (user === undefined) return <div className="flex min-h-full items-center justify-center text-sm text-muted">Loading...</div>;
-  if (user === null) return <Login onSignedIn={setUser} sourceUrl={sourceUrl} />;
-  return <Shell user={user} version={version} sourceUrl={sourceUrl} onSignOut={() => setUser(null)} />;
+  if (me === undefined || setupDone === undefined) return <div className="flex min-h-full items-center justify-center text-sm text-muted">Loading...</div>;
+  if (me === null) return <Login key={String(setupDone)} onSignedIn={loadMe} sourceUrl={sourceUrl} setupDone={setupDone} />;
+  const signedOut = () => {
+    setMe(null);
+    loadSystem();
+  };
+  if (me.must_change_password)
+    return (
+      <ChangePassword
+        me={me}
+        onChanged={() => {
+          loadMe();
+          loadSystem();
+        }}
+        onSignOut={signedOut}
+        sourceUrl={sourceUrl}
+      />
+    );
+  return (
+    <SessionContext.Provider value={me}>
+      <Shell user={me.user} role={me.role} version={version} sourceUrl={sourceUrl} onSignOut={signedOut} />
+    </SessionContext.Provider>
+  );
 }
 
-function Shell({ user, version, sourceUrl, onSignOut }: { user: string; version: string; sourceUrl: string; onSignOut: () => void }) {
+function Shell({ user, role, version, sourceUrl, onSignOut }: { user: string; role: Role; version: string; sourceUrl: string; onSignOut: () => void }) {
+  const nav = allNav.filter((n) => !n.min || rank(role) >= rank(n.min));
+  const canEdit = rank(role) >= rank("editor");
   const route = useRoute();
   const [dark, setDark] = useTheme();
   const [palette, setPalette] = useState(false);
@@ -144,20 +180,22 @@ function Shell({ user, version, sourceUrl, onSignOut }: { user: string; version:
 
         <div className="flex-1" />
 
-        <div className="relative overflow-hidden rounded-[22px] bg-gradient-to-br from-fuchsia-300 via-violet-500 to-indigo-600 px-5 py-6 text-center text-white">
-          <div className="pointer-events-none absolute -top-10 -right-8 size-28 rounded-full bg-white/15" />
-          <div className="pointer-events-none absolute -bottom-12 -left-6 size-24 rounded-full bg-white/10" />
-          <p className="relative text-sm leading-snug font-semibold">Turn a procedure into a runbook</p>
-          <button onClick={() => go("runbooks/new")} className="relative mt-4 h-10 w-full rounded-full bg-white text-sm font-semibold text-violet-700 shadow-md hover:bg-violet-50">
-            New runbook
-          </button>
-        </div>
+        {canEdit && (
+          <div className="relative overflow-hidden rounded-[22px] bg-gradient-to-br from-fuchsia-300 via-violet-500 to-indigo-600 px-5 py-6 text-center text-white">
+            <div className="pointer-events-none absolute -top-10 -right-8 size-28 rounded-full bg-white/15" />
+            <div className="pointer-events-none absolute -bottom-12 -left-6 size-24 rounded-full bg-white/10" />
+            <p className="relative text-sm leading-snug font-semibold">Turn a procedure into a runbook</p>
+            <button onClick={() => go("runbooks/new")} className="relative mt-4 h-10 w-full rounded-full bg-white text-sm font-semibold text-violet-700 shadow-md hover:bg-violet-50">
+              New runbook
+            </button>
+          </div>
+        )}
 
         <div className="mt-6 flex items-center gap-3 px-2 py-1">
           <Avatar name={user} size="size-10" />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-medium">{user}</span>
-            <span className="block text-xs text-muted">Administrator</span>
+            <span className="block text-xs text-muted">{ROLE_LABELS[role]}</span>
           </span>
           <button onClick={signOut} className="rounded-lg p-2 text-muted hover:bg-surface-2 hover:text-ink" aria-label="Sign out" title="Sign out">
             <LogOut className="size-4" />
@@ -192,12 +230,14 @@ function Shell({ user, version, sourceUrl, onSignOut }: { user: string; version:
               <LogOut className="size-[18px]" />
             </Button>
           </span>
-          <span className="hidden shrink-0 md:block">
-            <Button variant="primary" onClick={() => go("runbooks/new")}>
-              <Plus className="size-4" />
-              New runbook
-            </Button>
-          </span>
+          {canEdit && (
+            <span className="hidden shrink-0 md:block">
+              <Button variant="primary" onClick={() => go("runbooks/new")}>
+                <Plus className="size-4" />
+                New runbook
+              </Button>
+            </span>
+          )}
         </header>
 
         <main className="w-full max-w-[1320px] flex-1 px-4 pt-2 pb-10 sm:px-8 lg:px-12">{page}</main>

@@ -1,17 +1,17 @@
 # Install and run OpSkills
 
-This guide walks through running OpSkills **v0.11.0** with Docker or with the
+This guide walks through running OpSkills **v0.12.0** with Docker or with the
 Debian package, running your first runbook, and everyday tasks: logs,
 configuration, upgrades, backups and removal.
 
-> **About the v0.11.0 preview.** You sign in, keep secrets in an encrypted vault,
+> **About the v0.12.0 preview.** You sign in, keep secrets in an encrypted vault,
 > write runbooks (with inputs, retries, file copies and calls to other runbooks)
 > and run them, with output streaming live. Each step is a shell
 > command that runs on the OpSkills server itself, or on Linux hosts you enroll
 > with the OpSkills agent ([docs/hosts.md](hosts.md)). Runs can also start on a
 > schedule, from a webhook or from scripts with an API token. Runs can notify people
-> by email or webhook. Approvals come later;
-> members and roles on the Settings page are still sample data. Because runbooks run commands,
+> by email or webhook. Each person gets their own user with a role
+> ([Users and roles](users.md)). Because runbooks run commands,
 > the steps below keep OpSkills reachable from your own machine only.
 
 **Choose one:**
@@ -39,7 +39,7 @@ fails, start Docker Desktop (or `sudo systemctl start docker` on Linux).
 ### Step 2. Download the image
 
 ```bash
-docker pull opskills/opskills:0.11.0
+docker pull opskills/opskills:0.12.0
 ```
 
 ### Step 3. Start OpSkills
@@ -49,7 +49,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.11.0
+  opskills/opskills:0.12.0
 ```
 
 What each part does:
@@ -91,7 +91,9 @@ which prints `ok`.
 ### Step 6. Sign in
 
 Go to **http://localhost:8080** in your browser and sign in as `admin` with the
-password from step 4. Then [run your first runbook](#your-first-runbook).
+password from step 4. OpSkills asks you to choose your own password; after that the
+generated one no longer works. Then [run your first runbook](#your-first-runbook),
+and add your team under **Settings > Users** ([Users and roles](users.md)).
 
 The image is based on Alpine Linux, so runbook steps can use the BusyBox tools it
 includes (`df`, `free`, `ps`, `uptime`, `wget` and more).
@@ -166,8 +168,8 @@ This prints `amd64` (Intel/AMD) or `arm64` (ARM). The commands below use
 ### Step 2. Download the package and its checksums
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.11.0/opskills_0.11.0_amd64.deb
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.11.0/SHA256SUMS
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.12.0/opskills_0.12.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.12.0/SHA256SUMS
 ```
 
 ### Step 3. Verify the download
@@ -176,13 +178,13 @@ curl -LO https://github.com/opskills-app/opskills/releases/download/v0.11.0/SHA2
 sha256sum --check --ignore-missing SHA256SUMS
 ```
 
-You should see `opskills_0.11.0_amd64.deb: OK`. If it says `FAILED`, delete the
+You should see `opskills_0.12.0_amd64.deb: OK`. If it says `FAILED`, delete the
 file and download it again.
 
 ### Step 4. Install
 
 ```bash
-sudo apt install ./opskills_0.11.0_amd64.deb
+sudo apt install ./opskills_0.12.0_amd64.deb
 ```
 
 The `./` matters: it tells apt to install this file rather than search online.
@@ -209,7 +211,7 @@ your password manager.
 ### Step 7. Sign in
 
 On the server itself, open **http://localhost:8080** and sign in as `admin` with
-the password from step 6.
+the password from step 6, then choose your own password.
 
 To open it from your laptop while it stays private to the server, use an SSH
 tunnel:
@@ -386,8 +388,12 @@ Docker, or `listen = "127.0.0.1:9000"` in the config file for the package.
   with a volume from an earlier install, sign in with the password you saved then, or
   reset it as below.
 
-**I lost the admin password.** Delete `admin.hash` and restart; a new password is
-printed once, and everyone who was signed in is signed out.
+**I forgot my password.** Ask an admin to reset it under **Settings > Users**.
+
+**I lost the admin password.** If no other admin can reset it, delete `admin.hash`
+and restart. A new password is printed once, the user `admin` gets it with the Admin
+role (and must choose their own at sign-in), and everyone who was signed in is signed
+out.
 
 - Docker:
   ```bash

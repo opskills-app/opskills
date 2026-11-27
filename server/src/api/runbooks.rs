@@ -11,14 +11,23 @@ use axum::{Json, Router};
 use crate::model::{
     calls_of, DEFAULT_STEP_TIMEOUT, LOCAL_HOST_ID, Runbook, RunbookInput, now_ms,
 };
+use crate::model::Role;
 use crate::web::AppState;
-use super::{ApiError, ApiResult, bad};
+use super::{Access, ApiError, ApiResult, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/runbooks", get(list_runbooks).post(create_runbook))
         .route("/runbooks/{id}", get(get_runbook).put(update_runbook).delete(delete_runbook))
 }
+
+pub(super) const ACCESS: &[(&str, &str, Access)] = &[
+    ("GET", "/runbooks", Access::Role(Role::Viewer)),
+    ("POST", "/runbooks", Access::Role(Role::Editor)),
+    ("GET", "/runbooks/{id}", Access::Role(Role::Viewer)),
+    ("PUT", "/runbooks/{id}", Access::Role(Role::Editor)),
+    ("DELETE", "/runbooks/{id}", Access::Role(Role::Editor)),
+];
 
 async fn list_runbooks(State(st): State<Arc<AppState>>) -> ApiResult<Json<Vec<Runbook>>> {
     Ok(Json(st.store.runbooks()?))

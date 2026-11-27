@@ -143,7 +143,7 @@ async fn interrupted_runs_are_marked_failed() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("opskills.redb");
     {
-        let store = crate::store::Store::open(&path).unwrap();
+        let store = crate::store::Store::open(&path, &dir).unwrap();
         let rb = crate::model::Runbook {
             id: "rb".into(),
             name: "x".into(),

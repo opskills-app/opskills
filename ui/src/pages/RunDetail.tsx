@@ -7,6 +7,7 @@ import { RunNotices } from "../components/Notifications";
 import { StartRunDialog } from "../components/StartRun";
 import { go } from "../router";
 import { useRunNow } from "./Runbooks";
+import { useCan } from "../session";
 
 /** Hosts of a finished run that didn't finish well, as the server counts them for a retry. */
 function unfinishedHosts(run: Run) {
@@ -100,6 +101,7 @@ export function RunDetail({ id }: { id: string }) {
   const [q, setQ] = useState("");
   const [follow, setFollow] = useState(true);
   const [cancelling, setCancelling] = useState(false);
+  const canRun = useCan("operator");
   const [actionError, setActionError] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const { runNow, busy, error: runError, dialog } = useRunNow();
@@ -212,7 +214,7 @@ export function RunDetail({ id }: { id: string }) {
             {run.secrets?.length > 0 && <> · secrets: <span className="font-mono text-xs">{run.secrets.map((n) => "$" + n).join(", ")}</span> (masked in output)</>}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className={canRun ? "flex items-center gap-2" : "hidden"}>
           {active ? (
             <Button onClick={cancel} disabled={cancelling} className="text-rose-600 dark:text-rose-400">
               <CircleStop className="size-4" /> {cancelling ? "Cancelling..." : "Cancel run"}

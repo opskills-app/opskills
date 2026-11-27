@@ -15,9 +15,10 @@ use crate::model::{
     Run, Runbook, now_ms,
 };
 use crate::vault::Sealed;
+use crate::model::Role;
 use crate::web::AppState;
 use super::runs::start_runbook;
-use super::{ApiError, ApiResult, bad};
+use super::{Access, ApiError, ApiResult, bad};
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -26,6 +27,15 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/webhooks/{id}/rotate", post(rotate_webhook))
         .route("/hooks/{token}", post(inbound_hook))
 }
+
+pub(super) const ACCESS: &[(&str, &str, Access)] = &[
+    ("GET", "/runbooks/{id}/webhooks", Access::Role(Role::Viewer)),
+    ("POST", "/runbooks/{id}/webhooks", Access::Role(Role::Editor)),
+    ("PUT", "/webhooks/{id}", Access::Role(Role::Editor)),
+    ("DELETE", "/webhooks/{id}", Access::Role(Role::Editor)),
+    ("POST", "/webhooks/{id}/rotate", Access::Role(Role::Editor)),
+    ("POST", "/hooks/{token}", Access::OwnCredential),
+];
 
 const MAX_WEBHOOKS: usize = 20;
 const MAX_HOOK_BODY: usize = 256 * 1024;

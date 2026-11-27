@@ -9,13 +9,13 @@ with live output, approvals and a full audit trail.
 
 Website: [opskills.app](https://opskills.app)
 
-> **Status:** v0.11.0 preview. Sign in, keep secrets in an encrypted vault, enroll
+> **Status:** v0.12.0 preview. Sign in, keep secrets in an encrypted vault, enroll
 > your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks with
 > inputs, retries, file copies and calls to other runbooks, and run them on the
 > server or on your hosts, by hand, on a schedule, from a webhook or with an API
 > token, with output streaming live to your browser, and hear how runs went by email
-> or in chat. Approvals are next
-> (members and roles on the Settings page are still sample data).
+> or in chat. Give each person their own user with a role (Viewer, Operator, Editor
+> or Admin). An audit log is next.
 
 ## Install
 
@@ -33,7 +33,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.11.0
+  opskills/opskills:0.12.0
 docker logs opskills 2>&1 | grep 'Admin password'
 ```
 
@@ -45,13 +45,13 @@ use the included [`compose.yaml`](compose.yaml): `docker compose up -d`.
 ### Debian and Ubuntu
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.11.0/opskills_0.11.0_amd64.deb
-sudo apt install ./opskills_0.11.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.12.0/opskills_0.12.0_amd64.deb
+sudo apt install ./opskills_0.12.0_amd64.deb
 sudo systemctl start opskills
 sudo journalctl -u opskills | grep 'Admin password'
 ```
 
-Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.11.0_arm64.deb`
+Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.12.0_arm64.deb`
 on ARM servers (`dpkg --print-architecture` tells you which). All downloads and
 checksums are on the [releases page](https://github.com/opskills-app/opskills/releases/latest).
 The package installs a sandboxed systemd service that runs as the `opskills`
@@ -63,14 +63,16 @@ On first start OpSkills creates, in its data directory (`/var/lib/opskills`):
 
 - a unique server ID,
 - a 256-bit encryption key, and
-- an admin password, printed **once** to the log. Sign in with it as `admin`
-  and store it somewhere safe.
+- the user `admin` with a generated password, printed **once** to the log. Sign in
+  with it as `admin`; OpSkills then asks you to choose your own password.
 
 These files, and the database `opskills.redb`, are readable only by the server.
 
 ## Using OpSkills
 
-1. **Sign in** as `admin` with the password from the first start.
+1. **Sign in** as `admin` with the password from the first start, and choose your
+   own. Add your team under **Settings > Users**, each with a role
+   ([Users and roles](docs/users.md)).
 2. **Create a runbook**: give it a name, then add steps. A step runs a shell
    command, copies a file (from text or a vault secret), or calls another runbook.
    Start from an example (Hello world, Check disk space, System health) or from
@@ -133,8 +135,8 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   the exact commands:
 
   ```bash
-  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.11.0_amd64.deb
-  sudo apt install ./opskills-agent_0.11.0_amd64.deb
+  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.12.0_amd64.deb
+  sudo apt install ./opskills-agent_0.12.0_amd64.deb
   sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
   sudo systemctl enable --now opskills-agent
   ```
@@ -173,15 +175,18 @@ The full guide is [docs/hosts.md](docs/hosts.md).
 - Every API call needs a signed-in session (an HttpOnly, SameSite=Strict cookie) or
   an API token. With a session, every change also needs the `X-OpSkills-Request: 1`
   header, which blocks cross-site request forgery.
+- Each user has a role (Viewer, Operator, Editor, Admin), checked on every request.
+  Every API route has an access rule; a route without one is refused. See
+  [Users and roles](docs/users.md).
 - API tokens (`osk_...`) are shown once and stored only as a SHA-256 hash. They can
-  expire, are revoked instantly, and can't create tokens or sign in. Runs record
-  which token started them. A token can do everything else the admin can, so keep
-  it in your CI's secret store.
-- Failed sign-ins are slowed down. Resetting the admin password signs out every
-  session.
+  expire, are revoked instantly, and can't manage tokens, users or sign-ins. A token
+  acts with its owner's current role, and runs record which token started them.
+  Keep tokens in your CI's secret store.
+- Passwords are hashed with argon2id. Generated passwords (first start, new users,
+  resets) must be replaced at the next sign-in. Failed sign-ins are slowed down.
 - Runbooks run commands with the server user's permissions, and as **root** on
-  enrolled hosts. Anyone who can sign in can run any command on those machines, so
-  treat the admin password like a root password for your fleet.
+  enrolled hosts. Anyone with the Editor or Admin role can run any command on those
+  machines, so give those roles only to people you'd trust with root there.
 - Each agent has its own credential, stored on the server only as a SHA-256 hash.
   Enrollment tokens work once and expire after 24 hours. Agents can only take
   steps for their own host.
@@ -237,9 +242,12 @@ curl -X POST -H "Authorization: Bearer $OPSKILLS_TOKEN" \
 
 | Endpoint | What it does |
 |---|---|
-| `GET /system` | Version and server ID (no sign-in needed) |
-| `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` | Sign in and out, and who you are |
-| `GET /me/tokens`, `POST /me/tokens`, `DELETE /me/tokens/{id}` | List, create (the value is returned once) and revoke API tokens; signed-in sessions only |
+| `GET /system` | Version, server ID, and whether setup is done (no sign-in needed) |
+| `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` | Sign in and out, and who you are, with your role |
+| `POST /auth/password` | Change your password: `{"current_password", "new_password"}`; signed-in sessions only |
+| `GET /me/tokens`, `POST /me/tokens`, `DELETE /me/tokens/{id}` | List, create (the value is returned once) and revoke your API tokens; signed-in sessions only |
+| `GET /users`, `POST /users`, `PUT`, `DELETE /users/{name}`, `POST /users/{name}/reset-password` | Manage users and roles (admins, sessions only); see [Users and roles](docs/users.md#api) |
+| `GET /tokens`, `DELETE /tokens/{id}` | Everyone's API tokens (admins, sessions only) |
 | `GET /runbooks`, `POST /runbooks` | List and create runbooks |
 | `GET`, `PUT`, `DELETE /runbooks/{id}` | Read, replace and delete a runbook |
 | `GET /runbooks/{id}/schedules` | Each schedule's next times, last run and last error |

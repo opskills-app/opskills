@@ -1,6 +1,4 @@
-//! Sign-in for the built-in admin user, and cookie sessions.
-
-use std::path::Path;
+//! Passwords, API and webhook tokens, and cookie sessions.
 
 use axum::http::HeaderMap;
 use sha2::{Digest, Sha256};
@@ -8,17 +6,27 @@ use sha2::{Digest, Sha256};
 use crate::firststart::random_bytes;
 
 pub const COOKIE: &str = "opskills_session";
-pub const ADMIN_USER: &str = "admin";
 /// Header every state-changing request must carry. Browsers can't add it to a
 /// cross-site request without a CORS preflight, which this server never grants.
 pub const CSRF_HEADER: &str = "x-opskills-request";
 
-/// Check a password against the admin hash file written on first start.
-pub fn verify_admin_password(hash_file: &Path, password: &str) -> bool {
-    let Ok(record) = std::fs::read_to_string(hash_file) else { return false };
-    // argon2id$v=19$m=19456,t=2,p=1$<salt hex>$<hash hex>
+const PARAMS: &str = "m=19456,t=2,p=1";
+
+/// Hash a password with argon2id and a random salt, as
+/// `argon2id$v=19$m=19456,t=2,p=1$<salt hex>$<hash hex>`.
+pub fn hash_password(password: &str) -> anyhow::Result<String> {
+    let salt = random_bytes::<16>();
+    let mut out = [0u8; 32];
+    argon2::Argon2::default()
+        .hash_password_into(password.as_bytes(), &salt, &mut out)
+        .map_err(|e| anyhow::anyhow!("hashing a password: {e}"))?;
+    Ok(format!("argon2id$v=19${PARAMS}${}${}", hex::encode(salt), hex::encode(out)))
+}
+
+/// Check a password against a record from `hash_password`.
+pub fn verify_password(record: &str, password: &str) -> bool {
     let parts: Vec<&str> = record.trim().split('$').collect();
-    if parts.len() != 5 || parts[0] != "argon2id" || parts[1] != "v=19" || parts[2] != "m=19456,t=2,p=1" {
+    if parts.len() != 5 || parts[0] != "argon2id" || parts[1] != "v=19" || parts[2] != PARAMS {
         return false;
     }
     let (Ok(salt), Ok(expected)) = (hex::decode(parts[3]), hex::decode(parts[4])) else { return false };
@@ -28,6 +36,10 @@ pub fn verify_admin_password(hash_file: &Path, password: &str) -> bool {
     }
     constant_time_eq(&out, &expected)
 }
+
+/// A hash no password matches, checked for unknown user names so that a sign-in takes as
+/// long whether or not the user exists.
+pub const DUMMY_HASH: &str = "argon2id$v=19$m=19456,t=2,p=1$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000";
 
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
@@ -132,6 +144,16 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert("authorization", format!("bearer {whole}").parse().unwrap());
         assert_eq!(bearer_token(&h), Some(whole));
+    }
+
+    #[test]
+    fn passwords_hash_and_verify() {
+        let record = hash_password("correct horse battery").unwrap();
+        assert!(verify_password(&record, "correct horse battery"));
+        assert!(!verify_password(&record, "correct horse battery!"));
+        assert_ne!(record, hash_password("correct horse battery").unwrap(), "salted");
+        assert!(!verify_password(DUMMY_HASH, ""));
+        assert!(!verify_password("garbage", "x"));
     }
 
     #[test]
