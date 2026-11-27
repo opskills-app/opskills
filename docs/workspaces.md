@@ -69,7 +69,8 @@ of its own workspace, and its runs use that workspace's hosts and secrets.
 ## API
 
 Lists and creates work in the workspace named by `?workspace=<id>`, or in Default
-without one, so scripts written before workspaces keep working:
+without one, so scripts written before workspaces keep finding and creating things
+where they did:
 
 ```bash
 curl -H "Authorization: Bearer $OPSKILLS_TOKEN" "https://ops.example.com/api/v1/runbooks?workspace=payments"
@@ -103,6 +104,9 @@ belong to, or about something in one, gets `404`, as if it didn't exist.
 The first start of 0.14 copies the database to `opskills.redb.schema-1-backup-<time>`
 (or `schema-0` from 0.11 and earlier) before it changes anything. Then everything
 moves into the workspace Default: runbooks, runs, secrets and hosts. Admins become
-server admins; everyone keeps their role in Default. Scripts, API tokens and webhook
-URLs keep working, because requests without `?workspace=` use Default. If you go back
-to an older version, restore the backup.
+server admins; everyone keeps their role in Default. API tokens, webhook URLs and
+scripts keep working, because requests without `?workspace=` use Default. The
+exception is account data: sign-in and `/auth/me` return `admin` and `workspaces`
+instead of `role`, and the users API changed the same way (see the
+[release notes](releases/v0.14.0.md)). If you go back to an older version, restore the
+backup.
