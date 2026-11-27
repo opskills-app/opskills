@@ -76,7 +76,14 @@ environments:
 ```
 
 A run started with `env` set to `staging` gets `staging/DB_PASSWORD` as `$DB_PASSWORD`,
-and the run page shows which secret it used. Only choice inputs can pick a folder, so
+and the run page shows which secret it used.
+
+The input can stand for any whole folder, at the top or deeper: with
+`prod/db/DB_PASSWORD` and `stage/db/DB_PASSWORD` in the vault, use
+`{{ inputs.env }}/db/DB_PASSWORD` with the choices `prod` and `stage`. When the
+environments aren't laid out alike, like `prod/db/...` and `stage/db2/...`, a choice
+can name several folders: choices `prod/db` and `stage/db2` with
+`{{ inputs.target }}/DB_PASSWORD`. Only choice inputs can pick a folder, so
 whoever starts a run can pick only among the secrets the runbook's editor chose; saving
 checks that every choice has its secret. In the editor, use **Pick the folder with a
 choice input** under **Secrets**.

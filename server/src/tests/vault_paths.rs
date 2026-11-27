@@ -122,6 +122,65 @@ async fn a_choice_input_can_pick_the_folder() {
     }
 }
 
+/// The same name in two environments: the runbook says which one, by its full name or
+/// with a choice input for a folder.
+#[tokio::test]
+async fn the_runbook_names_which_secret_it_reads() {
+    let s = server();
+    let c = sign_in(&s).await;
+    for (name, value) in [("prod/db/DB_PASSWORD", "prod-value-1111"), ("stage/db/DB_PASSWORD", "stage-value-2222"), ("stage/db2/DB_PASSWORD", "stage2-value-3333")] {
+        assert_eq!(add_secret(&s, &c, name, value).await.status, StatusCode::CREATED, "{name}");
+    }
+
+    // By full name: each runbook reads the one it lists, as $DB_PASSWORD.
+    for (path, prefix) in [("prod/db/DB_PASSWORD", "prod-value-"), ("stage/db/DB_PASSWORD", "stage-value-")] {
+        let rb = create(&s, &c, json!({"name": path, "secrets": [path], "steps": [check_value("DB_PASSWORD", prefix)]})).await;
+        assert_eq!(run_ok(&s, &c, &rb, json!({})).await["secrets"], json!([path]));
+    }
+
+    // A choice input for the top folder, the same folders below it.
+    let env = json!([{"name": "env", "type": "choice", "choices": ["prod", "stage"], "required": true}]);
+    let rb = create(&s, &c, json!({"name": "Per env", "inputs": env, "secrets": ["{{ inputs.env }}/db/DB_PASSWORD"], "steps": [
+        {"name": "check", "run": "case \"$DB_PASSWORD\" in \"$OPSKILLS_INPUT_ENV\"-value-*) echo ok;; *) exit 1;; esac"}
+    ]})).await;
+    for e in ["prod", "stage"] {
+        assert_eq!(run_ok(&s, &c, &rb, json!({"inputs": {"env": e}})).await["secrets"], json!([format!("{e}/db/DB_PASSWORD")]));
+    }
+
+    // A folder in the middle.
+    let db = json!([{"name": "db", "type": "choice", "choices": ["db", "db2"], "required": true}]);
+    let rb = create(&s, &c, json!({"name": "Per db", "inputs": db, "secrets": ["stage/{{ inputs.db }}/DB_PASSWORD"], "steps": [
+        {"name": "check", "run": "case \"$OPSKILLS_INPUT_DB:$DB_PASSWORD\" in db:stage-value-*|db2:stage2-value-*) echo ok;; *) exit 1;; esac"}
+    ]})).await;
+    for d in ["db", "db2"] {
+        assert_eq!(run_ok(&s, &c, &rb, json!({"inputs": {"db": d}})).await["secrets"], json!([format!("stage/{d}/DB_PASSWORD")]));
+    }
+
+    // One choice can name several folders, when the environments aren't laid out alike.
+    let target = json!([{"name": "target", "type": "choice", "choices": ["prod/db", "stage/db2"], "required": true}]);
+    let rb = create(&s, &c, json!({"name": "Per target", "inputs": target, "secrets": ["{{ inputs.target }}/DB_PASSWORD"], "steps": [
+        {"name": "check", "run": "case \"$OPSKILLS_INPUT_TARGET:$DB_PASSWORD\" in prod/db:prod-value-*|stage/db2:stage2-value-*) echo ok;; *) exit 1;; esac"}
+    ]})).await;
+    for t in ["prod/db", "stage/db2"] {
+        assert_eq!(run_ok(&s, &c, &rb, json!({"inputs": {"target": t}})).await["secrets"], json!([format!("{t}/DB_PASSWORD")]));
+    }
+    // A run can only pick one of the choices.
+    let r = start_with(&s, &c, &rb, json!({"inputs": {"target": "stage/db"}})).await;
+    assert_ne!(r.status, StatusCode::CREATED);
+    assert!(r.body.contains("must be one of"), "{}", r.body);
+
+    // Every choice needs its secret, and a choice can't leave the folders.
+    let make = |inputs: Value, secret: &str| json!({"name": "x", "inputs": inputs, "secrets": [secret], "steps": [{"name": "a", "run": "true"}]});
+    for (body, expect) in [
+        (make(env.clone(), "{{ inputs.env }}/db2/DB_PASSWORD"), "prod/db2/DB_PASSWORD"),
+        (make(json!([{"name": "t", "type": "choice", "choices": ["prod/../stage"]}]), "{{ inputs.t }}/DB_PASSWORD"), "prod/../stage/DB_PASSWORD"),
+    ] {
+        let r = call(&s.app, "POST", "/api/v1/runbooks", Some(body), Some(&c), true).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{expect}: {}", r.body);
+        assert!(r.body.contains(expect), "{expect}: {}", r.body);
+    }
+}
+
 #[tokio::test]
 async fn shared_secrets_reach_only_the_workspaces_they_are_shared_with() {
     let s = server();
