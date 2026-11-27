@@ -9,6 +9,7 @@ workspaces they belong to.
 | Runbooks, with their schedules, webhooks and notifications | User accounts and server admins |
 | Runs and their output | Email settings |
 | Vault secrets (the same name can exist in two workspaces, with different values) | API tokens (each acts with its owner's role in each workspace) |
+| | Shared secrets, which server admins share with chosen workspaces or all |
 | Hosts (a host can be shared with more than one workspace) | The OpSkills server itself, which every workspace can run on |
 | Members and their roles | The audit log, where each event names its workspace |
 
@@ -56,10 +57,10 @@ while runbooks there target it, or when it's the host's only workspace.
 
 ## Vault
 
-Secrets belong to one workspace; runbooks only use their own workspace's secrets. The
-same name can hold different values in different workspaces, like `DB_PASSWORD` for
-staging and for production. The email password (**Settings > Email**) is a secret of
-the Default workspace.
+Secrets belong to one workspace; runbooks only use their own workspace's secrets, plus
+the shared secrets server admins have shared with it (`shared/...`). The same name can
+hold different values in different workspaces, or in different folders of one. The
+email password (**Settings > Email**) is a shared secret. See [Vault](vault.md).
 
 ## Runbooks
 

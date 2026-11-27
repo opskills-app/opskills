@@ -34,7 +34,7 @@ Writes a file on the step's host, from text you give or from a vault secret:
 |---|---|
 | `to` | The file to write. A relative path is inside the run's working folder. Missing folders are created |
 | `content` | The text to write, up to 64 KB. `{{ ... }}` run values are filled in as plain text |
-| `secret` | Or the name of a vault secret to write. The runbook must list it under `secrets` (the editor does this for you) |
+| `secret` | Or the name of a vault secret to write, like `prod/tls/TLS_KEY`. The runbook must list it under `secrets` (the editor does this for you) |
 | `mode` | File mode in octal. Default `0644`, or `0600` for a secret |
 
 The file is written next to its destination and then moved into place, so nothing
@@ -139,8 +139,11 @@ before anything runs. Other uses of double braces, like the Go templates in
 | `OPSKILLS_HOST_ID`, `OPSKILLS_HOST_NAME` | The host the step runs on |
 | `OPSKILLS_RUNBOOK_ID`, `OPSKILLS_RUNBOOK_NAME`, `OPSKILLS_STARTED_BY` | This runbook, and who started the run |
 
-Vault secrets the runbook lists are environment variables too, under their own names.
-A runbook uses the secrets of its own [workspace](workspaces.md).
+Vault secrets the runbook lists are environment variables too, named after the last
+part of their name: `prod/db/DB_PASSWORD` is `$DB_PASSWORD`. A runbook uses the secrets
+of its own [workspace](workspaces.md) and the shared secrets shared with it
+(`shared/...`); a choice input can pick a secret's folder, like
+`{{ inputs.env }}/DB_PASSWORD`. See [Vault](vault.md).
 
 ## Step options
 
@@ -333,7 +336,7 @@ use placeholders, which take the same fields as the default body:
 | `{{ run.failed_step.name }}`, `{{ run.failed_step.host }}`, `{{ run.failed_step.exit_code }}` | The step that failed |
 | `{{ run.inputs.NAME }}` | An input value (secret inputs are masked) |
 | `{{ output_tail }}` | The last 20 output lines of a failed run |
-| `{{ secrets.NAME }}` | A vault secret, read when the message goes out |
+| `{{ secrets.NAME }}` | A vault secret by its full name, like `{{ secrets.prod/ACME_API_KEY }}` or `{{ secrets.shared/ACME_API_KEY }}`, read when the message goes out |
 
 A string that is exactly one placeholder takes the value as it is, so
 `"{{ run.failed_step.exit_code }}"` becomes a number and `"{{ output_tail }}"` a
