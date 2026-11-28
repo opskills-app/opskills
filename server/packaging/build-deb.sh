@@ -31,6 +31,7 @@ Architecture: $ARCH
 Maintainer: Thomas Kim <admin@megahash.net>
 Installed-Size: $SIZE
 Depends: adduser
+Recommends: openssh-client
 Section: admin
 Priority: optional
 Homepage: https://opskills.app

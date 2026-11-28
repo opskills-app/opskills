@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
-import { Database, Globe, Pencil, Plus, RefreshCw, Tags, TerminalSquare, Trash2, TriangleAlert, X } from "lucide-react";
-import { api, useData, type InventorySource, type SourceHost, type SourceInput, type TagRule } from "../api";
+import { Database, Globe, KeyRound, Pencil, Plug, Plus, RefreshCw, Tags, TerminalSquare, Trash2, TriangleAlert, X } from "lucide-react";
+import { api, useData, type Host, type InventorySource, type SourceHost, type SourceInput, type TagRule } from "../api";
 import { timeAgo } from "../format";
 import { Badge, Button, Card, CardHeader, cx, ErrorNote, Modal, Tag } from "../components/ui";
 import { useIsServerAdmin } from "../session";
@@ -58,7 +58,13 @@ function SourceEditor({ source, onClose, onSaved }: { source: InventorySource | 
   const [name, setName] = useState(source?.name ?? "");
   const [interval, setInterval] = useState(String(source?.interval_seconds ?? 300));
   const [enabled, setEnabled] = useState(source?.enabled ?? true);
-  const [hosts, setHosts] = useState(source?.type === "static" ? JSON.stringify({ hosts: source.hosts?.map(({ name, hostname, tags, attributes }) => ({ name, hostname, tags, attributes })) ?? [] }, null, 2) : exampleHosts);
+  const [sshOn, setSshOn] = useState(!!source?.ssh);
+  const [sshUser, setSshUser] = useState(source?.ssh?.user ?? "root");
+  const [sshPort, setSshPort] = useState(String(source?.ssh?.port ?? 22));
+  const [sshAuth, setSshAuth] = useState<"key" | "password">(source?.ssh?.auth ?? "key");
+  const [sshSecret, setSshSecret] = useState(source?.ssh?.secret ?? "");
+  const [sshSudo, setSshSudo] = useState(source?.ssh?.sudo ?? true);
+  const [hosts, setHosts] = useState(source?.type === "static" ? JSON.stringify({ hosts: source.hosts?.map(({ name, hostname, tags, attributes, ssh }) => ({ name, hostname, tags, attributes, ssh })) ?? [] }, null, 2) : exampleHosts);
   const [url, setUrl] = useState(source?.type === "url" ? source.url : "");
   const [header, setHeader] = useState(source?.type === "url" ? (source.header ?? "") : "");
   const [secret, setSecret] = useState(source?.type === "url" ? (source.secret ?? "") : "");
@@ -71,7 +77,8 @@ function SourceEditor({ source, onClose, onSaved }: { source: InventorySource | 
   const locked = source?.type === "program" && !serverAdmin;
 
   function input(): SourceInput {
-    const common = { name, interval_seconds: Number(interval) || 300, enabled };
+    const ssh = sshOn ? { user: sshUser.trim(), port: Number(sshPort) || 22, auth: sshAuth, secret: sshSecret.trim(), sudo: sshSudo } : null;
+    const common = { name, interval_seconds: Number(interval) || 300, enabled, ssh };
     if (kind === "static") {
       let doc: unknown;
       try {
@@ -238,6 +245,56 @@ function SourceEditor({ source, onClose, onSaved }: { source: InventorySource | 
             </div>
           </>
         )}
+        <div className="rounded-2xl border border-line p-4">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input type="checkbox" checked={sshOn} onChange={(e) => setSshOn(e.target.checked)} className="size-4 accent-[var(--color-accent)]" />
+            Reach its hosts over SSH
+          </label>
+          <p className={hint}>
+            For hosts without the agent. OpSkills connects with the OpenSSH client and pins each host's key on first contact; a changed key is refused until an Admin accepts it. The credential comes only from here, never from what the source lists.
+          </p>
+          {sshOn && (
+            <div className="mt-4 space-y-4">
+              <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_120px]">
+                <div>
+                  <label className={label} htmlFor="ssh-user">
+                    User
+                  </label>
+                  <input id="ssh-user" value={sshUser} onChange={(e) => setSshUser(e.target.value)} className={`mt-2 ${field}`} />
+                </div>
+                <div>
+                  <label className={label} htmlFor="ssh-port">
+                    Port
+                  </label>
+                  <input id="ssh-port" type="number" min={1} max={65535} value={sshPort} onChange={(e) => setSshPort(e.target.value)} className={`mt-2 ${field}`} />
+                </div>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-[180px_minmax(0,1fr)]">
+                <div>
+                  <span className={label}>Sign in with</span>
+                  <div role="radiogroup" aria-label="Sign in with" className="mt-2 grid h-11 grid-cols-2 gap-1 rounded-xl bg-surface-2 p-1">
+                    {(["key", "password"] as const).map((a) => (
+                      <button key={a} type="button" role="radio" aria-checked={sshAuth === a} onClick={() => setSshAuth(a)} className={cx("rounded-lg text-xs font-medium", sshAuth === a ? "bg-surface text-accent shadow-sm" : "text-muted hover:text-ink")}>
+                        {a === "key" ? "Key" : "Password"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className={label} htmlFor="ssh-secret">
+                    {sshAuth === "key" ? "Private key from the vault" : "Password from the vault"}
+                  </label>
+                  <input id="ssh-secret" value={sshSecret} onChange={(e) => setSshSecret(e.target.value)} placeholder={sshAuth === "key" ? "ssh/OPS_KEY" : "ssh/OPS_PASSWORD"} className={`mt-2 ${field}`} />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={sshSudo} onChange={(e) => setSshSudo(e.target.checked)} className="size-4 accent-[var(--color-accent)]" />
+                Run steps as root with sudo (needs passwordless sudo; not used when the user is root)
+              </label>
+              {kind !== "program" && <p className="text-xs text-muted">A host may also set its own {'"ssh": {"user", "port", "host_keys"}'}; host keys given there are checked before the first connection.</p>}
+            </div>
+          )}
+        </div>
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="size-4 accent-[var(--color-accent)]" />
           On: refresh it and list its hosts
@@ -322,6 +379,7 @@ export function InventorySources({ onChange }: { onChange: () => void }) {
                         {k.label}
                         {s.type === "url" && ` · ${s.url.replace(/^https?:\/\//, "").split(/[/?]/)[0]}`}
                         {s.type === "program" && ` · ${s.command}`}
+                        {s.ssh && ` · SSH as ${s.ssh.user}`}
                       </span>
                     </span>
                     <span className="mt-0.5 block text-xs text-muted">
@@ -474,5 +532,138 @@ export function TagRules({ slug, onChange }: { slug: string; onChange: () => voi
         )}
       </div>
     </Card>
+  );
+}
+
+/** A host reached over SSH: test the connection, see its pinned keys, accept a changed key. */
+export function SshHostDialog({ host, onClose, onChange }: { host: Host; onClose: () => void; onChange: () => void }) {
+  const ssh = host.ssh!;
+  const [busy, setBusy] = useState<"test" | "keys" | "accept" | null>(null);
+  const [test, setTest] = useState<{ ok: boolean; output?: string[]; error: string | null; pinned_now: string[] | null } | null>(null);
+  const [keys, setKeys] = useState<{ pinned: string[]; presented: { type: string; fingerprint: string; pinned: boolean }[] } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const changed = keys?.presented.some((k) => !k.pinned) ?? false;
+
+  async function act(what: "test" | "keys" | "accept") {
+    setBusy(what);
+    setError(null);
+    try {
+      if (what === "test") {
+        setTest(await api.testSsh(host.id));
+        onChange();
+      } else if (what === "keys") {
+        setKeys(await api.sshKeys(host.id));
+      } else if (keys) {
+        await api.acceptSshKeys(
+          host.id,
+          keys.presented.map((k) => k.fingerprint),
+        );
+        setKeys(await api.sshKeys(host.id));
+        setTest(null);
+        onChange();
+      }
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Modal
+      wide
+      title={`${host.name} over SSH`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button type="button" onClick={() => act("keys")} disabled={busy !== null}>
+            <KeyRound className="size-3.5" /> {busy === "keys" ? "Checking..." : "Check host keys"}
+          </Button>
+          <Button variant="primary" type="button" onClick={() => act("test")} disabled={busy !== null}>
+            <Plug className="size-3.5" /> {busy === "test" ? "Connecting..." : "Test connection"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-5 text-sm">
+        {error && <ErrorNote>{error}</ErrorNote>}
+        <dl className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-[120px_minmax(0,1fr)] sm:gap-y-2 [&>dd]:mb-2 sm:[&>dd]:mb-0">
+          <dt className="text-muted">Connects to</dt>
+          <dd className="font-mono text-xs break-all">
+            {ssh.user}@{ssh.address}:{ssh.port}
+          </dd>
+          <dt className="text-muted">Signs in with</dt>
+          <dd>
+            {ssh.auth === "key" ? "a private key" : "a password"} from its source{ssh.sudo ? ", runs steps with sudo" : ""}
+          </dd>
+          <dt className="text-muted">Last connection</dt>
+          <dd>{ssh.last_error ? <span className="text-rose-700 dark:text-rose-300">{ssh.last_error}</span> : ssh.last_ok ? `worked ${timeAgo(ssh.last_ok)}` : "none yet"}</dd>
+          <dt className="text-muted">Pinned keys</dt>
+          <dd>
+            {ssh.fingerprints.length === 0 ? (
+              "None yet: the first connection pins the keys the host presents."
+            ) : (
+              <>
+                {ssh.fingerprints.map((f) => (
+                  <span key={f} className="block font-mono text-xs break-all">
+                    {f}
+                  </span>
+                ))}
+                <span className="mt-1 block text-xs text-muted">
+                  Pinned {ssh.pinned_at ? timeAgo(ssh.pinned_at) : ""} by {ssh.pinned_by ?? "OpSkills"}
+                </span>
+              </>
+            )}
+          </dd>
+        </dl>
+        {ssh.key_changed_at && !keys && (
+          <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-rose-700 dark:text-rose-300">
+            The host presented a different key {timeAgo(ssh.key_changed_at)}, so runs on it are refused. That's expected after a rebuild or re-key; otherwise someone may be posing as it. Check its keys to decide.
+          </div>
+        )}
+        {test && (
+          <div className={cx("rounded-xl border px-4 py-3", test.ok ? "border-emerald-500/40 bg-emerald-500/10" : "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300")}>
+            {test.ok ? (
+              <>
+                {(test.output ?? []).map((l, i) => (
+                  <span key={i} className="block font-mono text-xs">
+                    {l}
+                  </span>
+                ))}
+                {test.pinned_now && <span className="mt-1 block text-xs">Pinned its host keys on this first contact.</span>}
+              </>
+            ) : (
+              test.error
+            )}
+          </div>
+        )}
+        {keys && (
+          <div>
+            <p className="font-medium">Keys the host presents now</p>
+            <ul className="mt-2 space-y-1.5">
+              {keys.presented.map((k) => (
+                <li key={k.fingerprint} className="flex flex-wrap items-center gap-2">
+                  <Badge tone={k.pinned ? "green" : "amber"} className="min-w-0">
+                    {k.pinned ? "Pinned" : "New"}
+                  </Badge>
+                  <span className="text-xs text-muted">{k.type}</span>
+                  <span className="font-mono text-xs break-all">{k.fingerprint}</span>
+                </li>
+              ))}
+            </ul>
+            {changed ? (
+              <div className="mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+                <p>Compare these fingerprints with the host's own (on the host: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub). Accept them only if they match.</p>
+                <Button className="mt-3" variant="primary" disabled={busy !== null} onClick={() => act("accept")}>
+                  {busy === "accept" ? "Accepting..." : "Accept and pin these keys"}
+                </Button>
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-muted">They match the pinned keys.</p>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }

@@ -240,8 +240,10 @@ export interface Host {
   used_by: { id: string; name: string }[];
   /** Attributes like env or region, from an Admin and inventory sources. */
   attributes?: Record<string, string>;
-  /** How runs reach it: the agent, or "listed" when only an inventory source lists it. */
-  reach: "agent" | "listed";
+  /** How runs reach it: the agent, SSH (its source's settings), or "listed" when nothing can yet. */
+  reach: "agent" | "ssh" | "listed";
+  /** For a host reached over SSH. */
+  ssh?: HostSshView;
   /** Inventory sources that list it. */
   sources: { id: string; name: string }[];
   /** Tags it has from the workspace's tag rules (also in tags). */
@@ -253,12 +255,40 @@ export interface Host {
   own_attributes: Record<string, string>;
 }
 
+export interface HostSshView {
+  address: string;
+  port: number;
+  user: string;
+  auth: "key" | "password";
+  /** Steps run as root with sudo. */
+  sudo: boolean;
+  /** Pinned host key fingerprints; empty until the first connection. */
+  fingerprints: string[];
+  pinned_at: number | null;
+  pinned_by: string | null;
+  /** When a connection found a different host key; cleared when an Admin accepts one. */
+  key_changed_at: number | null;
+  last_ok: number | null;
+  last_error: string | null;
+}
+
+/** A source's SSH settings: its hosts without the agent are reached over SSH. */
+export interface SourceSsh {
+  user: string;
+  port: number;
+  auth: "key" | "password";
+  /** Vault secret with the private key or password. */
+  secret: string;
+  sudo: boolean;
+}
+
 /** A host as an inventory source lists it. */
 export interface SourceHost {
   name: string;
   hostname?: string;
   tags?: string[];
   attributes?: Record<string, string>;
+  ssh?: { user?: string; port?: number; host_keys?: string[] };
 }
 
 export type SourceKind =
@@ -266,7 +296,7 @@ export type SourceKind =
   | { type: "url"; url: string; header?: string | null; secret?: string | null }
   | { type: "program"; command: string; args?: string[]; config?: Record<string, string>; secrets?: string[] };
 
-export type SourceInput = SourceKind & { name: string; interval_seconds?: number; enabled?: boolean };
+export type SourceInput = SourceKind & { name: string; interval_seconds?: number; enabled?: boolean; ssh?: SourceSsh | null };
 
 export type InventorySource = SourceKind & {
   id: string;
@@ -277,6 +307,7 @@ export type InventorySource = SourceKind & {
   created_at: number;
   updated_at: number;
   updated_by?: string | null;
+  ssh?: SourceSsh | null;
   state: { last_attempt: number | null; last_success: number | null; error: string | null; host_count: number };
   hosts?: (SourceHost & { id: string; first_seen: number })[];
 };
@@ -643,6 +674,10 @@ export const api = {
   updateInventorySource: (id: string, s: SourceInput) => request<InventorySource>("PUT", `/inventory/sources/${encodeURIComponent(id)}`, s),
   deleteInventorySource: (id: string) => request<void>("DELETE", `/inventory/sources/${encodeURIComponent(id)}`),
   refreshInventorySource: (id: string, acceptEmpty = false) => request<InventorySource>("POST", `/inventory/sources/${encodeURIComponent(id)}/refresh`, { accept_empty: acceptEmpty }),
+  testSsh: (id: string) =>
+    request<{ ok: boolean; output?: string[]; error: string | null; pinned_now: string[] | null; fingerprints?: string[] }>("POST", `/hosts/${encodeURIComponent(id)}/ssh/test`),
+  sshKeys: (id: string) => request<{ pinned: string[]; presented: { type: string; fingerprint: string; pinned: boolean }[] }>("GET", `/hosts/${encodeURIComponent(id)}/ssh/keys`),
+  acceptSshKeys: (id: string, fingerprints: string[]) => request<{ pinned: string[] }>("POST", `/hosts/${encodeURIComponent(id)}/ssh/accept`, { fingerprints }),
   setTagRules: (slug: string, rules: TagRule[]) => request<{ rules: TagRule[] }>("PUT", `/workspaces/${encodeURIComponent(slug)}/tag-rules`, { rules }),
   deleteHost: (id: string) => request<void>("DELETE", `/hosts/${encodeURIComponent(id)}`),
   createEnrollmentToken: () => request<{ token: string; expires_at: number }>("POST", "/hosts/enrollment-tokens"),
