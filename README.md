@@ -9,7 +9,7 @@ with live output, approvals and a full audit trail.
 
 Website: [opskills.app](https://opskills.app)
 
-> **Status:** v0.17.0 preview. Sign in, keep secrets in an encrypted vault, enroll
+> **Status:** v0.18.0 preview. Sign in, keep secrets in an encrypted vault, enroll
 > your Linux hosts with the OpSkills agent (`.deb` and `.rpm`), write runbooks with
 > inputs, retries, file copies and calls to other runbooks, and run them on the
 > server or on your hosts, by hand, on a schedule, from a webhook or with an API
@@ -18,7 +18,8 @@ Website: [opskills.app](https://opskills.app)
 > role in each workspace (Viewer, Operator, Editor or Admin), and see who changed what
 > in the audit log. Keep secrets in folders, share some with chosen workspaces, and
 > let people sign in with your identity provider (Okta, Entra ID, Google). Pull hosts
-> and attributes from a list, a URL or a program, and tag hosts by rules.
+> and attributes from a list, a URL or a program, tag hosts by rules, and reach hosts
+> without the agent over SSH with pinned host keys.
 
 ## Install
 
@@ -36,7 +37,7 @@ docker run -d --name opskills \
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.17.0
+  opskills/opskills:0.18.0
 docker logs opskills 2>&1 | grep 'Admin password'
 ```
 
@@ -48,13 +49,13 @@ use the included [`compose.yaml`](compose.yaml): `docker compose up -d`.
 ### Debian and Ubuntu
 
 ```bash
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.17.0/opskills_0.17.0_amd64.deb
-sudo apt install ./opskills_0.17.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.18.0/opskills_0.18.0_amd64.deb
+sudo apt install ./opskills_0.18.0_amd64.deb
 sudo systemctl start opskills
 sudo journalctl -u opskills | grep 'Admin password'
 ```
 
-Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.17.0_arm64.deb`
+Then open http://localhost:8080 on that machine and sign in as `admin`. Use `opskills_0.18.0_arm64.deb`
 on ARM servers (`dpkg --print-architecture` tells you which). All downloads and
 checksums are on the [releases page](https://github.com/opskills-app/opskills/releases/latest).
 The package installs a sandboxed systemd service that runs as the `opskills`
@@ -138,8 +139,8 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   the exact commands:
 
   ```bash
-  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.17.0_amd64.deb
-  sudo apt install ./opskills-agent_0.17.0_amd64.deb
+  curl -fLO https://opskills.example.com/downloads/opskills-agent_0.18.0_amd64.deb
+  sudo apt install ./opskills-agent_0.18.0_amd64.deb
   sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
   sudo systemctl enable --now opskills-agent
   ```
@@ -159,6 +160,10 @@ The full guide is [docs/hosts.md](docs/hosts.md).
   sources (a list, a URL like your CMDB, or a program), and tags from rules. Filters
   and commands (`{{ host.attr.env }}`) use them. A source that fails keeps its last
   hosts and says so. See [Inventory](docs/inventory.md).
+- **Over SSH**: hosts without the agent can be reached with the OpenSSH client, using a
+  key or password from the vault. Host keys are pinned on first contact (or checked
+  against keys the source gives), and a changed key is refused until an Admin accepts
+  it. See [Hosts over SSH](docs/ssh.md).
 - **Removing a host** revokes its credential at once; its agent stops. Uninstall the
   package with `sudo apt purge opskills-agent` or `sudo dnf remove opskills-agent`.
 
@@ -311,6 +316,7 @@ release before it's removed.
 | `GET`, `POST /inventory/sources`, `GET`, `PUT`, `DELETE /inventory/sources/{id}` | Inventory sources (Admin; program sources need a server admin); see [Inventory](docs/inventory.md#api) |
 | `POST /inventory/sources/{id}/refresh` | Refresh a source now; `{"accept_empty": true}` takes an empty list |
 | `PUT /workspaces/{slug}/tag-rules` | Replace the workspace's tag rules |
+| `POST /hosts/{id}/ssh/test`, `GET /hosts/{id}/ssh/keys`, `POST /hosts/{id}/ssh/accept` | Hosts over SSH: test the connection, see and accept host keys (Admin); see [Hosts over SSH](docs/ssh.md#api) |
 | `GET /hosts/packages` | Agent packages for this version |
 | `GET /downloads/{file}` | Download an agent package (no sign-in needed) |
 | `GET /install-agent.sh` | One-line agent installer for this version (no sign-in needed) |
@@ -333,7 +339,7 @@ Errors are JSON with `title`, `status` and a readable `detail`.
 | [`server/`](server/) | The `opskills` server and agent in Rust, with [packaging](server/packaging/): the server `.deb` and the agent `.deb` and `.rpm` |
 | [`ui/`](ui/) | The web app: React, TypeScript, Vite and Tailwind CSS, built into the server |
 | [`web/`](web/) | The opskills.app website, deployed to Cloudflare Workers |
-| [`docs/`](docs/) | User documentation: [install and run](docs/install.md), [hosts and the agent](docs/hosts.md), [inventory](docs/inventory.md), [writing runbooks](docs/runbooks.md); [release notes](docs/releases/) |
+| [`docs/`](docs/) | User documentation: [install and run](docs/install.md), [hosts and the agent](docs/hosts.md), [inventory](docs/inventory.md), [hosts over SSH](docs/ssh.md), [writing runbooks](docs/runbooks.md); [release notes](docs/releases/) |
 | [`deploy/`](deploy/) | Deploying agents to many hosts: SSH script, Ansible playbook, cloud-init |
 | [`notes/`](notes/) | Design documents: [packaging and configuration](notes/01-packaging-and-config.md), [architecture](notes/02-architecture.md) |
 | [`compose.yaml`](compose.yaml) | Run the published image with Docker Compose |

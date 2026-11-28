@@ -334,7 +334,7 @@
 
   <main id="top">
     <div class="wrap hero">
-      <a class="pill" href="#install"><span class="dot"></span>v0.17.0: inventory sources and attributes</a>
+      <a class="pill" href="#install"><span class="dot"></span>v0.18.0: hosts over SSH, with pinned host keys</a>
       <h1>Runbooks your whole team <span>can run.</span></h1>
       <p class="lede">OpSkills turns the procedures you repeat into safe, self-service runbooks. Write the steps once, then anyone on your team can run them and watch the output live. Every run is kept.</p>
       <div class="cta-row">
@@ -389,7 +389,7 @@
           </ul>
         </article>
         <div class="features">
-          <article class="card feature"><span class="bubble violet"><svg aria-hidden="true"><use href="#i-box"/></svg></span><h3>Hosts without SSH</h3><span class="avail now">Available now</span><p>Install a small agent from a .deb or .rpm and enroll it with a one-time token. It connects out over HTTPS: no open ports, no keys to hand out.</p></article>
+          <article class="card feature"><span class="bubble violet"><svg aria-hidden="true"><use href="#i-box"/></svg></span><h3>An agent, no open ports</h3><span class="avail now">Available now</span><p>Install a small agent from a .deb or .rpm and enroll it with a one-time token. It connects out over HTTPS: no open ports, no keys to hand out.</p></article>
           <article class="card feature"><span class="bubble sky"><svg aria-hidden="true"><use href="#i-activity"/></svg></span><h3>Live runs</h3><span class="avail now">Available now</span><p>Stream output from every host as it happens, filter by host or step, and cancel with one click.</p></article>
           <article class="card feature"><span class="bubble mint"><svg aria-hidden="true"><use href="#i-code"/></svg></span><h3>Runbooks with inputs</h3><span class="avail now">Available now</span><p>Typed inputs and choice lists, steps that run commands, copy files or call other runbooks, retries and timeouts per step, and your choice of what a failed step does.</p></article>
           <article class="card feature"><span class="bubble amber"><svg aria-hidden="true"><use href="#i-layers"/></svg></span><h3>Safe rollouts</h3><span class="avail now">Available now</span><p>Run hosts one by one, in parallel or in batches, canary first. Pick hosts by tag, name or filter, stop when one fails, and retry only the hosts that didn't finish.</p></article>
@@ -401,7 +401,7 @@
           <article class="card feature"><span class="bubble pink"><svg aria-hidden="true"><use href="#i-users"/></svg></span><h3>Users and roles</h3><span class="avail now">Available now</span><p>Viewer, Operator, Editor or Admin in each workspace, checked on every request and every API token. Operators run runbooks without seeing their secrets.</p></article>
           <article class="card feature"><span class="bubble violet"><svg aria-hidden="true"><use href="#i-list"/></svg></span><h3>Audit log</h3><span class="avail now">Available now</span><p>Who changed what, and when: sign-ins, runbooks, runs, hosts, the vault and settings, per workspace. Secret values never appear in it.</p></article>
           <article class="card feature"><span class="bubble sky"><svg aria-hidden="true"><use href="#i-tag"/></svg></span><h3>Inventory and attributes</h3><span class="avail now">Available now</span><p>Pull hosts and attributes like env and region from a list, your CMDB's URL or a program, and tag hosts by rules. A source that fails says so and keeps its last hosts.</p></article>
-          <article class="card feature"><span class="bubble mint"><svg aria-hidden="true"><use href="#i-terminal"/></svg></span><h3>Hosts over SSH</h3><span class="avail soon">Coming soon</span><p>Run on machines without the agent over SSH, with keys from the vault and host keys pinned on first contact, so a swapped server is refused.</p></article>
+          <article class="card feature"><span class="bubble mint"><svg aria-hidden="true"><use href="#i-terminal"/></svg></span><h3>Hosts over SSH</h3><span class="avail now">Available now</span><p>Run on machines without the agent over SSH, with keys from the vault and host keys pinned on first contact, so a swapped or spoofed server is refused.</p></article>
           <article class="card feature"><span class="bubble amber"><svg aria-hidden="true"><use href="#i-cloud"/></svg></span><h3>Cloud inventory</h3><span class="avail soon">Coming soon</span><p>List your EC2 instances as hosts, with their cloud tags as attributes, through an open-source inventory plugin.</p></article>
           <article class="card feature"><span class="bubble pink"><svg aria-hidden="true"><use href="#i-hand"/></svg></span><h3>Approval gates</h3><span class="avail soon">Coming soon</span><p>Pause a run until the right person signs off, then continue exactly where it stopped.</p></article>
         </div>
@@ -475,7 +475,7 @@
 
         <div class="section-head" id="install" style="margin-top: 88px; scroll-margin-top: 90px">
           <div class="eyebrow">Install</div>
-          <h2>Run the v0.17.0 preview in minutes</h2>
+          <h2>Run the v0.18.0 preview in minutes</h2>
           <p>Pick Docker for any computer, or the Debian package for a Linux server. Both support amd64 and arm64.</p>
         </div>
 
@@ -501,7 +501,7 @@
   -p 127.0.0.1:8080:8080 \
   -v opskills-data:/var/lib/opskills \
   --restart unless-stopped \
-  opskills/opskills:0.17.0</pre></div>
+  opskills/opskills:0.18.0</pre></div>
               </div>
             </li>
             <li>
@@ -532,8 +532,8 @@
                 <h3>Download and verify</h3>
                 <p>For Debian 12+ or Ubuntu 22.04+. Run <code>dpkg --print-architecture</code> and use <code>arm64</code> instead of <code>amd64</code> if that's what it prints.</p>
                 <div class="code"><div class="bar"><span>Terminal</span><button class="copy" type="button" data-copy="b1">Copy</button></div>
-<pre id="b1">curl -LO https://github.com/opskills-app/opskills/releases/download/v0.17.0/opskills_0.17.0_amd64.deb
-curl -LO https://github.com/opskills-app/opskills/releases/download/v0.17.0/SHA256SUMS
+<pre id="b1">curl -LO https://github.com/opskills-app/opskills/releases/download/v0.18.0/opskills_0.18.0_amd64.deb
+curl -LO https://github.com/opskills-app/opskills/releases/download/v0.18.0/SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS</pre></div>
               </div>
             </li>
@@ -543,7 +543,7 @@ sha256sum --check --ignore-missing SHA256SUMS</pre></div>
                 <h3>Install and start the service</h3>
                 <p>Installs a sandboxed systemd service that runs as its own <code>opskills</code> user.</p>
                 <div class="code"><div class="bar"><span>Terminal</span><button class="copy" type="button" data-copy="b2">Copy</button></div>
-<pre id="b2">sudo apt install ./opskills_0.17.0_amd64.deb
+<pre id="b2">sudo apt install ./opskills_0.18.0_amd64.deb
 sudo systemctl start opskills</pre></div>
               </div>
             </li>
@@ -572,7 +572,7 @@ sudo systemctl start opskills</pre></div>
 
         <div class="final">
           <h2>Runbooks your whole team can run</h2>
-          <p>The v0.17.0 preview runs real runbooks with inputs, retries and live output, on the OpSkills server or rolled out safely across every host you enroll, with a workspace for each team, a role for everyone in it, and an audit log of every change.</p>
+          <p>The v0.18.0 preview runs real runbooks with inputs, retries and live output, on the OpSkills server or rolled out safely across every host you enroll, with a workspace for each team, a role for everyone in it, and an audit log of every change.</p>
           <div class="cta-row">
             <a class="btn btn-white" href="#install">Install the preview</a>
             <a class="btn btn-ghost-white" href="https://github.com/opskills-app/opskills"><svg aria-hidden="true"><use href="#i-github"/></svg>View on GitHub</a>
