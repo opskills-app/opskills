@@ -293,8 +293,9 @@ async fn output_is_masked_and_a_cancel_stops_the_remote_step() {
         {"name": "a", "run": format!("echo $$ > {pid}; echo started; exec sleep 30")},
     ]})).await;
     let run = start(&t.s, &t.c, &rb).await;
+    // Wait for the remote step itself (stored output lines are written in batches).
     let begun = Instant::now();
-    while !log_lines(&t.s, &t.c, &run).await.iter().any(|l| l == "started") {
+    while std::fs::read_to_string(&pid).map(|p| p.trim().is_empty()).unwrap_or(true) {
         assert!(begun.elapsed() < Duration::from_secs(10), "the step never started");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
