@@ -97,6 +97,9 @@ pub struct SourceHost {
     pub tags: Vec<String>,
     #[serde(default)]
     pub attributes: BTreeMap<String, String>,
+    /// How to reach it over SSH, when its source has SSH settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<super::HostSsh>,
 }
 
 impl SourceHost {
@@ -121,6 +124,9 @@ impl SourceHost {
             return Err(format!("{}: at most 20 tags.", self.name));
         }
         self.tags = tags;
+        if let Some(ssh) = &mut self.ssh {
+            ssh.validate().map_err(|e| format!("{}: {e}", self.name))?;
+        }
         validate_attributes(&mut self.attributes).map_err(|e| format!("{}: {e}", self.name))
     }
 }
@@ -261,6 +267,9 @@ pub struct InventorySource {
     pub updated_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_by: Option<String>,
+    /// Reach its hosts that no agent enrolled over SSH.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<super::SourceSsh>,
 }
 
 /// A source as the API takes it; `check_source_fields` refuses unknown fields first.
@@ -273,6 +282,8 @@ pub struct SourceInput {
     pub interval_seconds: Option<u64>,
     #[serde(default)]
     pub enabled: Option<bool>,
+    #[serde(default)]
+    pub ssh: Option<super::SourceSsh>,
 }
 
 /// Refuse fields a source of its type doesn't have, so a typo isn't silently ignored.
@@ -286,7 +297,7 @@ pub fn check_source_fields(v: &serde_json::Value) -> Result<(), String> {
         None => return Err("Give the source's type: static, url or program.".into()),
     };
     for k in obj.keys() {
-        if !["name", "type", "interval_seconds", "enabled"].contains(&k.as_str()) && !kind_fields.contains(&k.as_str()) {
+        if !["name", "type", "interval_seconds", "enabled", "ssh"].contains(&k.as_str()) && !kind_fields.contains(&k.as_str()) {
             return Err(format!("A {} source has no field {k:?}.", obj["type"].as_str().unwrap_or("")));
         }
     }

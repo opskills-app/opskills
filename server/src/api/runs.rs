@@ -87,7 +87,7 @@ pub fn start_runbook(st: &AppState, rb: &Runbook, given: &serde_json::Map<String
 /// workspace's hosts by its targets, with their attributes. Targeted hosts nothing can
 /// reach yet (listed only by an inventory source) are left out and named.
 fn run_hosts(st: &AppState, rb: &Runbook) -> ApiResult<(Vec<RunHost>, Vec<String>)> {
-    let local = RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into(), attributes: Default::default() };
+    let local = RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into(), attributes: Default::default(), ssh: None };
     if rb.targets.is_server() {
         return Ok((vec![local], vec![]));
     }
@@ -100,7 +100,8 @@ fn run_hosts(st: &AppState, rb: &Runbook) -> ApiResult<(Vec<RunHost>, Vec<String
     for h in crate::inventory::workspace_hosts(st, &rb.workspace)? {
         if rb.targets.includes(&h.host) {
             match h.reach {
-                crate::inventory::Reach::Agent => out.push(RunHost { id: h.host.id, name: h.host.name, attributes: h.host.attributes }),
+                crate::inventory::Reach::Agent => out.push(RunHost { id: h.host.id, name: h.host.name, attributes: h.host.attributes, ssh: None }),
+                crate::inventory::Reach::Ssh => out.push(RunHost { id: h.host.id, name: h.host.name, attributes: h.host.attributes, ssh: h.ssh }),
                 crate::inventory::Reach::Listed => skipped.push(h.host.name),
             }
         }

@@ -86,7 +86,9 @@ LABEL org.opencontainers.image.title="OpSkills" \
       org.opencontainers.image.url="https://opskills.app" \
       org.opencontainers.image.source="https://github.com/opskills-app/opskills" \
       org.opencontainers.image.licenses="AGPL-3.0-only"
-RUN addgroup -S -g 65532 opskills \
+# The OpenSSH client reaches hosts without the agent.
+RUN apk add --no-cache openssh-client \
+ && addgroup -S -g 65532 opskills \
  && adduser -S -D -H -u 65532 -G opskills -h /var/lib/opskills -s /sbin/nologin opskills \
  && install -d -o opskills -g opskills -m 0750 /var/lib/opskills
 COPY --from=build /out/${TARGETARCH}/opskills /usr/bin/opskills

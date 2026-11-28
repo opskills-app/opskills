@@ -63,6 +63,9 @@ struct HostView {
     /// What an Admin set on an enrolled host, without what sources and rules add.
     own_tags: Vec<String>,
     own_attributes: std::collections::BTreeMap<String, String>,
+    /// For a host reached over SSH: where, how, its pinned keys and its last connection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ssh: Option<serde_json::Value>,
 }
 
 fn targets_host(rb: &Runbook, host: &Host) -> bool {
@@ -110,6 +113,7 @@ fn host_views(st: &AppState, viewer: &CurrentUser, ws: &str) -> ApiResult<Vec<Ho
         stale: false,
         own_tags: vec![],
         own_attributes: Default::default(),
+        ssh: None,
     }];
     let own: std::collections::HashMap<String, Host> = st.store.hosts()?.into_iter().map(|h| (h.id.clone(), h)).collect();
     for inv in crate::inventory::workspace_hosts(st, ws)? {
@@ -122,8 +126,31 @@ fn host_views(st: &AppState, viewer: &CurrentUser, ws: &str) -> ApiResult<Vec<Ho
         let used_by = used(&h);
         h.workspaces.retain(|w| visible(w));
         let (own_tags, own_attributes) = own.get(&h.id).map(|o| (o.tags.clone(), o.attributes.clone())).unwrap_or_default();
+        let mut online = enrolled && st.hub.is_online(&h.id, h.last_seen);
+        let ssh = match &inv.ssh {
+            Some(t) => {
+                let s = st.store.ssh_host(&h.id)?;
+                // "Online" for an SSH host: its last connection worked.
+                online = s.last_ok.is_some() && s.last_error.is_none();
+                h.last_seen = s.last_ok.unwrap_or(0);
+                Some(json!({
+                    "address": t.address,
+                    "port": t.port,
+                    "user": t.user,
+                    "auth": t.auth,
+                    "sudo": t.sudo && t.user != "root",
+                    "fingerprints": s.fingerprints(),
+                    "pinned_at": s.pinned_at,
+                    "pinned_by": s.pinned_by,
+                    "key_changed_at": s.key_changed_at,
+                    "last_ok": s.last_ok,
+                    "last_error": s.last_error,
+                }))
+            }
+            None => None,
+        };
         list.push(HostView {
-            online: enrolled && st.hub.is_online(&h.id, h.last_seen),
+            online,
             used_by,
             host: h,
             builtin: false,
@@ -134,6 +161,7 @@ fn host_views(st: &AppState, viewer: &CurrentUser, ws: &str) -> ApiResult<Vec<Ho
             stale: inv.stale,
             own_tags,
             own_attributes,
+            ssh,
         });
     }
     Ok(list)

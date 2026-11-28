@@ -60,8 +60,14 @@ fn parse_input(st: &AppState, ws: &str, body: &str) -> ApiResult<RunbookInput> {
             }
         }
     }
+    // Enrolled hosts and hosts the workspace's inventory sources list.
+    let known: Vec<String> = if input.targets.hosts.iter().any(|h| h != LOCAL_HOST_ID) {
+        crate::inventory::workspace_hosts(st, ws)?.into_iter().map(|h| h.host.id).collect()
+    } else {
+        vec![]
+    };
     for id in &input.targets.hosts {
-        if id != LOCAL_HOST_ID && !st.store.stored_host(id)?.is_some_and(|h| h.host.workspaces.iter().any(|w| w == ws)) {
+        if id != LOCAL_HOST_ID && !known.contains(id) {
             return Err(ApiError::new(StatusCode::BAD_REQUEST, format!("There is no host with id {id}. It may have been removed.")));
         }
     }

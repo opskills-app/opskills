@@ -28,6 +28,7 @@ mod workspaces;
 mod vault_paths;
 mod sign_in;
 mod inventory;
+mod ssh;
 
 struct TestServer {
     app: Router,

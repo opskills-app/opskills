@@ -18,6 +18,27 @@ pub struct Config {
     pub hosts: Hosts,
     pub audit: Audit,
     pub email: Email,
+    pub ssh: Ssh,
+}
+
+/// The OpenSSH programs used to reach hosts without the agent.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Ssh {
+    /// The SSH client.
+    pub client: String,
+    /// The program that fetches a host's public keys.
+    pub keyscan: String,
+    /// The program SSH runs to get a password; empty means this opskills binary.
+    pub askpass: String,
+    /// Seconds to wait for a connection.
+    pub connect_timeout_seconds: u64,
+}
+
+impl Default for Ssh {
+    fn default() -> Self {
+        Self { client: "ssh".into(), keyscan: "ssh-keyscan".into(), askpass: String::new(), connect_timeout_seconds: 15 }
+    }
 }
 
 /// The SMTP server notifications are sent through. Email is off until `smtp_host` is set.

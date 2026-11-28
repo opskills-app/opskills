@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Check, CircleCheck, Copy, Download, HardDrive, ListTree, LogOut, Pencil, Plus, Server, ServerCog, ServerOff, Share2, Trash2, TriangleAlert } from "lucide-react";
+import { Check, CircleCheck, Copy, Download, HardDrive, KeyRound, ListTree, LogOut, Pencil, Plus, Server, ServerCog, ServerOff, Share2, TerminalSquare, Trash2, TriangleAlert } from "lucide-react";
 import { api, useData, type AgentPackage, type Host } from "../api";
 import { timeAgo } from "../format";
 import { Badge, Button, Card, cx, ErrorNote, IconBubble, Modal, PageHeader, SearchField, Tag, TableHeading } from "../components/ui";
 import { useCan, useMe, useWorkspace } from "../session";
-import { InventorySources, TagRules } from "./Inventory";
+import { InventorySources, SshHostDialog, TagRules } from "./Inventory";
 
 type Family = "deb" | "rpm";
 type Arch = "amd64" | "arm64";
@@ -506,10 +506,12 @@ export function HostsPage() {
   const [q, setQ] = useState("");
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Host | null>(null);
+  const [sshHost, setSshHost] = useState<Host | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const all = useMemo(() => hosts.data ?? [], [hosts.data]);
-  const enrolled = all.filter((h) => !h.builtin && h.reach !== "listed");
+  const enrolled = all.filter((h) => !h.builtin && h.reach === "agent");
+  const overSsh = all.filter((h) => h.reach === "ssh").length;
   const listed = all.filter((h) => h.reach === "listed").length;
   const online = enrolled.filter((h) => h.online).length;
   const list = all.filter((h) =>
@@ -547,7 +549,7 @@ export function HostsPage() {
     <div className="space-y-8">
       <PageHeader
         title="Hosts"
-        subtitle="Machines your runbooks run on. Each one runs the OpSkills agent, which connects to this server. Inventory sources can list more hosts and add attributes."
+        subtitle="Machines your runbooks run on: hosts with the OpSkills agent, which connects to this server, and hosts an inventory source lists, reached over SSH or listed only."
         actions={
           admin && (
             <Button variant="primary" onClick={() => setAdding(true)}>
@@ -580,7 +582,11 @@ export function HostsPage() {
       <Card className="overflow-hidden">
         <TableHeading
           title="All hosts"
-          subtitle={enrolled.length || listed ? `${enrolled.length} enrolled, ${online} online${listed ? `, ${listed} listed by sources` : ""}` : "Add a host to run runbooks on other machines"}
+          subtitle={
+            enrolled.length || listed || overSsh
+              ? `${enrolled.length} enrolled, ${online} online${overSsh ? `, ${overSsh} over SSH` : ""}${listed ? `, ${listed} listed by sources` : ""}`
+              : "Add a host to run runbooks on other machines"
+          }
         >
           <SearchField value={q} onChange={setQ} />
         </TableHeading>
@@ -598,7 +604,7 @@ export function HostsPage() {
             <li key={h.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 gap-y-2 border-b border-line py-4 text-sm last:border-0 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)_100px_100px_150px]">
               <span className="flex min-w-0 items-center gap-3">
                 <span className={cx("flex size-9 shrink-0 items-center justify-center rounded-full", h.builtin ? "bg-accent text-accent-ink" : h.reach === "listed" ? "bg-surface-2 text-muted" : "bg-accent-soft text-accent")}>
-                  {h.reach === "listed" ? <ListTree className="size-4" /> : <Server className="size-4" />}
+                  {h.reach === "listed" ? <ListTree className="size-4" /> : h.reach === "ssh" ? <TerminalSquare className="size-4" /> : <Server className="size-4" />}
                 </span>
                 <span className="min-w-0">
                   <span className="flex min-w-0 items-center gap-1.5">
@@ -610,14 +616,14 @@ export function HostsPage() {
                     )}
                   </span>
                   <span className="block truncate text-xs text-muted">
-                    {h.builtin ? `Built in · ${h.hostname}` : h.hostname}
+                    {h.builtin ? `Built in · ${h.hostname}` : h.ssh ? `${h.ssh.user}@${h.ssh.address}${h.ssh.port === 22 ? "" : `:${h.ssh.port}`}` : h.hostname}
                     {!h.builtin && (h.workspaces.length > 1 || h.shared_elsewhere) && (
                       <span className="font-medium text-accent" title={h.workspaces.length > 1 ? `Also in ${h.workspaces.filter((w) => w !== workspace?.slug).join(", ")}${h.shared_elsewhere ? " and others" : ""}` : "Also in other workspaces"}>
                         {" "}
                         · Shared
                       </span>
                     )}
-                    {h.reach !== "listed" && <span className="lg:hidden"> · {h.os}</span>}
+                    {h.reach === "agent" && <span className="lg:hidden"> · {h.os}</span>}
                   </span>
                 </span>
               </span>
@@ -626,6 +632,13 @@ export function HostsPage() {
                   <>
                     <span className="block truncate">Listed only</span>
                     <span className="block truncate text-xs text-muted">from {h.sources.map((x) => x.name).join(", ")}</span>
+                  </>
+                ) : h.ssh ? (
+                  <>
+                    <span className="block truncate">Over SSH{h.ssh.sudo ? ", with sudo" : ""}</span>
+                    <span className={cx("block truncate text-xs", h.ssh.key_changed_at ? "font-medium text-rose-700 dark:text-rose-300" : "text-muted")}>
+                      {h.ssh.key_changed_at ? "Host key changed" : h.ssh.fingerprints.length ? "Host key pinned" : "Key pinned on first contact"} · from {h.sources.map((x) => x.name).join(", ")}
+                    </span>
                   </>
                 ) : (
                   <>
@@ -649,9 +662,15 @@ export function HostsPage() {
                   </span>
                 )}
               </span>
-              <span className="hidden text-muted lg:block">{h.builtin || h.online ? "Now" : h.reach === "listed" ? "Not reached" : timeAgo(h.last_seen)}</span>
+              <span className="hidden text-muted lg:block">
+                {h.ssh ? (h.ssh.last_ok ? timeAgo(h.ssh.last_ok) : "Never") : h.builtin || h.online ? "Now" : h.reach === "listed" ? "Not reached" : timeAgo(h.last_seen)}
+              </span>
               <span className="text-center">
-                {h.reach === "listed" ? (
+                {h.ssh ? (
+                  <Badge tone={h.ssh.key_changed_at || h.ssh.last_error ? "red" : h.ssh.last_ok ? "green" : "gray"}>
+                    <span title={h.ssh.last_error ?? undefined}>{h.ssh.key_changed_at ? "Key changed" : h.ssh.last_error ? "Unreachable" : h.ssh.last_ok ? "Reachable" : "Not tried"}</span>
+                  </Badge>
+                ) : h.reach === "listed" ? (
                   <Badge tone="gray" className="cursor-help">
                     <span title="Only an inventory source lists it. Runs skip it until the agent is installed.">Listed</span>
                   </Badge>
@@ -660,7 +679,12 @@ export function HostsPage() {
                 )}
               </span>
               <span className="col-span-2 flex justify-end gap-1 lg:col-span-1">
-                {!h.builtin && h.reach !== "listed" && admin && (
+                {h.ssh && admin && (
+                  <Button size="sm" variant="ghost" onClick={() => setSshHost(h)} aria-label={`SSH for ${h.name}`} title="Test the connection, check host keys">
+                    <KeyRound className="size-3.5" />
+                  </Button>
+                )}
+                {!h.builtin && h.reach === "agent" && admin && (
                   <>
                     <Button size="sm" variant="ghost" onClick={() => setEditing(h)} aria-label={`Edit ${h.name}`} title="Rename or tag">
                       <Pencil className="size-3.5" />
@@ -704,6 +728,7 @@ export function HostsPage() {
           }}
         />
       )}
+      {sshHost && <SshHostDialog host={all.find((h) => h.id === sshHost.id) ?? sshHost} onClose={() => setSshHost(null)} onChange={reload} />}
       {editing && (
         <EditHost
           host={editing}

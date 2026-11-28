@@ -148,15 +148,18 @@ pub struct Executor {
     limit: Arc<Semaphore>,
     live: Mutex<HashMap<String, Arc<Live>>>,
     notifier: Arc<Notifier>,
+    ssh: crate::config::Ssh,
 }
 
 impl Executor {
-    pub fn new(store: Arc<Store>, hub: Arc<Hub>, vault: Arc<Vault>, notifier: Arc<Notifier>, work_root: PathBuf, max_concurrent: usize) -> Arc<Self> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(store: Arc<Store>, hub: Arc<Hub>, vault: Arc<Vault>, notifier: Arc<Notifier>, work_root: PathBuf, max_concurrent: usize, ssh: crate::config::Ssh) -> Arc<Self> {
         Arc::new(Executor {
             store,
             hub,
             vault,
             work_root,
+            ssh,
             limit: Arc::new(Semaphore::new(max_concurrent.max(1))),
             live: Mutex::new(HashMap::new()),
             notifier,
@@ -257,7 +260,7 @@ impl Executor {
         self.notifier.emit(&rules, &run, NotifyEvent::Started);
         let slow_timers = self.notifier.slow_timers(&rules, &run);
 
-        let hosts = if run.hosts.is_empty() { vec![RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into(), attributes: Default::default() }] } else { run.hosts.clone() };
+        let hosts = if run.hosts.is_empty() { vec![RunHost { id: LOCAL_HOST_ID.into(), name: LOCAL_HOST_NAME.into(), attributes: Default::default(), ssh: None }] } else { run.hosts.clone() };
         let per_host = run.steps.len() / hosts.len();
         let waves = run.rollout.waves(hosts.len());
         let pause = run.rollout.pause_seconds;
@@ -351,6 +354,21 @@ impl Executor {
                 host_failed = true;
                 host_done = true;
             }
+        // A host without the agent: its credential, and the host keys to trust.
+        let mut ssh: Option<(crate::model::SshTarget, String, Vec<String>)> = None;
+        if let Some(target) = &host.ssh
+            && !host_done
+            && sh.may_start_hosts()
+        {
+            match self.prepare_ssh(sh, range.start, host, target).await {
+                Ok((credential, keys)) => ssh = Some((target.clone(), credential, keys)),
+                Err(msg) => {
+                    sh.system(range.start, name, &msg);
+                    host_failed = true;
+                    host_done = true;
+                }
+            }
+        }
         for i in range.clone() {
             if host_done || sh.state.lock().unwrap().halt.is_some() {
                 sh.update(self, |r| r.steps[i].status = Status::Skipped);
@@ -382,6 +400,7 @@ impl Executor {
             // Later steps on this host may still run after this one fails, so its files must stay.
             let more_after_failure = !last_on_host && (step.continue_on_error || finish_anyway);
             let mut attempt = 0;
+            let mut key_changed = false;
             let result = loop {
                 attempt += 1;
                 if attempt > 1 {
@@ -406,6 +425,33 @@ impl Executor {
                             full_env.extend(step_env.iter().cloned());
                             run_command(command, &workdir, &full_env, timeout, &mut cancel_rx, |stream, line| sh.sink.lock().unwrap().push(i, name, stream, &line)).await
                         }
+                        Ok((command, step_env)) if ssh.is_some() => {
+                            let (target, credential, keys) = ssh.as_ref().expect("checked");
+                            let script = crate::ssh::remote_script(&crate::ssh::Step {
+                                run_id: &run_id,
+                                number,
+                                command,
+                                env: step_env,
+                                last: last_on_host,
+                                keep_on_failure: attempt < tries || more_after_failure,
+                            });
+                            let (end, contact) = crate::ssh::run_step(&self.ssh, &self.work_root, &host.id, target, keys, credential, &script, timeout, &mut cancel_rx, |stream, line| {
+                                sh.sink.lock().unwrap().push(i, name, stream, &line)
+                            })
+                            .await;
+                            if contact == crate::ssh::Contact::KeyChanged {
+                                key_changed = true;
+                            }
+                            self.ssh_contact(sh, host, &contact, keys);
+                            if key_changed {
+                                JobEnd::not_run(format!(
+                                    "{name}'s SSH host key is no longer the one pinned for it ({}). Nothing was sent to it. If the change is expected, an Admin can accept the new key on the Hosts page.",
+                                    keys.iter().filter_map(|k| crate::model::fingerprint(k)).collect::<Vec<_>>().join(", ")
+                                ))
+                            } else {
+                                end
+                            }
+                        }
                         Ok((command, step_env)) => {
                             let job = Job {
                                 id: uuid::Uuid::now_v7().to_string(),
@@ -422,7 +468,8 @@ impl Executor {
                     }
                 };
                 let succeeded = result.end == End::Exited && result.exit_code == Some(0);
-                if succeeded || result.end == End::Cancelled || attempt >= tries {
+                // Trying again can't help while the host key doesn't match.
+                if succeeded || result.end == End::Cancelled || attempt >= tries || key_changed {
                     break result;
                 }
                 sh.system(i, name, &failure_message(&result, timeout));
@@ -537,6 +584,70 @@ impl Shared<'_> {
 }
 
 impl Executor {
+    /// For a host reached over SSH: its credential from the vault (hidden in output from
+    /// now on) and the host keys to trust, pinned on first contact.
+    async fn prepare_ssh(&self, sh: &Shared<'_>, step: usize, host: &RunHost, target: &crate::model::SshTarget) -> Result<(String, Vec<String>), String> {
+        let ws = sh.run.lock().unwrap().workspace.clone();
+        let credential = crate::secret_refs::value(&self.store, &self.vault, &ws, &target.secret)
+            .map_err(|e| format!("Could not reach {} over SSH: {e} (its inventory source's SSH secret).", host.name))?;
+        sh.sink.lock().unwrap().add_mask(&credential);
+        match crate::ssh::trusted_keys(&self.ssh, &self.store, &host.id, target).await {
+            Ok((keys, pinned)) => {
+                if let Some(fps) = pinned {
+                    sh.system(step, &host.name, &format!("Pinned {}'s SSH host key on first contact: {}.", host.name, fps.join(", ")));
+                    crate::audit::record_in(
+                        &self.store,
+                        &crate::audit::By::system("SSH"),
+                        Some(&ws),
+                        "host.ssh_key_pin",
+                        Some(crate::model::AuditTarget::new("host", &host.id, &host.name)),
+                        Some(fps.join(", ")),
+                    );
+                }
+                Ok((credential, keys))
+            }
+            Err(e) => {
+                let _ = self.store.update_ssh_host(&host.id, |s| s.last_error = Some(e.clone()));
+                Err(format!("Could not reach {} over SSH ({}): {e}.", host.name, target.label()))
+            }
+        }
+    }
+
+    /// Keep how a connection to `host` went, for the Hosts page. A changed key is audited
+    /// once, while `keys` are still the pinned ones.
+    fn ssh_contact(&self, sh: &Shared<'_>, host: &RunHost, contact: &crate::ssh::Contact, keys: &[String]) {
+        use crate::ssh::Contact;
+        if *contact == Contact::Stopped {
+            return;
+        }
+        let ws = sh.run.lock().unwrap().workspace.clone();
+        let mut first_change = false;
+        let _ = self.store.update_ssh_host(&host.id, |s| match contact {
+            Contact::Ran => {
+                s.last_ok = Some(now_ms());
+                s.last_error = None;
+            }
+            Contact::Failed(why) => s.last_error = Some(why.clone()),
+            Contact::KeyChanged if s.keys == keys => {
+                first_change = s.key_changed_at.is_none();
+                s.key_changed_at.get_or_insert(now_ms());
+                s.last_error = Some("The host key changed since it was pinned.".into());
+            }
+            Contact::KeyChanged | Contact::Stopped => {}
+        });
+        if first_change {
+            let fps: Vec<String> = keys.iter().filter_map(|k| crate::model::fingerprint(k)).collect();
+            crate::audit::record_in(
+                &self.store,
+                &crate::audit::By::system("SSH"),
+                Some(&ws),
+                "host.ssh_key_changed",
+                Some(crate::model::AuditTarget::new("host", &host.id, &host.name)),
+                Some(format!("pinned {}", fps.join(", "))),
+            );
+        }
+    }
+
     /// Start the run a call step asks for, on the calling step's host.
     fn start_call(self: &Arc<Self>, parent: &Run, step: usize, host: &RunHost, call: &CallStep, values: &BTreeMap<String, String>) -> Result<Run, String> {
         if parent.depth + 1 > MAX_CALL_DEPTH {
@@ -787,6 +898,15 @@ impl<'a> Sink<'a> {
             fail_on_limit,
             limit_hit: false,
         }
+    }
+
+    /// Also hide `value` from now on, like an SSH password or key.
+    fn add_mask(&mut self, value: &str) {
+        let mut all = std::mem::take(&mut self.masks);
+        all.extend(mask_list(&[value.to_string()]));
+        all.dedup();
+        all.sort_by_key(|m| std::cmp::Reverse(m.len()));
+        self.masks = all;
     }
 
     fn mask(&self, text: &str) -> String {

@@ -50,8 +50,8 @@ the right address in the commands it shows.
    `amd64` they look like this:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.17.0_amd64.deb
-   sudo apt install ./opskills-agent_0.17.0_amd64.deb
+   curl -fLO https://opskills.example.com/downloads/opskills-agent_0.18.0_amd64.deb
+   sudo apt install ./opskills-agent_0.18.0_amd64.deb
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -59,8 +59,8 @@ the right address in the commands it shows.
    And for RHEL, Rocky, Alma or Fedora on `x86_64`:
 
    ```bash
-   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.17.0-1.x86_64.rpm
-   sudo dnf install ./opskills-agent-0.17.0-1.x86_64.rpm
+   curl -fLO https://opskills.example.com/downloads/opskills-agent-0.18.0-1.x86_64.rpm
+   sudo dnf install ./opskills-agent-0.18.0-1.x86_64.rpm
    sudo opskills-agent enroll --server https://opskills.example.com --token <token> --tags web,prod
    sudo systemctl enable --now opskills-agent
    ```
@@ -167,6 +167,9 @@ In the runbook editor, under **Run on**, choose **Hosts**, then pick:
 - a **filter**, like `tags:web !name:db-*` or `os:rocky* arch:amd64`: every host it
   matches when the run starts. See
   [Choosing hosts with a filter](runbooks.md#choosing-hosts-with-a-filter).
+
+Machines without the agent can be reached [over SSH](ssh.md), from an inventory source
+with SSH settings.
 
 Hosts also get tags and attributes from [inventory sources and tag rules](inventory.md),
 so you can target `env:prod` or a rule's tag instead of naming hosts.

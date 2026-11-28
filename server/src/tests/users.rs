@@ -49,6 +49,9 @@ async fn the_first_sign_in_asks_for_a_new_password() {
 
 /// The value to put in for each `{param}` of a route, from fixtures that exist.
 fn fill_route(route: &str, ids: &HashMap<&str, String>) -> String {
+    if let Some(rest) = route.strip_prefix("/hosts/{id}/ssh") {
+        return format!("/api/v1/hosts/{}/ssh{rest}", ids["source_host"]);
+    }
     let parts: Vec<&str> = route.split('/').collect();
     let mut out = Vec::new();
     for (i, part) in parts.iter().enumerate() {
@@ -92,9 +95,10 @@ async fn every_route_enforces_its_rule() {
     ids.insert("webhook", hook.json()["webhook"]["id"].as_str().unwrap().to_string());
     assert_eq!(add_secret(&s, &admin, "FIXTURE", "fixture-value").await.status, StatusCode::CREATED);
     ids.insert("host", enroll(&s, &admin, "fixture-host", json!([])).await.0);
-    let src = call(&s.app, "POST", "/api/v1/inventory/sources", Some(json!({"name": "Fixture", "type": "static", "hosts": []})), Some(&admin), true).await;
+    let src = call(&s.app, "POST", "/api/v1/inventory/sources", Some(json!({"name": "Fixture", "type": "static", "hosts": [{"name": "listed-fixture"}]})), Some(&admin), true).await;
     assert_eq!(src.status, StatusCode::CREATED, "{}", src.body);
     ids.insert("source", src.json()["id"].as_str().unwrap().to_string());
+    ids.insert("source_host", src.json()["hosts"][0]["id"].as_str().unwrap().to_string());
 
     let below = |r: Role| match r {
         Role::Viewer => None,

@@ -187,6 +187,10 @@ pub fn refresh(st: &AppState, src: &InventorySource, by: By, accept_empty: bool)
                 .collect();
             let kept: HashSet<String> = records.iter().map(|r| r.host.name.to_lowercase()).collect();
             let removed: Vec<String> = before.values().filter(|r| !kept.contains(&r.host.name.to_lowercase())).map(|r| r.host.name.clone()).collect();
+            // A host the source no longer lists loses its pinned SSH keys.
+            for r in before.values().filter(|r| !kept.contains(&r.host.name.to_lowercase())) {
+                let _ = st.store.delete_ssh_host(&r.id);
+            }
             if state.error.is_some() {
                 audit::record(st, &by, Some(&src.workspace), "inventory_source.recovered", target(), Some(format!("{} hosts", records.len())));
             }
@@ -219,12 +223,24 @@ pub fn refresh(st: &AppState, src: &InventorySource, by: By, accept_empty: bool)
     state
 }
 
+/// The workspace of the source that lists the host `id`, if a source lists it.
+pub fn source_host_workspace(st: &AppState, id: &str) -> anyhow::Result<Option<String>> {
+    for src in st.store.inventory_sources()? {
+        if st.store.source_state(&src.id)?.hosts.iter().any(|r| r.id == id) {
+            return Ok(Some(src.workspace));
+        }
+    }
+    Ok(None)
+}
+
 /// How a host is reached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reach {
     /// The OpSkills agent.
     Agent,
+    /// Over SSH, with its source's SSH settings.
+    Ssh,
     /// Only listed by a source: nothing reaches it yet.
     Listed,
 }
@@ -241,6 +257,8 @@ pub struct InvHost {
     pub rule_tags: Vec<String>,
     /// A source that lists it failed its last refresh, so this may be out of date.
     pub stale: bool,
+    /// How to reach it over SSH, when `reach` is `Ssh`.
+    pub ssh: Option<crate::model::SshTarget>,
 }
 
 /// Every host of workspace `ws` (without the OpSkills server): enrolled hosts first, each
@@ -253,7 +271,7 @@ pub fn workspace_hosts(st: &AppState, ws: &str) -> anyhow::Result<Vec<InvHost>> 
         .hosts()?
         .into_iter()
         .filter(|h| h.workspaces.iter().any(|w| w == ws))
-        .map(|host| InvHost { host, reach: Reach::Agent, sources: vec![], rule_tags: vec![], stale: false })
+        .map(|host| InvHost { host, reach: Reach::Agent, sources: vec![], rule_tags: vec![], stale: false, ssh: None })
         .collect();
     // Enrolled hosts by lowercase hostname and name; the first host in order wins a key.
     let mut by_key: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -283,7 +301,22 @@ pub fn workspace_hosts(st: &AppState, ws: &str) -> anyhow::Result<Vec<InvHost>> 
                     h.sources.push((src.id.clone(), src.name.clone()));
                     h.stale |= stale;
                 }
-                None => out.push(InvHost {
+                None => {
+                    // Over SSH when its source has SSH settings and it has an address SSH takes.
+                    let address = if rec.host.hostname.is_empty() { rec.host.name.clone() } else { rec.host.hostname.clone() };
+                    let ssh = src.ssh.as_ref().filter(|_| crate::model::validate_address(&address).is_ok()).map(|s| {
+                        let per_host = rec.host.ssh.clone().unwrap_or_default();
+                        crate::model::SshTarget {
+                            address,
+                            port: per_host.port.unwrap_or(s.port),
+                            user: per_host.user.unwrap_or_else(|| s.user.clone()),
+                            auth: s.auth,
+                            secret: s.secret.clone(),
+                            sudo: s.sudo,
+                            expected_keys: per_host.host_keys,
+                        }
+                    });
+                    out.push(InvHost {
                     host: Host {
                         id: rec.id,
                         name: rec.host.name,
@@ -297,11 +330,13 @@ pub fn workspace_hosts(st: &AppState, ws: &str) -> anyhow::Result<Vec<InvHost>> 
                         last_seen: state.last_success.unwrap_or(0),
                         attributes: rec.host.attributes,
                     },
-                    reach: Reach::Listed,
+                    reach: if ssh.is_some() { Reach::Ssh } else { Reach::Listed },
                     sources: vec![(src.id.clone(), src.name.clone())],
                     rule_tags: vec![],
                     stale,
-                }),
+                    ssh,
+                    });
+                }
             }
         }
     }

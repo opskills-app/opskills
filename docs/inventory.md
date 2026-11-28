@@ -67,8 +67,9 @@ A source lists hosts in this format:
 ```
 
 - `name` is required and unique within the source (ignoring case). `hostname`,
-  `tags` and `attributes` are optional. Other fields are ignored, so a document can
-  carry more than OpSkills needs.
+  `tags` and `attributes` are optional, and so is `ssh` (`user`, `port`, `host_keys`)
+  for a source that reaches its hosts [over SSH](ssh.md). Other fields are ignored, so
+  a document can carry more than OpSkills needs.
 - Up to 5,000 hosts per source, and 50 sources per workspace.
 
 ### What happens to the hosts a source lists
@@ -77,13 +78,15 @@ A source lists hosts in this format:
   hostname or name, ignoring case, **adds to that host**: its tags join the host's
   tags and its attributes fill in what an Admin hasn't set. The Hosts page shows the
   source under the host's system details.
-- Any other host is **listed**: it shows on the Hosts page with a **Listed** badge,
-  filters and tag rules see it, but nothing can reach it yet. A run that targets it
-  skips it and says so on the run page; a run whose targets are all listed hosts is
-  refused with the names. Installing the agent on it (with a matching hostname)
-  turns it into an enrolled host with the source's tags and attributes.
-- Hosts can't be picked by name in **Run on** until they're enrolled; target listed
-  hosts by tag or filter.
+- Any other host is reached **over SSH** when the source has [SSH settings](ssh.md),
+  and is **listed** otherwise: it shows on the Hosts page with a **Listed** badge,
+  filters and tag rules see it, but nothing can reach it yet. A run that targets a
+  listed host skips it and says so on the run page; a run whose targets are all
+  listed hosts is refused with the names. Installing the agent on a host (with a
+  matching hostname) turns it into an enrolled host with the source's tags and
+  attributes.
+- SSH hosts can be picked by name in **Run on**; listed hosts can't, so target them by
+  tag or filter.
 
 Removing a source, or turning it off, removes what it added right away.
 
@@ -178,12 +181,14 @@ A source's body:
 {"name": "CMDB", "type": "static", "hosts": [{"name": "db-1", "hostname": "10.0.0.12"}], "interval_seconds": 300, "enabled": true}
 {"name": "Registry", "type": "url", "url": "https://cmdb.example/hosts.json", "header": "Authorization", "secret": "inventory/CMDB_TOKEN"}
 {"name": "Cloud", "type": "program", "command": "/opt/opskills/plugins/list-hosts", "args": ["--all"], "config": {"REGION": "eu-west-1"}, "secrets": ["cloud/API_TOKEN"]}
+{"name": "Fleet", "type": "static", "hosts": [{"name": "web-1", "hostname": "10.0.0.5"}], "ssh": {"user": "ops", "secret": "ssh/OPS_KEY"}}
 ```
 
 Unknown fields are refused, so a typo doesn't go unnoticed. Adding or changing a
 program source needs a server admin.
 
-`GET /hosts` lists enrolled and listed hosts. Each has `reach` (`agent` or `listed`),
+`GET /hosts` lists enrolled, SSH and listed hosts. Each has `reach` (`agent`, `ssh` or
+`listed`; SSH hosts also have an `ssh` object, see [Hosts over SSH](ssh.md#api)),
 `sources` (`id` and `name` of the sources that list it), `attributes` and `tags`
 (everything, from agents, Admins, sources and rules), `own_tags` and
 `own_attributes` (what an Admin set), `rule_tags`, and `stale`. To change a host's
