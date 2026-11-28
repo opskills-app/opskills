@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{ApiToken, AuditEvent, DEFAULT_WORKSPACE, EnrollmentToken, FIRST_ADMIN, Host, LogLine, Role, Run, Runbook, InventorySource, Secret, SharedSecret, SourceState, Status, StoredApiToken, StoredHost, StoredSecret, StoredSharedSecret, StoredUser, StoredWebhook, User, Webhook, Workspace, now_ms};
+use crate::model::{ApiToken, AuditEvent, DEFAULT_WORKSPACE, EnrollmentToken, FIRST_ADMIN, Host, LogLine, Role, Run, Runbook, InventorySource, Secret, SharedSecret, SourceState, SshHostState, Status, StoredApiToken, StoredHost, StoredSecret, StoredSharedSecret, StoredUser, StoredWebhook, User, Webhook, Workspace, now_ms};
 
 const RUNBOOKS: TableDefinition<&str, &str> = TableDefinition::new("runbooks");
 const RUNS: TableDefinition<&str, &str> = TableDefinition::new("runs");
@@ -50,17 +50,19 @@ const SHARED_SECRETS: TableDefinition<&str, &str> = TableDefinition::new("shared
 const INVENTORY_SOURCES: TableDefinition<&str, &str> = TableDefinition::new("inventory_sources");
 /// Key: inventory source id. Value: what its last refreshes found.
 const SOURCE_STATE: TableDefinition<&str, &str> = TableDefinition::new("source_state");
+/// Key: host id (a source host). Value: its pinned SSH keys and last connection.
+const SSH_HOSTS: TableDefinition<&str, &str> = TableDefinition::new("ssh_hosts");
 /// Key: "schema_version". Value: the version number.
 const META: TableDefinition<&str, &str> = TableDefinition::new("meta");
 
 /// The schema this build writes. Each step in `MIGRATIONS` moves the database up by one.
-pub const SCHEMA_VERSION: u64 = 4;
+pub const SCHEMA_VERSION: u64 = 5;
 
 type Migration = fn(&redb::WriteTransaction, &Path) -> Result<()>;
 
 /// `(version it produces, what it does, the change)`, in order.
 const MIGRATIONS: &[(u64, &str, Migration)] =
-    &[(1, "users and roles", migrate_users), (2, "workspaces", migrate_workspaces), (3, "vault folders and shared secrets", migrate_shared_secrets), (4, "inventory", migrate_inventory)];
+    &[(1, "users and roles", migrate_users), (2, "workspaces", migrate_workspaces), (3, "vault folders and shared secrets", migrate_shared_secrets), (4, "inventory", migrate_inventory), (5, "hosts over SSH", migrate_ssh)];
 
 /// Version 1: users. The single admin of earlier versions becomes the user `admin`, with
 /// the password in `admin.hash`.
@@ -126,6 +128,14 @@ fn migrate_shared_secrets(w: &redb::WriteTransaction, _data_dir: &Path) -> Resul
 fn migrate_inventory(w: &redb::WriteTransaction, _data_dir: &Path) -> Result<()> {
     w.open_table(INVENTORY_SOURCES)?;
     w.open_table(SOURCE_STATE)?;
+    Ok(())
+}
+
+/// Version 5: hosts over SSH. A new table for pinned host keys; sources read without SSH
+/// settings. The version changes so an older server, which would drop a source's SSH
+/// settings when it saves the source, refuses the database.
+fn migrate_ssh(w: &redb::WriteTransaction, _data_dir: &Path) -> Result<()> {
+    w.open_table(SSH_HOSTS)?;
     Ok(())
 }
 
@@ -201,6 +211,7 @@ impl Store {
             w.open_table(SHARED_SECRETS)?;
             w.open_table(INVENTORY_SOURCES)?;
             w.open_table(SOURCE_STATE)?;
+            w.open_table(SSH_HOSTS)?;
             w.open_table(WORKSPACES)?;
         }
         // Every migration and the new version commit together, or not at all.
@@ -418,11 +429,16 @@ impl Store {
     }
 
     /// Remove a source and what it found.
+    /// Remove a source, what it found, and the SSH state of its hosts.
     pub fn delete_inventory_source(&self, id: &str) -> Result<bool> {
         let w = self.db.begin_write()?;
         let found = {
             let found = w.open_table(INVENTORY_SOURCES)?.remove(id)?.is_some();
-            w.open_table(SOURCE_STATE)?.remove(id)?;
+            let state = w.open_table(SOURCE_STATE)?.remove(id)?.and_then(|v| serde_json::from_str::<SourceState>(v.value()).ok());
+            let mut ssh = w.open_table(SSH_HOSTS)?;
+            for rec in state.map(|s| s.hosts).unwrap_or_default() {
+                ssh.remove(rec.id.as_str())?;
+            }
             found
         };
         w.commit()?;
@@ -435,6 +451,37 @@ impl Store {
 
     pub fn put_source_state(&self, id: &str, s: &SourceState) -> Result<()> {
         self.put(SOURCE_STATE, id, &serde_json::to_string(s)?)
+    }
+
+    /// A source host's pinned SSH keys and last connection; empty if it has none.
+    pub fn ssh_host(&self, host_id: &str) -> Result<SshHostState> {
+        Ok(self.get(SSH_HOSTS, host_id)?.map(|s| serde_json::from_str(&s)).transpose()?.unwrap_or_default())
+    }
+
+    pub fn put_ssh_host(&self, host_id: &str, s: &SshHostState) -> Result<()> {
+        self.put(SSH_HOSTS, host_id, &serde_json::to_string(s)?)
+    }
+
+    /// Change a host's SSH state in one transaction, so pins and results don't overwrite
+    /// each other.
+    pub fn update_ssh_host(&self, host_id: &str, change: impl FnOnce(&mut SshHostState)) -> Result<SshHostState> {
+        let w = self.db.begin_write()?;
+        let state = {
+            let mut t = w.open_table(SSH_HOSTS)?;
+            let mut s: SshHostState = match t.get(host_id)? {
+                Some(v) => serde_json::from_str(v.value())?,
+                None => SshHostState::default(),
+            };
+            change(&mut s);
+            t.insert(host_id, serde_json::to_string(&s)?.as_str())?;
+            s
+        };
+        w.commit()?;
+        Ok(state)
+    }
+
+    pub fn delete_ssh_host(&self, host_id: &str) -> Result<bool> {
+        self.remove(SSH_HOSTS, host_id)
     }
 
     // Shared secrets
@@ -795,11 +842,16 @@ impl Store {
                 .filter_map(|(k, v)| serde_json::from_str::<InventorySource>(v.value()).ok().filter(|s| s.workspace == slug).map(|_| k.value().to_string()))
                 .collect();
             let mut states = w.open_table(SOURCE_STATE)?;
+            let mut ssh = w.open_table(SSH_HOSTS)?;
             for id in &ids {
                 sources.remove(id.as_str())?;
-                states.remove(id.as_str())?;
+                if let Some(state) = states.remove(id.as_str())?.and_then(|v| serde_json::from_str::<SourceState>(v.value()).ok()) {
+                    for rec in state.hosts {
+                        ssh.remove(rec.id.as_str())?;
+                    }
+                }
             }
-            drop((sources, states));
+            drop((sources, states, ssh));
             let mut runs = w.open_table(RUNS)?;
             let ids: Vec<String> = runs
                 .iter()?

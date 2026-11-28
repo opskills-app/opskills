@@ -163,7 +163,7 @@ async fn interrupted_runs_are_marked_failed() {
             created_at: 0,
             updated_at: 0,
         };
-        let mut run = crate::model::Run::new(&rb, "admin", vec![crate::model::RunHost { id: "local".into(), name: "OpSkills server".into(), attributes: Default::default() }], &[]);
+        let mut run = crate::model::Run::new(&rb, "admin", vec![crate::model::RunHost { id: "local".into(), name: "OpSkills server".into(), attributes: Default::default(), ssh: None }], &[]);
         run.status = crate::model::Status::Running;
         run.steps[0].status = crate::model::Status::Running;
         store.put_run(&run).unwrap();

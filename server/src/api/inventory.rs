@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::audit::{self, By};
 use crate::model::{
-    AuditTarget, InventorySource, MAX_SOURCES, Role, SourceInput, SourceKind, SourceState, TagRule, check_source_fields, now_ms, validate_interval, validate_source_name, validate_tag_rules,
+    AuditTarget, InventorySource, MAX_SOURCES, Role, SourceInput, SourceKind, SourceSsh, SourceState, TagRule, check_source_fields, now_ms, validate_interval, validate_source_name, validate_tag_rules,
 };
 use crate::web::AppState;
 use super::{Access, ApiError, ApiResult, CurrentUser, InWorkspace, Scope, bad};
@@ -60,12 +60,13 @@ fn check_program(user: &CurrentUser, kind: &SourceKind) -> ApiResult<()> {
 }
 
 /// Secrets the source names must be there for its workspace.
-fn check_secrets(st: &AppState, ws: &str, kind: &SourceKind) -> ApiResult<()> {
-    let refs: Vec<&String> = match kind {
+fn check_secrets(st: &AppState, ws: &str, kind: &SourceKind, ssh: Option<&SourceSsh>) -> ApiResult<()> {
+    let mut refs: Vec<&String> = match kind {
         SourceKind::Url { secret: Some(s), .. } => vec![s],
         SourceKind::Program { secrets, .. } => secrets.iter().collect(),
         _ => vec![],
     };
+    refs.extend(ssh.map(|s| &s.secret));
     for r in refs {
         if let Err(why) = crate::secret_refs::check(&st.store, ws, r)? {
             return Err(bad(why));
@@ -109,7 +110,10 @@ async fn create_source(State(st): State<Arc<AppState>>, Extension(user): Extensi
     check_program(&user, &input.kind)?;
     let name = validate_source_name(&input.name).map_err(bad)?;
     input.kind.validate().map_err(bad)?;
-    check_secrets(&st, &ws, &input.kind)?;
+    if let Some(s) = &mut input.ssh {
+        s.validate().map_err(bad)?;
+    }
+    check_secrets(&st, &ws, &input.kind, input.ssh.as_ref())?;
     let interval = validate_interval(input.interval_seconds.unwrap_or(crate::model::DEFAULT_INTERVAL)).map_err(bad)?;
     let existing = st.store.inventory_sources()?;
     if existing.iter().filter(|s| s.workspace == ws).count() >= MAX_SOURCES {
@@ -129,6 +133,7 @@ async fn create_source(State(st): State<Arc<AppState>>, Extension(user): Extensi
         created_at: now,
         updated_at: now,
         updated_by: Some(user.user.clone()),
+        ssh: input.ssh,
     };
     st.store.put_inventory_source(&src)?;
     audit::record(&st, &By::user(&user), Some(&ws), "inventory_source.create", Some(AuditTarget::new("inventory_source", &src.id, &src.name)), Some(src.kind.label().into()));
@@ -144,12 +149,16 @@ async fn update_source(State(st): State<Arc<AppState>>, Extension(user): Extensi
     check_program(&user, &input.kind)?;
     let name = validate_source_name(&input.name).map_err(bad)?;
     input.kind.validate().map_err(bad)?;
-    check_secrets(&st, &src.workspace, &input.kind)?;
+    if let Some(s) = &mut input.ssh {
+        s.validate().map_err(bad)?;
+    }
+    check_secrets(&st, &src.workspace, &input.kind, input.ssh.as_ref())?;
     if st.store.inventory_sources()?.iter().any(|s| s.id != id && s.workspace == src.workspace && s.name.eq_ignore_ascii_case(&name)) {
         return Err(ApiError::new(StatusCode::CONFLICT, format!("There's already a source called {name}.")));
     }
     src.name = name;
     src.kind = input.kind;
+    src.ssh = input.ssh;
     if let Some(i) = input.interval_seconds {
         src.interval_seconds = validate_interval(i).map_err(bad)?;
     }

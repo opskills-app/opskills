@@ -64,7 +64,7 @@ pub fn build_state(cfg: Config, fs: &firststart::State) -> Result<Arc<AppState>>
     let vault = Arc::new(Vault::from_key_hex(&fs.master_key).context("loading the vault key")?);
     let hub = Hub::new();
     let notifier = crate::notify::Notifier::new(&cfg, store.clone(), vault.clone());
-    let executor = Executor::new(store.clone(), hub.clone(), vault.clone(), notifier.clone(), work_root, cfg.runs.max_concurrent);
+    let executor = Executor::new(store.clone(), hub.clone(), vault.clone(), notifier.clone(), work_root, cfg.runs.max_concurrent, cfg.ssh.clone());
     Ok(Arc::new(AppState {
         cfg,
         server_id: fs.server_id.clone(),

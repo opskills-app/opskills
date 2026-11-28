@@ -11,6 +11,7 @@ pub mod filter;
 pub mod firststart;
 pub mod hub;
 pub mod inventory;
+pub mod ssh;
 pub mod model;
 pub mod notify;
 pub mod oidc;

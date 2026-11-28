@@ -33,6 +33,7 @@ mod workspaces;
 mod shared_secrets;
 mod sign_in;
 mod inventory;
+mod ssh;
 
 pub use hosts::{Package, packages, release_url};
 pub use runs::start_runbook;
@@ -55,6 +56,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .merge(shared_secrets::routes())
         .merge(sign_in::routes())
         .merge(inventory::routes())
+        .merge(ssh::routes())
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "No such API endpoint.") })
         .layer(middleware::from_fn_with_state(state, guard))
 }
@@ -147,6 +149,8 @@ pub enum Scope {
     HostAndSlug,
     /// The workspace of the inventory source `{id}`.
     Source,
+    /// The workspace of the source that lists the host `{id}`.
+    SourceHost,
 }
 
 /// `(method, path as registered, rule)`. HEAD uses the GET rule.
@@ -169,6 +173,7 @@ const RULES: &[Rules] = &[
     shared_secrets::ACCESS,
     sign_in::ACCESS,
     inventory::ACCESS,
+    ssh::ACCESS,
 ];
 
 /// Every access rule, as `(method, route, rule)`.
@@ -269,6 +274,7 @@ fn scope_workspaces(st: &AppState, scope: Scope, route: &str, path: &str, query:
         Scope::Host if id() == crate::model::LOCAL_HOST_ID => (existing(query_workspace(query))?, "Host not found."),
         Scope::Host => (st.store.stored_host(&id())?.map(|h| h.host.workspaces).unwrap_or_default(), "Host not found."),
         Scope::Source => (st.store.inventory_source(&id())?.map(|s| vec![s.workspace]).unwrap_or_default(), "Inventory source not found."),
+        Scope::SourceHost => (crate::inventory::source_host_workspace(st, &id())?.into_iter().collect(), "Host not found."),
         Scope::HostAndSlug => match st.store.stored_host(&id())? {
             Some(h) => {
                 let mut all = h.host.workspaces;
@@ -412,6 +418,7 @@ mod tests {
             include_str!("shared_secrets.rs"),
             include_str!("sign_in.rs"),
             include_str!("inventory.rs"),
+            include_str!("ssh.rs"),
         ];
         let route = regex::Regex::new(r#"\.route\("([^"]+)",\s*(.+)\)\s*$"#).unwrap();
         let method = regex::Regex::new(r"\b(get|post|put|delete|patch)\(").unwrap();
@@ -442,6 +449,7 @@ mod tests {
                 Scope::Host => route == "/hosts/{id}",
                 Scope::HostAndSlug => route == "/hosts/{id}/workspaces/{slug}",
                 Scope::Source => route.starts_with("/inventory/sources/{id}"),
+                Scope::SourceHost => route.starts_with("/hosts/{id}/ssh"),
             };
             assert!(ok, "{m} {route} has scope {scope:?}");
         }

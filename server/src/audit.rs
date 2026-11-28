@@ -41,6 +41,11 @@ impl By {
 /// Record one change, in `workspace` (none for server-wide changes). A failure to write
 /// is logged, not returned: the change itself already happened.
 pub fn record(st: &AppState, by: &By, workspace: Option<&str>, action: &str, target: Option<AuditTarget>, detail: Option<String>) {
+    record_in(&st.store, by, workspace, action, target, detail)
+}
+
+/// `record` for code that has the store but not the whole app state.
+pub fn record_in(store: &crate::store::Store, by: &By, workspace: Option<&str>, action: &str, target: Option<AuditTarget>, detail: Option<String>) {
     let event = AuditEvent {
         id: uuid::Uuid::now_v7().to_string(),
         at: now_ms(),
@@ -51,7 +56,7 @@ pub fn record(st: &AppState, by: &By, workspace: Option<&str>, action: &str, tar
         target,
         detail,
     };
-    if let Err(e) = st.store.append_audit(&event) {
+    if let Err(e) = store.append_audit(&event) {
         tracing::error!(error = %format!("{e:#}"), action, "writing the audit log failed");
     }
 }

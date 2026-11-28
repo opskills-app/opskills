@@ -105,8 +105,13 @@ impl Run {
         for s in &self.steps {
             if !ok(s) && !out.iter().any(|h| h.id == s.host_id) {
                 // A retry uses the attributes the host had when the run started.
-                let attributes = self.hosts.iter().find(|h| h.id == s.host_id).map(|h| h.attributes.clone()).unwrap_or_default();
-                out.push(RunHost { id: s.host_id.clone(), name: s.host_name.clone(), attributes });
+                let earlier = self.hosts.iter().find(|h| h.id == s.host_id);
+                out.push(RunHost {
+                    id: s.host_id.clone(),
+                    name: s.host_name.clone(),
+                    attributes: earlier.map(|h| h.attributes.clone()).unwrap_or_default(),
+                    ssh: earlier.and_then(|h| h.ssh.clone()),
+                });
             }
         }
         out
@@ -128,6 +133,9 @@ pub struct RunHost {
     /// The host's attributes when the run started, for `{{ host.attr.<key> }}`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: BTreeMap<String, String>,
+    /// Set for a host reached over SSH instead of the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<SshTarget>,
 }
 
 impl Run {

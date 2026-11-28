@@ -32,6 +32,10 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // Run by SSH as its askpass program, for a host that signs in with a password.
+    if opskills::ssh::askpass_mode() {
+        return ExitCode::SUCCESS;
+    }
     // Installed as opskills-agent, the same binary is the agent for enrolled hosts.
     let invoked_as = std::env::args_os().next().map(PathBuf::from);
     if invoked_as.as_deref().and_then(|p| p.file_name()).is_some_and(|n| n == "opskills-agent") {
